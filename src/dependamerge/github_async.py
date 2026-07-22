@@ -454,10 +454,6 @@ class GitHubAsync:
         # Not a permission error we recognize
         return None
 
-    # --------------------------
-    # Core request functionality
-    # --------------------------
-
     def _parse_rate_limit_headers(
         self, r: httpx.Response
     ) -> tuple[int, int, float | None]:
@@ -511,7 +507,6 @@ class GitHubAsync:
 
         # Primary rate limit: examine headers and body
         if r.status_code == 403:
-            # Parse body defensively
             body_text: str
             try:
                 body_text = r.text or ""
@@ -589,7 +584,6 @@ class GitHubAsync:
 
         # Retryable transient statuses
         if _is_retryable_status(r.status_code):
-            # Check for Retry-After on 429 or 503 responses
             retry_after = r.headers.get("Retry-After")
             if retry_after:
                 retry_after_delay = None
@@ -674,10 +668,6 @@ class GitHubAsync:
             self.log.debug("Progress metrics reporting failed: %s", e)
         return r
 
-    # -------------
-    # Public helpers
-    # -------------
-
     async def get(
         self, path: str, params: dict[str, Any] | None = None
     ) -> dict[str, Any] | list[dict[str, Any]]:
@@ -748,10 +738,6 @@ class GitHubAsync:
 
         # Should not be reached due to reraise=True; keep mypy happy
         raise GraphQLError("GraphQL request failed after retries")
-
-    # -----------------------
-    # GitHub operation helpers
-    # -----------------------
 
     async def approve_pull_request(
         self, owner: str, repo: str, number: int, body: str
@@ -847,13 +833,11 @@ class GitHubAsync:
                                 ),
                             },
                         )
-                # Log the detailed error for debugging
                 self.log.debug(
                     f"Permission error merging PR #{number} in {owner}/{repo}: {perm_error}"
                 )
                 raise perm_error from e
 
-            # Log other errors
             error_type = type(e).__name__
             error_msg = str(e)
             self.log.debug(
@@ -929,7 +913,6 @@ class GitHubAsync:
             # PR data should always be a dict, not a list
             pr_data = pr_data_response if isinstance(pr_data_response, dict) else {}
 
-            # Extract relevant state information
             mergeable = pr_data.get("mergeable")
             mergeable_state = pr_data.get("mergeable_state")
             state = pr_data.get("state")
@@ -1220,7 +1203,6 @@ class GitHubAsync:
             unreadable at that moment.
         """
         reliable = True
-        # --- 1. Classic branch protection ---
         try:
             # The signatures endpoint returns 200 with {"enabled": true/false}
             # or 404 when branch protection / signature requirement is absent.
@@ -1248,7 +1230,6 @@ class GitHubAsync:
                     e,
                 )
 
-        # --- 2. Repository rulesets ---
         try:
             # Resolve the repo's actual default branch so that
             # ~DEFAULT_BRANCH ruleset conditions are evaluated correctly.
@@ -1320,7 +1301,6 @@ class GitHubAsync:
                     conditions, branch, default_branch
                 ):
                     continue
-                # Check for required_signatures rule
                 rules = detail.get("rules", [])
                 if isinstance(rules, list):
                     for rule in rules:
@@ -1404,7 +1384,6 @@ class GitHubAsync:
             unreadable at that moment.
         """
         reliable = True
-        # --- 1. Classic branch protection ---
         try:
             protection = await self.get_branch_protection(owner, repo, branch)
             checks = protection.get("required_status_checks")
@@ -1429,7 +1408,6 @@ class GitHubAsync:
                 e,
             )
 
-        # --- 2. Repository rulesets ---
         try:
             default_branch: str | None = None
             try:
@@ -1601,6 +1579,121 @@ class GitHubAsync:
         pat = pattern if pattern.startswith("refs/") else f"refs/heads/{pattern}"
         return fnmatch.fnmatchcase(full_ref, pat)
 
+    @staticmethod
+    def _required_status_checks_from_detail(
+        detail: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        """Return required-status-check entries declared by a ruleset detail."""
+        checks: list[dict[str, Any]] = []
+        rules = detail.get("rules")
+        if not isinstance(rules, list):
+            return checks
+        for rule in rules:
+            if (
+                not isinstance(rule, dict)
+                or rule.get("type") != "required_status_checks"
+            ):
+                continue
+            params = rule.get("parameters")
+            if not isinstance(params, dict):
+                continue
+            required = params.get("required_status_checks")
+            if not isinstance(required, list):
+                continue
+            for check in required:
+                if (
+                    isinstance(check, dict)
+                    and isinstance(check.get("context"), str)
+                    and check["context"]
+                ):
+                    checks.append(check)
+        return checks
+
+    async def _fetch_ruleset_required_checks(
+        self, owner: str, repo: str, branch: str, default_branch: str | None
+    ) -> tuple[list[dict[str, Any]], bool]:
+        """Collect required checks from repo/org rulesets targeting *branch*.
+
+        Returns ``(checks, reliable)`` where ``reliable`` is False when any
+        ruleset request failed (so the caller must not cache the verdict).
+        """
+        checks: list[dict[str, Any]] = []
+        try:
+            rulesets = await self.get(f"/repos/{owner}/{repo}/rulesets?per_page=100")
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            self.log.debug(
+                f"Could not fetch rulesets for {owner}/{repo}: {e}",
+                exc_info=True,
+            )
+            return checks, False
+        if not isinstance(rulesets, list):
+            return checks, True
+
+        reliable = True
+        for ruleset in rulesets:
+            if not isinstance(ruleset, dict):
+                continue
+            ruleset_id = ruleset.get("id")
+            if not ruleset_id:
+                continue
+            try:
+                detail = await self.get(f"/repos/{owner}/{repo}/rulesets/{ruleset_id}")
+                if not isinstance(detail, dict):
+                    continue
+                # Filter: skip rulesets that do not target this branch
+                conditions = detail.get("conditions", {})
+                if isinstance(conditions, dict) and not self._ruleset_applies_to_branch(
+                    conditions, branch, default_branch
+                ):
+                    self.log.debug(
+                        f"Ruleset {ruleset_id} does not apply to branch '{branch}'; skipping"
+                    )
+                    continue
+                checks.extend(self._required_status_checks_from_detail(detail))
+            except asyncio.CancelledError:
+                raise
+            except Exception as detail_err:
+                reliable = False
+                self.log.debug(
+                    f"Could not fetch ruleset {ruleset_id} details: {detail_err}",
+                    exc_info=True,
+                )
+        return checks, reliable
+
+    async def _fetch_branch_protection_required_checks(
+        self, owner: str, repo: str, branch: str
+    ) -> tuple[list[dict[str, Any]], bool]:
+        """Collect required checks from classic branch protection.
+
+        Returns ``(checks, reliable)``.  Branch protection may be absent or
+        inaccessible with the current token; a plain 404 is the definitive
+        "no protection" answer, while anything else leaves the verdict
+        unreliable.
+        """
+        checks: list[dict[str, Any]] = []
+        try:
+            data = await self.get(
+                f"/repos/{owner}/{repo}/branches/{branch}/protection/required_status_checks"
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            return checks, "404" in str(e)
+        if isinstance(data, dict):
+            for ctx in data.get("contexts", []):
+                if isinstance(ctx, str) and ctx:
+                    checks.append({"context": ctx})
+            for check in data.get("checks", []):
+                if (
+                    isinstance(check, dict)
+                    and isinstance(check.get("context"), str)
+                    and check["context"]
+                ):
+                    checks.append(check)
+        return checks, True
+
     async def get_required_status_checks(
         self, owner: str, repo: str, branch: str
     ) -> list[dict[str, Any]]:
@@ -1628,12 +1721,19 @@ class GitHubAsync:
         cache_key = f"{owner}/{repo}@{branch}"
         cached = self._required_checks_cache.get(cache_key)
         if cached is not None:
-            # Return a copy so callers cannot mutate the cached list.
             return list(cached)
 
         required_checks: list[dict[str, Any]] = []
         seen_contexts: set[str] = set()
-        reliable = True
+
+        def _add(candidates: list[dict[str, Any]]) -> None:
+            for check in candidates:
+                ctx = check.get("context")
+                if not isinstance(ctx, str) or not ctx:
+                    continue
+                if ctx not in seen_contexts:
+                    seen_contexts.add(ctx)
+                    required_checks.append(check)
 
         # Resolve the repo's actual default branch so that ~DEFAULT_BRANCH
         # ruleset conditions are evaluated correctly (not hardcoded to
@@ -1641,79 +1741,20 @@ class GitHubAsync:
         default_branch = await self._resolve_default_branch(owner, repo)
 
         # Try rulesets first (org-level and repo-level)
-        try:
-            rulesets = await self.get(f"/repos/{owner}/{repo}/rulesets?per_page=100")
-            if isinstance(rulesets, list):
-                for ruleset in rulesets:
-                    if not isinstance(ruleset, dict):
-                        continue
-                    ruleset_id = ruleset.get("id")
-                    if not ruleset_id:
-                        continue
-                    # Fetch full ruleset details to get the rules
-                    try:
-                        detail = await self.get(
-                            f"/repos/{owner}/{repo}/rulesets/{ruleset_id}"
-                        )
-                        if not isinstance(detail, dict):
-                            continue
-
-                        # Filter: skip rulesets that do not target this branch
-                        conditions = detail.get("conditions", {})
-                        if isinstance(
-                            conditions, dict
-                        ) and not self._ruleset_applies_to_branch(
-                            conditions, branch, default_branch
-                        ):
-                            self.log.debug(
-                                f"Ruleset {ruleset_id} does not apply to branch '{branch}'; skipping"
-                            )
-                            continue
-
-                        for rule in detail.get("rules", []):
-                            if not isinstance(rule, dict):
-                                continue
-                            if rule.get("type") == "required_status_checks":
-                                params = rule.get("parameters", {})
-                                for check in params.get("required_status_checks", []):
-                                    if isinstance(check, dict) and check.get("context"):
-                                        ctx = check["context"]
-                                        if ctx not in seen_contexts:
-                                            seen_contexts.add(ctx)
-                                            required_checks.append(check)
-                    except Exception as detail_err:
-                        reliable = False
-                        self.log.debug(
-                            f"Could not fetch ruleset {ruleset_id} details: {detail_err}"
-                        )
-        except Exception as e:
-            reliable = False
-            self.log.debug(f"Could not fetch rulesets for {owner}/{repo}: {e}")
+        ruleset_checks, reliable = await self._fetch_ruleset_required_checks(
+            owner, repo, branch, default_branch
+        )
+        _add(ruleset_checks)
 
         # Fall back to branch protection if no ruleset checks found
         if not required_checks:
-            try:
-                data = await self.get(
-                    f"/repos/{owner}/{repo}/branches/{branch}/protection/required_status_checks"
-                )
-                if isinstance(data, dict):
-                    for ctx in data.get("contexts", []):
-                        if ctx not in seen_contexts:
-                            seen_contexts.add(ctx)
-                            required_checks.append({"context": ctx})
-                    for check in data.get("checks", []):
-                        if isinstance(check, dict) and check.get("context"):
-                            ctx = check["context"]
-                            if ctx not in seen_contexts:
-                                seen_contexts.add(ctx)
-                                required_checks.append(check)
-            except Exception as e:
-                # Branch protection may be absent or inaccessible with
-                # the current token; treat as no required checks.  A
-                # plain 404 is the definitive "no protection" answer;
-                # anything else leaves the verdict unreliable.
-                if "404" not in str(e):
-                    reliable = False
+            (
+                bp_checks,
+                bp_reliable,
+            ) = await self._fetch_branch_protection_required_checks(owner, repo, branch)
+            if not bp_reliable:
+                reliable = False
+            _add(bp_checks)
 
         if reliable:
             self._required_checks_cache[cache_key] = list(required_checks)
@@ -1789,7 +1830,6 @@ class GitHubAsync:
             Tuple of (can_bypass: bool, reason: str)
         """
         try:
-            # Get repository info including permissions
             repo_data = await self.get(f"/repos/{owner}/{repo}")
             if not isinstance(repo_data, dict):
                 return False, "Could not fetch repository information"
@@ -1816,7 +1856,6 @@ class GitHubAsync:
 
                 username = self._authenticated_user_login
                 if username:
-                    # Check collaborator permissions
                     collab_data = await self.get(
                         f"/repos/{owner}/{repo}/collaborators/{username}/permission"
                     )
@@ -2066,7 +2105,6 @@ class GitHubAsync:
                             raise
 
                 elif operation == "list_repos":
-                    # Check organization access
                     if owner:
                         await self.get(f"/orgs/{owner}/repos?per_page=1")
                     result["has_permission"] = True
@@ -2226,7 +2264,7 @@ class GitHubAsync:
                     if not isinstance(review, dict):
                         continue
                     state = review.get("state")
-                    author = review.get("user", {}).get("login", "")
+                    author = (review.get("user") or {}).get("login", "")
 
                     if state == "APPROVED":
                         approved = True
@@ -2240,14 +2278,13 @@ class GitHubAsync:
             # approval/changes flags at their safe defaults.
             pass
 
-        # Check for unresolved review comments
         try:
             comments = await self.get(f"/repos/{owner}/{repo}/pulls/{number}/comments")
             if isinstance(comments, list):
                 for comment in comments:
                     if not isinstance(comment, dict):
                         continue
-                    author = comment.get("user", {}).get("login", "")
+                    author = (comment.get("user") or {}).get("login", "")
                     # Count unresolved Copilot comments (those without replies dismissing them)
                     if is_copilot(author):
                         # Simple heuristic: if comment doesn't have "DISMISSED" or similar resolution text
@@ -2291,7 +2328,6 @@ class GitHubAsync:
             pass
 
         try:
-            # Status contexts (older status API, used by services like pre-commit.ci)
             statuses = await self.get(
                 f"/repos/{owner}/{repo}/commits/{head_sha}/status"
             )
@@ -2330,7 +2366,7 @@ class GitHubAsync:
             try:
                 pr_data = await self.get(f"/repos/{owner}/{repo}/pulls/{number}")
                 if isinstance(pr_data, dict):
-                    ref = pr_data.get("base", {}).get("ref")
+                    ref = (pr_data.get("base") or {}).get("ref")
                     if isinstance(ref, str) and ref:
                         base_branch = ref
             except Exception as pr_err:
@@ -2353,7 +2389,6 @@ class GitHubAsync:
                     if not ctx:
                         continue
                     if ctx in reported_check_names:
-                        # Check reported — distinguish pending from completed
                         if (
                             ctx not in completed_check_names
                             and ctx in pending_check_names
@@ -2562,10 +2597,6 @@ class GitHubAsync:
 
         return "none"
 
-    # -----------------------
-    # Optional REST pagination
-    # -----------------------
-
     async def get_paginated(
         self,
         path: str,
@@ -2596,16 +2627,11 @@ class GitHubAsync:
             if 'rel="next"' not in link:
                 return
 
-    # -----------------------
-    # Error tracking and adaptive throttling
-    # -----------------------
-
     def _track_error(self, error_type: str) -> None:
         """Track an error for adaptive throttling calculations."""
         current_time = _now()
         self._error_history.append((current_time, error_type))
 
-        # Clean old entries outside the error window
         cutoff = current_time - self._error_window
         self._error_history = [(t, e) for t, e in self._error_history if t > cutoff]
 

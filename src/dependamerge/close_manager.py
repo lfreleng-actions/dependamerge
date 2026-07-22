@@ -104,10 +104,8 @@ class AsyncCloseManager:
         # Reset results for this batch
         self._results = []
 
-        # Create tasks for all PRs
         tasks = [self._close_single_pr(pr_info) for pr_info, _ in pr_list]
 
-        # Execute in parallel
         await asyncio.gather(*tasks, return_exceptions=True)
 
         return self._results
@@ -162,7 +160,6 @@ class AsyncCloseManager:
                     self._results.append(result)
                     return result
 
-                # Parse repository info
                 repo_parts = pr_info.repository_full_name.split("/")
                 if len(repo_parts) != 2:
                     result.status = CloseStatus.FAILED
@@ -241,7 +238,6 @@ class AsyncCloseManager:
                                 await asyncio.sleep(2**attempt)
 
             except GitHubPermissionError as e:
-                # Handle permission errors with detailed guidance
                 result.status = CloseStatus.FAILED
                 result.error = str(e)
 

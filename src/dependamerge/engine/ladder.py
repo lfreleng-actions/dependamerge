@@ -50,6 +50,7 @@ looping.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -111,17 +112,9 @@ def decide(facts: LadderInput) -> Action:
     """Return the next action for a PR in the given observed state."""
     state = facts.mergeable_state
 
-    if state == "dirty":
-        return _decide_dirty(facts)
-
-    if state == "behind":
-        return _decide_behind(facts)
-
-    if state == "blocked":
-        return _decide_blocked(facts)
-
-    if state == "unstable":
-        return _decide_unstable(facts)
+    handler = _STATE_DECIDERS.get(state)
+    if handler is not None:
+        return handler(facts)
 
     # clean, unknown, "" — attempt the merge and let the merge call
     # itself be the arbiter.  This mirrors the legacy Step 6 routing.
@@ -225,6 +218,14 @@ def _decide_blocked(facts: LadderInput) -> Action:
     # Rung 6: blocked for a reason no recovery addresses.
     reason = facts.block_reason or "blocked and cannot resolve on its own"
     return Action(ActionKind.FAIL, reason)
+
+
+_STATE_DECIDERS: dict[str, Callable[[LadderInput], Action]] = {
+    "dirty": _decide_dirty,
+    "behind": _decide_behind,
+    "blocked": _decide_blocked,
+    "unstable": _decide_unstable,
+}
 
 
 __all__ = [

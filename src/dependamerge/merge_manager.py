@@ -89,6 +89,16 @@ STUCK_CHECK_THRESHOLD_SECONDS: float = 60.0
 # is never interrupted; used by ``_trigger_stale_precommit_ci``.
 PRECOMMIT_CI_STUCK_PENDING_SECONDS: float = 300.0
 
+# Icon and Rich style for each GitHub mergeable_state, used when
+# rendering PR status. States not listed fall back to a neutral
+# "investigating" icon with no style.
+_MERGEABILITY_ICON_AND_STYLE: dict[str | None, tuple[str, str | None]] = {
+    "dirty": ("🛑", "red"),
+    "behind": ("⚠️", "yellow"),
+    "clean": ("✅", "green"),
+    "draft": ("📝", "blue"),
+}
+
 
 class MergeStatus(Enum):
     """Status of a PR merge operation."""
@@ -354,16 +364,7 @@ class AsyncMergeManager:
         self, mergeable_state: str | None
     ) -> tuple[str, str | None]:
         """Get appropriate icon and style for mergeable state."""
-        if mergeable_state == "dirty":
-            return "🛑", "red"
-        elif mergeable_state == "behind":
-            return "⚠️", "yellow"
-        elif mergeable_state == "clean":
-            return "✅", "green"
-        elif mergeable_state == "draft":
-            return "📝", "blue"
-        else:
-            return "🔍", None
+        return _MERGEABILITY_ICON_AND_STYLE.get(mergeable_state, ("🔍", None))
 
     async def __aenter__(self):
         """Async context manager entry."""
@@ -1595,9 +1596,7 @@ class AsyncMergeManager:
                     # promptly.
                     should_wait = False
                 elif blocked_reason is not None:
-                    if not self._block_reason_indicates_pending_checks(
-                        blocked_reason
-                    ):
+                    if not self._block_reason_indicates_pending_checks(blocked_reason):
                         self.log.debug(
                             "Skipping Step 5.5 wait for %s: block "
                             "reason '%s' will not resolve on its own",
@@ -1942,10 +1941,8 @@ class AsyncMergeManager:
                                 str(last_merge_exc)
                             )
                         ):
-                            merged = (
-                                await self._wait_for_required_workflows_and_retry(
-                                    pr_info, repo_owner, repo_name
-                                )
+                            merged = await self._wait_for_required_workflows_and_retry(
+                                pr_info, repo_owner, repo_name
                             )
 
                 if merged is None:
@@ -1980,12 +1977,9 @@ class AsyncMergeManager:
                     # A failed merge attempt can mask two benign
                     # races: the PR merged externally (a concurrent
                     # dependamerge run at org scope, or a human
-                    # admin), or the PR closed without merging
-                    # (dependabot decided the update is no longer
-                    # needed after sibling merges advanced the
-                    # base).  Neither outcome needs human follow-up,
-                    # so classify as SKIPPED / CLOSED rather than
-                    # FAILED.
+                    # admin), or dependabot closed it without merging
+                    # once sibling merges advanced the base. Neither
+                    # outcome needs human follow-up.
                     ext_state, ext_merged = await self._fetch_pr_state_now(
                         pr_info, repo_owner, repo_name
                     )
@@ -2023,8 +2017,7 @@ class AsyncMergeManager:
                     ):
                         result.status = MergeStatus.AUTO_MERGE_PENDING
                         result.error = (
-                            "auto-merge pending: behind base branch "
-                            "(rebase requested)"
+                            "auto-merge pending: behind base branch (rebase requested)"
                         )
                         self._pr_status(
                             f"\u23f3 Waiting: {pr_info.html_url} "
@@ -2080,8 +2073,7 @@ class AsyncMergeManager:
                                 ) = await self._detect_stuck_required_check(pr_info)
                             except Exception as exc:
                                 self.log.debug(
-                                    "_detect_stuck_required_check failed for "
-                                    "%s#%s: %s",
+                                    "_detect_stuck_required_check failed for %s#%s: %s",
                                     pr_info.repository_full_name,
                                     pr_info.number,
                                     exc,
@@ -2296,6 +2288,7 @@ class AsyncMergeManager:
             skip_reason = detailed_status.lower()
         else:
             # Fallback to basic mapping if detailed status is unclear
+            # aislop-ignore-next-line ai-slop/python-repetitive-dispatch -- branches set distinct reasons with sub-conditions, not a uniform table
             if pr_info.mergeable_state == "dirty":
                 skip_reason = "merge conflicts"
             elif pr_info.mergeable_state == "behind":
@@ -3289,6 +3282,7 @@ class AsyncMergeManager:
                 )
 
         # Additional checks based on PR state
+        # aislop-ignore-next-line ai-slop/python-repetitive-dispatch -- branch drives multi-step control flow, not a value lookup
         if pr_info.mergeable_state == "blocked":
             # Check if Copilot comments might be the blocker
             if self.dismiss_copilot and self._copilot_handler:
@@ -3745,8 +3739,7 @@ class AsyncMergeManager:
             )
         except Exception as exc:
             self.log.debug(
-                "_detect_stuck_required_check: check-runs fetch failed for "
-                "%s#%s: %s",
+                "_detect_stuck_required_check: check-runs fetch failed for %s#%s: %s",
                 pr_info.repository_full_name,
                 pr_info.number,
                 exc,
@@ -3779,7 +3772,7 @@ class AsyncMergeManager:
             )
         except Exception as exc:
             self.log.debug(
-                "_detect_stuck_required_check: status fetch failed for " "%s#%s: %s",
+                "_detect_stuck_required_check: status fetch failed for %s#%s: %s",
                 pr_info.repository_full_name,
                 pr_info.number,
                 exc,
@@ -3980,7 +3973,7 @@ class AsyncMergeManager:
                             for pr_data in prs:
                                 if not isinstance(pr_data, dict):
                                     continue
-                                pr_author = pr_data.get("user", {}).get("login", "")
+                                pr_author = (pr_data.get("user") or {}).get("login", "")
                                 if not is_dependabot(pr_author):
                                     continue
 
@@ -3989,7 +3982,7 @@ class AsyncMergeManager:
                                     continue
 
                                 # Verify the replacement targets the same base branch
-                                new_base = pr_data.get("base", {}).get("ref", "")
+                                new_base = (pr_data.get("base") or {}).get("ref", "")
                                 if new_base != (pr_info.base_branch or "main"):
                                     self.log.debug(
                                         "Skipping candidate PR #%s: targets %s, "
@@ -4193,6 +4186,67 @@ class AsyncMergeManager:
         )
         return None
 
+    @staticmethod
+    def _already_sufficiently_approved(
+        pr_data: dict[str, Any],
+        reviews_data: list[Any],
+        current_user: str,
+    ) -> tuple[bool, str | None]:
+        """Return ``(skip, approvers)`` when the PR needs no new approval.
+
+        ``skip`` is True when the current user has already approved, or when
+        other reviewers have approved a ``clean`` PR.  ``approvers`` names the
+        relevant approver(s) for the debug log.
+        """
+        for review in reviews_data:
+            if not isinstance(review, dict):
+                continue
+            if (review.get("user") or {}).get("login") == current_user and review.get(
+                "state"
+            ) == "APPROVED":
+                return True, current_user
+
+        approved_reviews = [
+            review
+            for review in reviews_data
+            if isinstance(review, dict)
+            and review.get("state") == "APPROVED"
+            and (review.get("user") or {}).get("login") != current_user
+        ]
+        if approved_reviews and pr_data.get("mergeable_state") == "clean":
+            # A review may carry ``"user": null`` or ``{"login": null}``;
+            # coerce both to a string so join() cannot see a None login.
+            approvers = [
+                (review.get("user") or {}).get("login") or "unknown"
+                for review in approved_reviews
+            ]
+            return True, ", ".join(approvers)
+        return False, None
+
+    async def _should_skip_approval(
+        self, owner: str, repo: str, pr_number: int
+    ) -> tuple[bool, str | None]:
+        """Return ``(skip, approvers)`` when the PR already has adequate approval."""
+        if self._github_client is None:
+            raise RuntimeError("GitHub client not initialized")
+        pr_data = await self._github_client.get(
+            f"/repos/{owner}/{repo}/pulls/{pr_number}"
+        )
+        if not isinstance(pr_data, dict):
+            return False, None
+        # Get current user login (cached on the client after the first
+        # call — the login is session-constant, so this costs one
+        # round-trip per run instead of one per PR).
+        current_user = await self._github_client.get_authenticated_user_login()
+        if not current_user:
+            return False, None
+        reviews_data = await self._github_client.get(
+            f"/repos/{owner}/{repo}/pulls/{pr_number}/reviews"
+        )
+        if not isinstance(reviews_data, list):
+            return False, None
+        return self._already_sufficiently_approved(pr_data, reviews_data, current_user)
+
     async def _approve_pr(self, owner: str, repo: str, pr_number: int) -> bool:
         """
         Approve a pull request if not already approved by the current user or sufficiently approved.
@@ -4212,55 +4266,12 @@ class AsyncMergeManager:
             raise RuntimeError("GitHub client not initialized")
 
         try:
-            # Check if current user has already approved this PR
-            pr_data = await self._github_client.get(
-                f"/repos/{owner}/{repo}/pulls/{pr_number}"
-            )
-
-            if isinstance(pr_data, dict):
-                # Get current user login (cached on the client after the
-                # first call — the login is session-constant, so this
-                # costs one round-trip per run instead of one per PR).
-                current_user = await self._github_client.get_authenticated_user_login()
-
-                if current_user:
-                    reviews_data = await self._github_client.get(
-                        f"/repos/{owner}/{repo}/pulls/{pr_number}/reviews"
-                    )
-
-                    if isinstance(reviews_data, list):
-                        # Look for existing approval by current user
-                        for review in reviews_data:
-                            if (
-                                review.get("user", {}).get("login") == current_user
-                                and review.get("state") == "APPROVED"
-                            ):
-                                self.log.debug(
-                                    f"⏩ Already approved: {owner}/{repo}#{pr_number} [{current_user}]"
-                                )
-                                return False
-
-                        # Check if PR already has sufficient approvals from others
-                        approved_reviews = [
-                            review
-                            for review in reviews_data
-                            if review.get("state") == "APPROVED"
-                            and review.get("user", {}).get("login") != current_user
-                        ]
-
-                        if (
-                            approved_reviews
-                            and pr_data.get("mergeable_state") == "clean"
-                        ):
-                            approvers = [
-                                review.get("user", {}).get("login", "unknown")
-                                for review in approved_reviews
-                            ]
-                            approvers_str = ", ".join(approvers)
-                            self.log.debug(
-                                f"⏩ Already approved: {owner}/{repo}#{pr_number} [{approvers_str}]"
-                            )
-                            return False
+            skip, approvers = await self._should_skip_approval(owner, repo, pr_number)
+            if skip:
+                self.log.debug(
+                    f"⏩ Already approved: {owner}/{repo}#{pr_number} [{approvers}]"
+                )
+                return False
 
             await self._github_client.approve_pull_request(
                 owner,
@@ -4299,6 +4310,133 @@ class AsyncMergeManager:
                     f"Failed to approve PR {owner}/{repo}#{pr_number}: {e}"
                 ) from e
 
+    async def _recheck_pr_before_retry(
+        self, owner: str, repo: str, pr_info: PullRequestInfo, attempt: int
+    ) -> bool | None:
+        """Re-fetch PR state before a retry attempt.
+
+        Returns True if the PR was already merged (skip retry), False if it
+        was closed without merging (abort retry), or None to proceed.
+        """
+        if self._github_client is None:
+            raise RuntimeError("GitHub client not initialized")
+        try:
+            current_pr_data = await self._github_client.get(
+                f"/repos/{owner}/{repo}/pulls/{pr_info.number}"
+            )
+            if isinstance(current_pr_data, dict):
+                current_state = current_pr_data.get("state")
+                merged_field = current_pr_data.get("merged")
+                # Prefer the explicit ``merged`` bool. A trimmed payload
+                # may omit it, so fall back to ``merged_at``: the full REST
+                # object always carries that key (an ISO timestamp when
+                # merged, ``null`` for closed-but-unmerged), matching the
+                # derivation used elsewhere. Only a genuinely absent
+                # ``merged_at`` (and no bool) leaves the state unknown so
+                # an ambiguous closed PR proceeds rather than aborting.
+                current_merged: bool | None
+                if isinstance(merged_field, bool):
+                    current_merged = merged_field
+                elif "merged_at" in current_pr_data:
+                    current_merged = current_pr_data.get("merged_at") is not None
+                else:
+                    current_merged = None
+
+                if current_state == "closed" and current_merged:
+                    self.log.info(
+                        f"✅ PR {owner}/{repo}#{pr_info.number} was already merged, skipping retry"
+                    )
+                    return True
+                elif current_state == "closed" and current_merged is False:
+                    self.log.info(
+                        f"⚠️ PR {owner}/{repo}#{pr_info.number} was closed without merging, aborting retry"
+                    )
+                    # This will be caught by the outer merge logic and formatted consistently
+                    return False
+        except asyncio.CancelledError:
+            # Cancellation must propagate so an in-flight shutdown is not
+            # swallowed by the broad handler below.
+            raise
+        except Exception as state_check_error:
+            self.log.debug(
+                f"Failed to check PR state before retry {attempt + 1}: {state_check_error}",
+                exc_info=True,
+            )
+        return None
+
+    async def _refresh_pr_mergeable(
+        self, owner: str, repo: str, pr_info: PullRequestInfo, pr_key: str
+    ) -> None:
+        """Best-effort refresh of ``pr_info`` mergeable fields from the API."""
+        try:
+            if self._github_client:
+                refreshed = await self._github_client.get(
+                    f"/repos/{owner}/{repo}/pulls/{pr_info.number}"
+                )
+                if isinstance(refreshed, dict):
+                    pr_info.mergeable = refreshed.get("mergeable")
+                    pr_info.mergeable_state = refreshed.get("mergeable_state")
+                    self.log.debug(
+                        f"Refreshed {pr_key}: mergeable={pr_info.mergeable}, "
+                        f"mergeable_state={pr_info.mergeable_state}"
+                    )
+        except asyncio.CancelledError:
+            # Cancellation must propagate so an in-flight shutdown is not
+            # swallowed by the broad handler below.
+            raise
+        except Exception as refresh_err:
+            self.log.debug(
+                f"Failed to refresh PR state for {pr_key}: {refresh_err}",
+                exc_info=True,
+            )
+
+    async def _blocked_pr_became_clean(
+        self, owner: str, repo: str, pr_info: PullRequestInfo, pr_key: str
+    ) -> bool:
+        """Wait for post-approval propagation, refresh state, report clean.
+
+        Returns True when the PR's ``mergeable_state`` became ``clean`` (so
+        the merge should be retried); False otherwise.  Refresh failures are
+        swallowed at debug level.
+        """
+        try:
+            if self._github_client:
+                if self._post_approval_delay <= 0:
+                    retry_delay = 0.0
+                else:
+                    retry_delay = self._post_approval_delay + 2.0
+                self.log.info(
+                    f"Post-approval propagation retry for {pr_key}, "
+                    f"waiting {retry_delay}s before re-checking…"
+                )
+                if retry_delay > 0:
+                    await asyncio.sleep(retry_delay)
+                refreshed = await self._github_client.get(
+                    f"/repos/{owner}/{repo}/pulls/{pr_info.number}"
+                )
+                if isinstance(refreshed, dict):
+                    new_state = refreshed.get("mergeable_state")
+                    new_mergeable = refreshed.get("mergeable")
+                    self.log.info(
+                        f"Refreshed {pr_key}: mergeable={new_mergeable}, "
+                        f"mergeable_state={new_state}"
+                    )
+                    pr_info.mergeable = new_mergeable
+                    pr_info.mergeable_state = new_state
+                    if new_state == "clean":
+                        # Approval has propagated — retry the merge
+                        return True
+        except asyncio.CancelledError:
+            # Cancellation must propagate so an in-flight shutdown is not
+            # swallowed by the broad handler below.
+            raise
+        except Exception as refresh_err:
+            self.log.debug(
+                f"Failed to refresh PR state for {pr_key}: {refresh_err}",
+                exc_info=True,
+            )
+        return False
+
     async def _merge_pr_with_retry(
         self, pr_info: PullRequestInfo, owner: str, repo: str
     ) -> bool:
@@ -4320,31 +4458,11 @@ class AsyncMergeManager:
             try:
                 # Check if PR has already been closed/merged before attempting
                 if attempt > 0:
-                    # Re-fetch PR state to check if it was merged by a previous attempt
-                    # or by external processes
-                    try:
-                        current_pr_data = await self._github_client.get(
-                            f"/repos/{owner}/{repo}/pulls/{pr_info.number}"
-                        )
-                        if isinstance(current_pr_data, dict):
-                            current_state = current_pr_data.get("state")
-                            current_merged = current_pr_data.get("merged", False)
-
-                            if current_state == "closed" and current_merged:
-                                self.log.info(
-                                    f"✅ PR {owner}/{repo}#{pr_info.number} was already merged, skipping retry"
-                                )
-                                return True
-                            elif current_state == "closed" and not current_merged:
-                                self.log.info(
-                                    f"⚠️ PR {owner}/{repo}#{pr_info.number} was closed without merging, aborting retry"
-                                )
-                                # This will be caught by the outer merge logic and formatted consistently
-                                return False
-                    except Exception as state_check_error:
-                        self.log.debug(
-                            f"Failed to check PR state before retry {attempt + 1}: {state_check_error}"
-                        )
+                    recheck = await self._recheck_pr_before_retry(
+                        owner, repo, pr_info, attempt
+                    )
+                    if recheck is not None:
+                        return recheck
 
                 # Use pre-determined merge method for this repository
                 cache_key = f"{owner}/{repo}"
@@ -4445,24 +4563,9 @@ class AsyncMergeManager:
                             )
                             await asyncio.sleep(retry_delay)
                             # Refresh PR state in case something changed
-                            try:
-                                if self._github_client:
-                                    refreshed = await self._github_client.get(
-                                        f"/repos/{owner}/{repo}/pulls/{pr_info.number}"
-                                    )
-                                    if isinstance(refreshed, dict):
-                                        pr_info.mergeable = refreshed.get("mergeable")
-                                        pr_info.mergeable_state = refreshed.get(
-                                            "mergeable_state"
-                                        )
-                                        self.log.debug(
-                                            f"Refreshed {pr_key}: mergeable={pr_info.mergeable}, "
-                                            f"mergeable_state={pr_info.mergeable_state}"
-                                        )
-                            except Exception as refresh_err:
-                                self.log.debug(
-                                    f"Failed to refresh PR state for {pr_key}: {refresh_err}"
-                                )
+                            await self._refresh_pr_mergeable(
+                                owner, repo, pr_info, pr_key
+                            )
                             continue
                         else:
                             break
@@ -4475,38 +4578,11 @@ class AsyncMergeManager:
                             pr_key in self._recently_approved
                             and attempt < self.max_retries
                         ):
-                            try:
-                                if self._github_client:
-                                    if self._post_approval_delay <= 0:
-                                        retry_delay = 0.0
-                                    else:
-                                        retry_delay = self._post_approval_delay + 2.0
-                                    self.log.info(
-                                        f"Post-approval propagation retry for {pr_key}, "
-                                        f"waiting {retry_delay}s before re-checking…"
-                                    )
-                                    if retry_delay > 0:
-                                        await asyncio.sleep(retry_delay)
-                                    refreshed = await self._github_client.get(
-                                        f"/repos/{owner}/{repo}/pulls/{pr_info.number}"
-                                    )
-                                    if isinstance(refreshed, dict):
-                                        new_state = refreshed.get("mergeable_state")
-                                        new_mergeable = refreshed.get("mergeable")
-                                        self.log.info(
-                                            f"Refreshed {pr_key}: mergeable={new_mergeable}, "
-                                            f"mergeable_state={new_state}"
-                                        )
-                                        pr_info.mergeable = new_mergeable
-                                        pr_info.mergeable_state = new_state
-                                        if new_state == "clean":
-                                            # Approval has propagated — retry the merge
-                                            continue
-                            except Exception as refresh_err:
-                                self.log.debug(
-                                    f"Failed to refresh PR state for {pr_key}: {refresh_err}"
-                                )
-                            # Remove from recently-approved so we don't loop forever
+                            if await self._blocked_pr_became_clean(
+                                owner, repo, pr_info, pr_key
+                            ):
+                                # Approval has propagated — retry the merge
+                                continue
                             self._recently_approved.discard(pr_key)
                         # Still blocked after re-check (or not recently approved)
                         break
@@ -5076,16 +5152,6 @@ class AsyncMergeManager:
                             )
                             pr_info.state = "closed"
                             break
-                    # A PR that becomes immediately mergeable while still
-                    # ``unstable`` (only a non-required check is red) will
-                    # never reach ``clean`` and never leave ``unstable``,
-                    # so keeping it in ``continue_states`` would spin the
-                    # wait to the deadline — the exact slow hang the
-                    # Step 5.5 routing fix removes for PRs that *start*
-                    # mergeable.  Break out as soon as GitHub reports
-                    # ``unstable`` + ``mergeable is True`` so the caller can
-                    # dispatch (auto-merge, already armed before this wait,
-                    # will land it; failing that the caller merges directly).
                     if (
                         pr_info.mergeable_state == "unstable"
                         and pr_info.mergeable is True
@@ -5580,6 +5646,7 @@ class AsyncMergeManager:
                     "see https://www.githubstatus.com)"
                 )
 
+        # aislop-ignore-next-line ai-slop/python-repetitive-dispatch -- branches run distinct analysis (block-reason parsing), not a uniform table
         if pr_info.mergeable_state == "behind":
             return "behind base branch"
         elif pr_info.mergeable_state == "blocked":
@@ -5808,7 +5875,6 @@ class AsyncMergeManager:
                 org_data = await self._github_client.get(f"/orgs/{owner}")
                 if isinstance(org_data, dict):
                     self._org_settings_cache[owner] = org_data
-                    # Log org-level details once, not per-PR
                     web_commit_signoff = org_data.get(
                         "web_commit_signoff_required", False
                     )
@@ -6216,7 +6282,7 @@ class AsyncMergeManager:
             if isinstance(pr_data, dict):
                 mergeable_state = pr_data.get("mergeable_state", "unknown")
                 mergeable = pr_data.get("mergeable")
-                head_sha = pr_data.get("head", {}).get("sha", "")
+                head_sha = (pr_data.get("head") or {}).get("sha", "")
 
                 self.log.debug(
                     f"PR {owner}/{repo}#{pr_number} REST API status: mergeable={mergeable}, mergeable_state={mergeable_state}"

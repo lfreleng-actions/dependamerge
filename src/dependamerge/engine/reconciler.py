@@ -99,7 +99,7 @@ class Reconciler:
         stale = self._parked.pop(item.key, None)
         if stale is not None and not stale.waiter.done():
             self._log.warning(
-                "reconciler: duplicate park for %s; timing out the " "previous waiter",
+                "reconciler: duplicate park for %s; timing out the previous waiter",
                 item.key,
             )
             stale.waiter.set_result(False)

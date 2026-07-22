@@ -35,6 +35,16 @@ _TOKEN_PASSWORD = "password"  # noqa: S105
 _TOKEN_DEFAULT = "default"  # noqa: S105
 _TOKEN_MACDEF = "macdef"  # noqa: S105
 
+# Backslash-escape sequences recognized inside quoted netrc values.
+# Any other escaped character is preserved verbatim (backslash + char).
+_NETRC_ESCAPES = {
+    '"': '"',
+    "n": "\n",
+    "r": "\r",
+    "t": "\t",
+    "\\": "\\",
+}
+
 
 def _normalize_host_for_netrc_lookup(host: str) -> str:
     """Normalize a host string for .netrc lookup.
@@ -60,10 +70,8 @@ def _normalize_host_for_netrc_lookup(host: str) -> str:
     # Remove scheme (http://, https://, etc.)
     if "://" in normalized:
         normalized = normalized.split("://", 1)[1]
-    # Remove path components
     if "/" in normalized:
         normalized = normalized.split("/", 1)[0]
-    # Remove port number
     if ":" in normalized:
         normalized = normalized.rsplit(":", 1)[0]
     return normalized
@@ -173,24 +181,14 @@ class NetrcParser:
         Returns:
             Unescaped string content without quotes.
         """
-        # Remove surrounding quotes
         inner = s[1:-1]
-        # Process escape sequences
         result: list[str] = []
         i = 0
         while i < len(inner):
             if inner[i] == "\\" and i + 1 < len(inner):
                 next_char = inner[i + 1]
-                if next_char == '"':
-                    result.append('"')
-                elif next_char == "n":
-                    result.append("\n")
-                elif next_char == "r":
-                    result.append("\r")
-                elif next_char == "t":
-                    result.append("\t")
-                elif next_char == "\\":
-                    result.append("\\")
+                if next_char in _NETRC_ESCAPES:
+                    result.append(_NETRC_ESCAPES[next_char])
                 else:
                     # Unknown escape, keep as-is
                     result.append(inner[i : i + 2])
@@ -227,7 +225,6 @@ class NetrcParser:
             List of tokens, including "\n" tokens for line boundaries.
         """
         tokens: list[str] = []
-        # Process line by line to preserve newline information
         lines: list[str] = []
         for raw_line in content.splitlines():
             # Strip leading whitespace to check for comment
@@ -236,7 +233,6 @@ class NetrcParser:
                 # Preserve blank line marker for macdef parsing
                 lines.append("")
                 continue
-            # Handle inline comments
             processed_line = self._strip_inline_comment(raw_line)
             lines.append(processed_line)
 
@@ -251,12 +247,10 @@ class NetrcParser:
             placeholder_idx += 1
             return placeholder
 
-        # Process each line, preserving newline tokens
+        # Process each line, replacing quoted strings with placeholders
         for line in lines:
             # Replace quoted strings with placeholders
-            processed_line = self._QUOTED_STRING_PATTERN.sub(
-                replace_quoted, line
-            )
+            processed_line = self._QUOTED_STRING_PATTERN.sub(replace_quoted, line)
 
             # Split on whitespace
             raw_tokens = processed_line.split()
@@ -264,11 +258,8 @@ class NetrcParser:
             # Restore quoted strings and unescape
             for raw_token in raw_tokens:
                 if raw_token in placeholders:
-                    tokens.append(
-                        self._unescape_quoted_string(placeholders[raw_token])
-                    )
+                    tokens.append(self._unescape_quoted_string(placeholders[raw_token]))
                 elif "\x00QUOTED" in raw_token:
-                    # Handle case where placeholder is part of larger token
                     processed_token = raw_token
                     for placeholder, quoted in placeholders.items():
                         if placeholder in processed_token:
@@ -555,8 +546,7 @@ def check_netrc_permissions(path: Path) -> bool:
     # Check if group or others have read permission
     if mode & (stat.S_IRGRP | stat.S_IROTH):
         log.warning(
-            "Netrc file %s has insecure permissions. "
-            "Consider running: chmod 600 %s",
+            "Netrc file %s has insecure permissions. Consider running: chmod 600 %s",
             path,
             path,
         )
@@ -788,9 +778,7 @@ def resolve_gerrit_credentials(
         if fallback_user and fallback_pass:
             # SECURITY: Break CodeQL taint path — log a fixed string.
             # See CodeQL rule py/clear-text-logging-sensitive-data.
-            log.debug(
-                "Resolved Gerrit credentials from fallback environment variables"
-            )
+            log.debug("Resolved Gerrit credentials from fallback environment variables")
             return GerritCredentials(
                 username=fallback_user,
                 password=fallback_pass,

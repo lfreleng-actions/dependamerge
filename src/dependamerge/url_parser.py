@@ -25,6 +25,12 @@ from dataclasses import dataclass
 from enum import Enum
 from urllib.parse import urlparse
 
+# aislop-ignore-file ai-slop/hardcoded-url -- This module parses and builds
+# GitHub/Gerrit URLs, so URL literals here are the subject matter, not
+# stray configuration: example URLs in error/usage messages and
+# docstrings, plus the canonical https://api.github.com endpoints for
+# GitHub.com.  Enterprise hosts are always derived from the caller's input.
+
 
 class ChangeSource(Enum):
     """Enumeration of supported code review platforms."""
@@ -309,7 +315,6 @@ def _parse_gerrit_url(host: str, path: str, original_url: str) -> ParsedUrl:
         project = match.group(2)
         change_number = int(match.group(3))
 
-    # Validate extracted components
     if not project:
         raise UrlParseError("Gerrit URL must include a project name")
 
@@ -431,8 +436,7 @@ def parse_repo_url(url: str) -> ParsedRepoUrl:
 
     if len(parts) < 2:
         raise UrlParseError(
-            f"Invalid GitHub repository URL format. Expected: "
-            f"https://{host}/owner/repo"
+            f"Invalid GitHub repository URL format. Expected: https://{host}/owner/repo"
         )
 
     # After stripping "pulls", require exactly 2 parts (owner/repo)
@@ -449,8 +453,7 @@ def parse_repo_url(url: str) -> ParsedRepoUrl:
                 "bulk operations."
             )
         raise UrlParseError(
-            f"Invalid GitHub repository URL format. Expected: "
-            f"https://{host}/owner/repo"
+            f"Invalid GitHub repository URL format. Expected: https://{host}/owner/repo"
         )
 
     owner = parts[0]

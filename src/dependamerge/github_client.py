@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: 2025 The Linux Foundation
 
 import asyncio
+import logging
 import os
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Optional
@@ -18,6 +19,8 @@ from .url_parser import _host_matches
 
 if TYPE_CHECKING:
     from .progress_tracker import ProgressTracker
+
+logger = logging.getLogger(__name__)
 
 
 class GitHubClient:
@@ -55,9 +58,7 @@ class GitHubClient:
         try:
             pull_index = parts.index("pull")
             if pull_index + 1 >= len(parts):
-                raise ValueError(
-                    "PR number not found after 'pull'"
-                )
+                raise ValueError("PR number not found after 'pull'")
 
             owner = parts[pull_index - 2]
             repo = parts[pull_index - 1]
@@ -76,9 +77,7 @@ class GitHubClient:
         async def _run() -> PullRequestInfo:
             async with GitHubAsync(token=self.token) as api:
                 pr_response = await api.get(f"/repos/{owner}/{repo}/pulls/{pr_number}")
-                assert isinstance(pr_response, dict), (
-                    "PR endpoint should return a dictionary"
-                )
+                assert isinstance(pr_response, dict), "PR endpoint must return a dict"
                 pr: dict[str, Any] = pr_response
                 files_changed: list[FileChange] = []
                 try:
@@ -103,37 +102,42 @@ class GitHubClient:
                                     status=file_data.get("status", "modified"),
                                 )
                             )
-                except Exception:
+                except Exception as exc:
                     # If pagination of files fails, continue with what we have
-                    pass
+                    api.log.debug(
+                        f"File pagination failed for PR #{pr_number}: {exc}",
+                        exc_info=True,
+                    )
 
-                # Fetch reviews
                 reviews: list[ReviewInfo] = []
                 try:
                     review_response = await api.get(
                         f"/repos/{owner}/{repo}/pulls/{pr_number}/reviews"
                     )
-                    assert isinstance(review_response, list), (
-                        "Reviews endpoint should return a list"
-                    )
+                    assert isinstance(review_response, list), "reviews must be a list"
                     review_data = review_response
                     # review_data is a list of review dictionaries
                     for review in review_data:
+                        if not isinstance(review, dict):
+                            continue
                         if review.get("user") and review.get("state"):
                             reviews.append(
                                 ReviewInfo(
                                     # NOTE: REST API returns string IDs that look numeric but may be node IDs
                                     # Do not convert to int() - keep as string to match GraphQL behavior
                                     id=review.get("id", ""),
-                                    user=review.get("user", {}).get("login", ""),
+                                    user=(review.get("user") or {}).get("login", ""),
                                     state=review.get("state", ""),
                                     submitted_at=review.get("submitted_at", ""),
                                     body=review.get("body"),
                                 )
                             )
-                except Exception:
+                except Exception as exc:
                     # If review fetching fails, continue without reviews
-                    pass
+                    api.log.debug(
+                        f"Review fetch failed for PR #{pr_number}: {exc}",
+                        exc_info=True,
+                    )
 
                 return PullRequestInfo(
                     number=int(pr.get("number", pr_number)),
@@ -170,9 +174,7 @@ class GitHubClient:
                     base_repo_clone_url=(
                         ((pr.get("base") or {}).get("repo") or {}).get("clone_url")
                     ),
-                    is_fork=(
-                        ((pr.get("head") or {}).get("repo") or {}).get("fork")
-                    ),
+                    is_fork=(((pr.get("head") or {}).get("repo") or {}).get("fork")),
                 )
 
         return asyncio.run(_run())  # type: ignore[no-any-return]
@@ -216,9 +218,12 @@ class GitHubClient:
                             full = repo_data.get("full_name")
                             if full:
                                 repos.append(full)
-                except Exception:
+                except Exception as exc:
                     # Fall back to empty list on pagination issues
-                    pass
+                    api.log.debug(
+                        f"Repo pagination failed for org {org_name}: {exc}",
+                        exc_info=True,
+                    )
             return repos
 
         return asyncio.run(_run())
@@ -245,7 +250,7 @@ class GitHubClient:
 
             return bool(asyncio.run(_run()))
         except Exception as e:
-            print(f"Failed to approve PR {pr_number}: {e}")
+            logger.warning("Failed to approve PR %s: %s", pr_number, e, exc_info=True)
             return False
 
     def merge_pull_request(
@@ -263,7 +268,7 @@ class GitHubClient:
 
             return bool(asyncio.run(_run()))
         except Exception as e:
-            print(f"Failed to merge PR {pr_number}: {e}")
+            logger.warning("Failed to merge PR %s: %s", pr_number, e, exc_info=True)
             return False
 
     def is_automation_author(self, author: str) -> bool:
@@ -279,7 +284,6 @@ class GitHubClient:
         if pr_info.state != "open":
             return f"Closed ({pr_info.state})"
 
-        # Check for draft status first
         if pr_info.mergeable_state == "draft":
             return "Draft PR"
 
@@ -291,7 +295,6 @@ class GitHubClient:
             return block_reason
 
         if pr_info.mergeable is False:
-            # Check for specific reasons why it's not mergeable
             if pr_info.mergeable_state == "dirty":
                 return "Merge conflicts"
             elif pr_info.mergeable_state == "behind":
@@ -384,7 +387,7 @@ class GitHubClient:
 
             return bool(asyncio.run(_run()))
         except Exception as e:
-            print(f"Failed to update PR {pr_number}: {e}")
+            logger.warning("Failed to update PR %s: %s", pr_number, e, exc_info=True)
             return False
 
     def scan_organization_for_unmergeable_prs(

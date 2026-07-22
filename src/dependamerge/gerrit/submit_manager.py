@@ -88,7 +88,6 @@ class GerritSubmitManager:
         self._max_workers = max_workers
         self._progress_tracker = progress_tracker
 
-        # Build REST client
         self._client = build_client(
             host,
             base_path=base_path,
@@ -140,9 +139,7 @@ class GerritSubmitManager:
         results: list[GerritSubmitResult] = []
 
         for change, _comparison in changes:
-            result = self._submit_single_change(
-                change, review_labels, dry_run
-            )
+            result = self._submit_single_change(change, review_labels, dry_run)
             results.append(result)
 
         return results
@@ -186,7 +183,6 @@ class GerritSubmitManager:
                     results.append(result)
                 except Exception as exc:
                     log.error("Unexpected error in parallel submit: %s", exc)
-                    # Create a generic failure result
                     results.append(
                         GerritSubmitResult.failure_result(
                             change_number=0,
@@ -250,10 +246,7 @@ class GerritSubmitManager:
                     duration=time.time() - start_time,
                 )
 
-            # Step 1: Apply review (vote)
-            review_success = self._review_change(
-                change.number, review_labels
-            )
+            review_success = self._review_change(change.number, review_labels)
             if review_success:
                 reviewed = True
                 log.info(
@@ -271,7 +264,6 @@ class GerritSubmitManager:
                     duration=time.time() - start_time,
                 )
 
-            # Step 2: Submit the change
             submit_success = self._submit_change(change.number)
             if submit_success:
                 submitted = True
@@ -364,9 +356,7 @@ class GerritSubmitManager:
             self._client.post(endpoint, data=payload)
             return True
         except GerritRestError as exc:
-            log.warning(
-                "Failed to review change %d: %s", change_number, exc
-            )
+            log.warning("Failed to review change %d: %s", change_number, exc)
             return False
 
     def _submit_change(self, change_number: int) -> bool:
@@ -385,9 +375,7 @@ class GerritSubmitManager:
             self._client.post(endpoint)
             return True
         except GerritRestError as exc:
-            log.warning(
-                "Failed to submit change %d: %s", change_number, exc
-            )
+            log.warning("Failed to submit change %d: %s", change_number, exc)
             return False
 
     def review_only(
@@ -458,9 +446,7 @@ class GerritSubmitManager:
 
         return results
 
-    def get_submit_summary(
-        self, results: list[GerritSubmitResult]
-    ) -> dict[str, Any]:
+    def get_submit_summary(self, results: list[GerritSubmitResult]) -> dict[str, Any]:
         """
         Generate a summary of submit results.
 

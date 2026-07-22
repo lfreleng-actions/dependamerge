@@ -216,7 +216,7 @@ class CopilotCommentHandler:
 
             result = await self.github_client.graphql(mutation, variables)
 
-            if result and result.get("data", {}).get("dismissPullRequestReview"):
+            if result and (result.get("data") or {}).get("dismissPullRequestReview"):
                 self.log.info(
                     f"✅ Successfully dismissed Copilot review {review_id} (state: {review_state})"
                 )
@@ -311,7 +311,7 @@ class CopilotCommentHandler:
         Returns:
             True if thread contains Copilot comments
         """
-        comments = thread.get("comments", {}).get("nodes", [])
+        comments = (thread.get("comments") or {}).get("nodes", [])
 
         for comment in comments:
             author = comment.get("author", {})
@@ -345,7 +345,7 @@ class CopilotCommentHandler:
             return True  # Outdated threads are usually safe to resolve
 
         # Check if this is a common/safe Copilot suggestion
-        comments = thread.get("comments", {}).get("nodes", [])
+        comments = (thread.get("comments") or {}).get("nodes", [])
 
         for comment in comments:
             body = comment.get("body", "").lower()
@@ -454,7 +454,6 @@ class CopilotCommentHandler:
             f"🧵 Attempting thread-level resolution for COMMENTED review {review_id}"
         )
 
-        # Get all threads for this PR
         all_threads = await self.get_pr_review_threads(owner, repo, pr_number)
 
         # Filter for unresolved Copilot threads that are safe to resolve
@@ -518,7 +517,6 @@ class CopilotCommentHandler:
         """
         owner, repo = pr_info.repository_full_name.split("/")
 
-        # Get both reviews and review comments from REST API
         unresolved_reviews = self.get_unresolved_copilot_reviews(pr_info)
         review_comments = await self._get_copilot_review_comments(
             owner, repo, pr_info.number
@@ -539,7 +537,6 @@ class CopilotCommentHandler:
         successful_dismissals = 0
         thread_resolutions = 0
 
-        # Process reviews with appropriate strategy per type
         for review in unresolved_reviews:
             if self.debug:
                 self.log.info(
@@ -660,7 +657,7 @@ class CopilotCommentHandler:
             copilot_comments = []
 
             for comment in all_comments:
-                author = comment.get("user", {}).get("login", "")
+                author = (comment.get("user") or {}).get("login", "")
                 # Check if comment is from Copilot
                 if is_copilot(author):
                     copilot_comments.append(comment)
@@ -694,8 +691,6 @@ class CopilotCommentHandler:
             return True
 
         try:
-            # Individual comment resolution is now handled via GraphQL thread resolution
-            # This method is deprecated in favor of resolve_copilot_threads_for_commented_review
             self.log.info(
                 f"ℹ️ Individual comment {comment.get('id')} handled via comprehensive thread resolution"
             )

@@ -97,7 +97,6 @@ class DependamergeError(Exception):
 
     def display_and_exit(self) -> NoReturn:
         """Display the error message and exit with the appropriate code."""
-        # Log the error with details
         if self.original_exception:
             log.error(
                 "Exit code %d: %s (Exception: %s)",
@@ -233,7 +232,6 @@ def is_github_api_permission_error(exception: Exception) -> bool:
     """
     error_str = str(exception).lower()
 
-    # Check for specific GitHub API error patterns
     github_permission_patterns = [
         "resource not accessible by integration",
         "bad credentials",
@@ -262,7 +260,6 @@ def is_network_error(exception: Exception) -> bool:
     """
     error_str = str(exception).lower()
 
-    # Check for network-related error patterns
     network_patterns = [
         "network is unreachable",
         "connection refused",
@@ -290,7 +287,6 @@ def is_rate_limit_error(exception: Exception) -> bool:
     """
     error_str = str(exception).lower()
 
-    # Check for rate limit patterns
     rate_limit_patterns = [
         "rate limit",
         "api rate limit exceeded",
@@ -377,7 +373,6 @@ def map_exception_to_exit_code(exception: Exception) -> ExitCode:
     Returns:
         Appropriate ExitCode for the exception type
     """
-    # Check for specific error types first
     if is_github_api_permission_error(exception):
         return ExitCode.GITHUB_API_ERROR
 
@@ -387,7 +382,6 @@ def map_exception_to_exit_code(exception: Exception) -> ExitCode:
     if is_rate_limit_error(exception):
         return ExitCode.GITHUB_API_ERROR
 
-    # Check exception types from dependamerge modules
     exception_type = type(exception).__name__
 
     if "GitError" in exception_type:

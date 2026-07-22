@@ -25,7 +25,6 @@ class PRComparator:
         reasons = []
         scores = []
 
-        # Check automation requirements based on mode
         if only_automation:
             # Both PRs must be from automation tools
             if not self._is_automation_pr(source_pr) or not self._is_automation_pr(
@@ -114,22 +113,19 @@ class PRComparator:
 
     def _normalize_title(self, title: str) -> str:
         """Normalize title by removing version-specific information."""
-        # Remove version numbers like 1.2.3, v1.2.3, etc.
         title = re.sub(r"v?\d+\.\d+\.\d+(?:\.\d+)?(?:-[a-zA-Z0-9]+)?", "", title)
-        # Remove commit hashes
         title = re.sub(r"\b[a-f0-9]{7,40}\b", "", title)
-        # Remove dates
         title = re.sub(r"\d{4}-\d{2}-\d{2}", "", title)
-        # Normalize whitespace
         title = " ".join(title.split())
         return title.lower()
 
-    def _compare_file_changes(self, files1: list[FileChange], files2: list[FileChange]) -> float:
+    def _compare_file_changes(
+        self, files1: list[FileChange], files2: list[FileChange]
+    ) -> float:
         """Compare file changes between PRs."""
         if not files1 or not files2:
             return 0.0
 
-        # Extract filenames and normalize paths
         filenames1 = {self._normalize_filename(f.filename) for f in files1}
         filenames2 = {self._normalize_filename(f.filename) for f in files2}
 
@@ -150,7 +146,6 @@ class PRComparator:
 
     def _normalize_filename(self, filename: str) -> str:
         """Normalize filename for comparison."""
-        # Remove version-specific parts from filenames
         filename = re.sub(r"v?\d+\.\d+\.\d+(?:\.\d+)?", "", filename)
         return filename.lower()
 
@@ -175,9 +170,7 @@ class PRComparator:
             match = re.search(pattern, title_lower)
             if match:
                 package = match.group(1)
-                # Clean up the package name
                 package = package.strip()
-                # Remove common prefixes that might vary
                 package = re.sub(r'^["\']|["\']$', "", package)  # Remove quotes
                 return package
 
@@ -196,7 +189,6 @@ class PRComparator:
         if len(normalized1) < 50 or len(normalized2) < 50:
             return 1.0 if normalized1 == normalized2 else 0.0
 
-        # Check for specific automation patterns
         automation_score = self._compare_automation_patterns(body1, body2)
         if automation_score > 0:
             return automation_score
@@ -215,19 +207,14 @@ class PRComparator:
         # Remove URLs (they often contain version-specific paths)
         body = re.sub(r"https?://[^\s]+", "", body)
 
-        # Remove version numbers
         body = re.sub(r"v?\d+\.\d+\.\d+(?:\.\d+)?(?:-[a-zA-Z0-9.-]+)?", "VERSION", body)
 
-        # Remove commit hashes
         body = re.sub(r"\b[a-f0-9]{7,40}\b", "COMMIT", body)
 
-        # Remove dates
         body = re.sub(r"\d{4}-\d{2}-\d{2}", "DATE", body)
 
-        # Remove specific numbers that might be build/PR numbers
         body = re.sub(r"#\d+", "#NUMBER", body)
 
-        # Normalize whitespace
         body = re.sub(r"\s+", " ", body).strip()
 
         return body
@@ -242,7 +229,6 @@ class PRComparator:
 
         # Dependabot patterns
         if self._is_dependabot_body(body1) and self._is_dependabot_body(body2):
-            # Extract package information from both bodies
             package1 = self._extract_dependabot_package(body1)
             package2 = self._extract_dependabot_package(body2)
 

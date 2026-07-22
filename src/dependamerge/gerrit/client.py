@@ -48,9 +48,7 @@ _TRANSIENT_ERR_SUBSTRINGS: Final[tuple[str, ...]] = (
     "gateway timeout",
 )
 
-_RETRYABLE_HTTP_CODES: Final[frozenset[int]] = frozenset(
-    {429, 500, 502, 503, 504}
-)
+_RETRYABLE_HTTP_CODES: Final[frozenset[int]] = frozenset({429, 500, 502, 503, 504})
 
 
 class GerritRestError(RuntimeError):
@@ -118,7 +116,6 @@ def _extract_status_code(exc: Exception) -> int | None:
         status_code = getattr(response, "status_code", None)
         if status_code is not None:
             return int(status_code)
-    # Check string representation for status codes
     exc_str = str(exc)
     for code in (401, 403, 404, 429, 500, 502, 503, 504):
         if str(code) in exc_str:
@@ -163,7 +160,6 @@ class GerritRestClient:
         if auth and auth[0] and auth[1]:
             self._auth = _Auth(auth[0], auth[1])
 
-        # Build pygerrit2 client
         if self._auth is not None:
             self._client = GerritRestAPI(
                 url=self._base_url,
@@ -314,7 +310,6 @@ class GerritRestClient:
                 raise
             except Exception as exc:
                 last_exception = exc
-                # Check for transient network errors
                 if _is_transient_error(exc):
                     if attempt < self._max_attempts - 1:
                         delay = _calculate_backoff(attempt)
@@ -360,6 +355,7 @@ class GerritRestClient:
         )
 
         try:
+            # aislop-ignore-next-line ai-slop/python-repetitive-dispatch -- each verb has distinct argument handling (data payload for POST/PUT)
             if method == "GET":
                 return self._client.get(api_path, timeout=self._timeout)
             elif method == "POST":
@@ -376,7 +372,6 @@ class GerritRestClient:
                 raise GerritRestError(f"Unsupported HTTP method: {method}")
 
         except RequestException as exc:
-            # Handle requests exceptions from pygerrit2
             status_code = _extract_status_code(exc)
             exc_str = str(exc).lower()
 
@@ -402,7 +397,6 @@ class GerritRestClient:
             ) from exc
 
         except Exception as exc:
-            # Handle any other exceptions
             exc_str = str(exc).lower()
             if "401" in exc_str or "unauthorized" in exc_str:
                 raise GerritAuthError(
@@ -462,10 +456,10 @@ def build_client(
     Returns:
         A configured GerritRestClient instance.
     """
-    # Build base URL
     if base_path:
         base_url = f"https://{host}/{base_path.strip('/')}/"
     else:
+        # aislop-ignore-next-line ai-slop/hardcoded-url -- host is caller-supplied
         base_url = f"https://{host}/"
 
     # Start with explicit credentials if provided

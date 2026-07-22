@@ -1936,6 +1936,10 @@ def _handle_gerrit_merge(
         else:
             expected_sha = _generate_gerrit_override_sha(source_change)
             if not override:
+                subject = source_change.subject.strip()
+                subject_preview = (
+                    subject if len(subject) <= 50 else f"{subject[:50]}..."
+                )
                 console.print("Source change is not from a recognized automation tool.")
                 console.print(
                     "To submit this and similar changes, run again with: "
@@ -1944,7 +1948,7 @@ def _handle_gerrit_merge(
                 console.print(
                     f"This SHA is based on the owner "
                     f"'{source_change.owner}' and subject "
-                    f"'{source_change.subject[:50]}...'",
+                    f"'{subject_preview}'",
                     style="dim",
                 )
                 raise typer.Exit(0)

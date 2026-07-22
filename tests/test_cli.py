@@ -669,6 +669,8 @@ class TestCLI:
         assert "Source change is not from a recognized automation tool" in output
         assert "--override" in output
         assert "human-user" in output
+        assert "'CI: Bump github2gerrit workflow to v1.4.3'" in output
+        assert "'CI: Bump github2gerrit workflow to v1.4.3...'" not in output
         service.find_similar_changes.assert_not_called()
 
     @patch("dependamerge.cli.create_gerrit_comparator")

@@ -91,9 +91,9 @@ class GerritChangeComparator:
                 return GerritComparisonResult.not_similar(
                     "One or both changes are not from automation tools"
                 )
-        elif self._normalize_owner(source_change.owner) != self._normalize_owner(
-            target_change.owner
-        ):
+        elif self._normalize_owner_identity(
+            source_change.owner
+        ) != self._normalize_owner_identity(target_change.owner):
             return GerritComparisonResult.not_similar(
                 "Change owner does not match source owner"
             )
@@ -216,6 +216,15 @@ class GerritChangeComparator:
                 break
 
         return normalized
+
+    def _normalize_owner_identity(self, owner: str) -> str:
+        """
+        Normalize owner identity for hard same-owner gates.
+
+        Unlike similarity scoring, this preserves bot suffixes so distinct
+        Gerrit accounts like "alice" and "alice-bot" do not collapse together.
+        """
+        return owner.lower().strip() if owner else ""
 
     def _compare_subjects(self, subject1: str, subject2: str) -> float:
         """

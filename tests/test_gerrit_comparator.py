@@ -580,7 +580,7 @@ class TestCompareGerritChanges:
             update={
                 "number": 2,
                 "change_id": "I2",
-                "owner": "other-human",
+                "owner": "human-user-bot",
             }
         )
 

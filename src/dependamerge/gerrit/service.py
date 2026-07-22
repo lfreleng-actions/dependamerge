@@ -696,10 +696,19 @@ class GerritService:
         source: GerritChangeInfo,
         target: GerritChangeInfo,
     ) -> bool:
-        """Return True when normalized Gerrit change owners differ."""
-        return self._normalize_owner(source.owner) != self._normalize_owner(
-            target.owner
+        """Return True when Gerrit change owner identities differ."""
+        return self._normalize_owner_identity(source.owner) != (
+            self._normalize_owner_identity(target.owner)
         )
+
+    def _normalize_owner_identity(self, owner: str) -> str:
+        """
+        Normalize owner identity for hard same-owner gates.
+
+        This preserves bot suffixes so distinct Gerrit accounts like "alice"
+        and "alice-bot" do not collapse together.
+        """
+        return owner.lower().strip() if owner else ""
 
     def _normalize_owner(self, owner: str) -> str:
         """Normalize owner name using the Gerrit comparator rules."""

@@ -666,7 +666,7 @@ class TestGerritServiceFindSimilarChanges:
                 "subject": "CI: Bump github2gerrit workflow to v1.4.3",
                 "branch": "main",
                 "status": "NEW",
-                "owner": {"username": "other-human"},
+                "owner": {"username": "human-user-bot"},
                 "current_revision": "rev2",
                 "revisions": {
                     "rev2": {
@@ -794,7 +794,7 @@ class TestGerritServiceBasicCompare:
             update={
                 "number": 2,
                 "change_id": "I2",
-                "owner": "other-human",
+                "owner": "human-user-bot",
             }
         )
 

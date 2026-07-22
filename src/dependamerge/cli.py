@@ -1936,6 +1936,7 @@ def _handle_gerrit_merge(
         else:
             expected_sha = _generate_gerrit_override_sha(source_change)
             if not override:
+                owner = source_change.owner.strip()
                 subject = source_change.subject.strip()
                 subject_preview = (
                     subject if len(subject) <= 50 else f"{subject[:50]}..."
@@ -1947,7 +1948,7 @@ def _handle_gerrit_merge(
                 )
                 console.print(
                     f"This SHA is based on the owner "
-                    f"'{source_change.owner}' and subject "
+                    f"'{owner}' and subject "
                     f"'{subject_preview}'",
                     style="dim",
                 )

@@ -625,7 +625,7 @@ class TestCLI:
             change_id="I123",
             project="proj",
             subject="CI: Bump github2gerrit workflow to v1.4.3",
-            owner="human-user",
+            owner=" human-user ",
             branch="main",
             status="NEW",
             permitted_labels={"Code-Review": ["-2", "-1", "0", "+1", "+2"]},
@@ -669,6 +669,7 @@ class TestCLI:
         assert "Source change is not from a recognized automation tool" in output
         assert "--override" in output
         assert "human-user" in output
+        assert "' human-user '" not in output
         assert "'CI: Bump github2gerrit workflow to v1.4.3'" in output
         assert "'CI: Bump github2gerrit workflow to v1.4.3...'" not in output
         service.find_similar_changes.assert_not_called()

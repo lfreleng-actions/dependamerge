@@ -165,7 +165,7 @@ def _generate_gerrit_override_sha(change: GerritChangeInfo) -> str:
     Returns:
         SHA256 hash string
     """
-    combined_data = f"{change.owner}:{change.subject.strip()}"
+    combined_data = f"{change.owner.strip()}:{change.subject.strip()}"
     sha_hash = hashlib.sha256(combined_data.encode("utf-8")).hexdigest()
     return sha_hash[:16]
 

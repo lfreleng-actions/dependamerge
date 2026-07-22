@@ -597,7 +597,7 @@ class TestCLI:
             change_id="I123",
             project="proj",
             subject=" CI: Bump github2gerrit workflow to v1.4.3 ",
-            owner="human-user",
+            owner=" human-user ",
             branch="main",
             status="NEW",
         )

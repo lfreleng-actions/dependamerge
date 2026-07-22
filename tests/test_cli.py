@@ -705,7 +705,7 @@ class TestCLI:
             verbose=False,
             console=console,
             dry_run=True,
-            override=_generate_gerrit_override_sha(change),
+            override=f" {_generate_gerrit_override_sha(change).upper()} ",
         )
 
         output = console.export_text()

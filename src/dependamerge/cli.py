@@ -144,7 +144,7 @@ def _generate_override_sha(
         commit_message_first_line: First line of the commit message to use as salt
 
     Returns:
-        SHA256 hash string
+        First 16 hex characters of a SHA256 hash string.
     """
     # Create a string combining author info and commit message first line
     combined_data = f"{pr_info.author}:{commit_message_first_line.strip()}"
@@ -1953,7 +1953,7 @@ def _handle_gerrit_merge(
                 )
                 raise typer.Exit(0)
 
-            if override != expected_sha:
+            if override.strip().lower() != expected_sha:
                 exit_with_error(
                     ExitCode.VALIDATION_ERROR,
                     message="❌ Invalid override SHA provided",

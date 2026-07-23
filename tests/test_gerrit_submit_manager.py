@@ -308,8 +308,11 @@ class TestSubmitSingleChange:
         )
 
         assert result.success is True
-        assert result.reviewed is True
-        assert result.submitted is True
+        # A dry run performs no review or submit, so it must not claim
+        # either happened: callers gate real side effects (e.g. closing
+        # the GitHub PR after a Gerrit submit) on ``submitted``.
+        assert result.reviewed is False
+        assert result.submitted is False
         # No actual API calls should be made
         mock_client.post.assert_not_called()
 

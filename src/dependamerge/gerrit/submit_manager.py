@@ -272,11 +272,16 @@ class GerritSubmitManager:
                 change.project,
                 change.number,
             )
+            # A dry run performs no review or submit, so report the
+            # simulated success with reviewed/submitted left False.
+            # Callers gate real side effects on ``submitted`` (e.g.
+            # closing the corresponding GitHub PR after a Gerrit
+            # submit), so a dry run must never claim it submitted.
             return GerritSubmitResult.success_result(
                 change_number=change.number,
                 project=change.project,
-                reviewed=True,
-                submitted=True,
+                reviewed=False,
+                submitted=False,
                 duration=time.time() - start_time,
             )
 

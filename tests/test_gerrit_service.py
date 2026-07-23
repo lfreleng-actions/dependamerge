@@ -476,6 +476,50 @@ class TestGerritServiceGetChangesByTopic:
         assert "topic:my-topic" in call_args
         assert "status:merged" in call_args
 
+    @patch("dependamerge.gerrit.service.build_client")
+    @patch("dependamerge.gerrit.service.create_url_builder")
+    def test_get_changes_by_topic_quotes_whitespace(
+        self,
+        mock_url_builder,
+        mock_build_client,
+        mock_client,
+        sample_change_data,
+    ):
+        """Test topics containing whitespace are quoted in the query.
+
+        parse_gerrit_topic_url() unquotes topics like topic:"some
+        topic", so the service must re-quote them or the bare value
+        splits into separate Gerrit query terms.
+        """
+        mock_build_client.return_value = mock_client
+        mock_client.get.return_value = [sample_change_data]
+
+        service = GerritService(host="gerrit.example.org")
+        service.get_changes_by_topic("some topic")
+
+        call_args = mock_client.get.call_args[0][0]
+        assert 'topic:"some topic"' in call_args
+        assert "status:open" in call_args
+
+    @patch("dependamerge.gerrit.service.build_client")
+    @patch("dependamerge.gerrit.service.create_url_builder")
+    def test_get_changes_by_topic_escapes_quotes(
+        self,
+        mock_url_builder,
+        mock_build_client,
+        mock_client,
+        sample_change_data,
+    ):
+        """Test embedded quotes in a topic are escaped when quoting."""
+        mock_build_client.return_value = mock_client
+        mock_client.get.return_value = [sample_change_data]
+
+        service = GerritService(host="gerrit.example.org")
+        service.get_changes_by_topic('odd"topic')
+
+        call_args = mock_client.get.call_args[0][0]
+        assert 'topic:"odd\\"topic"' in call_args
+
 
 class TestGerritServiceGetProjects:
     """Tests for get_projects method."""

@@ -167,26 +167,37 @@ class GerritSubmitManager:
         if not changes:
             return []
 
-        # Use ThreadPoolExecutor for parallel execution
+        # Use ThreadPoolExecutor for parallel execution.  Keep each
+        # future paired with its change so an unexpected worker error
+        # can still be attributed to the right change in the results
+        # (and mapped back to a URL in the final failure recap).
         with ThreadPoolExecutor(max_workers=self._max_workers) as executor:
             futures = [
-                executor.submit(
-                    self._submit_with_tracking, change, review_labels, dry_run
+                (
+                    executor.submit(
+                        self._submit_with_tracking, change, review_labels, dry_run
+                    ),
+                    change,
                 )
                 for change, _comparison in changes
             ]
 
             results = []
-            for future in futures:
+            for future, change in futures:
                 try:
                     result = future.result()
                     results.append(result)
                 except Exception as exc:
-                    log.error("Unexpected error in parallel submit: %s", exc)
+                    log.error(
+                        "Unexpected error in parallel submit for %s #%d: %s",
+                        change.project,
+                        change.number,
+                        exc,
+                    )
                     results.append(
                         GerritSubmitResult.failure_result(
-                            change_number=0,
-                            project="unknown",
+                            change_number=change.number,
+                            project=change.project,
                             error=str(exc),
                         )
                     )

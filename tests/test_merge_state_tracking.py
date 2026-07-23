@@ -133,6 +133,36 @@ class TestTerminalCounters:
         dummy.merge_pending("org/repo#1")
         dummy.increment_closed("org/repo#1")
 
+    def test_concurrent_outcomes_lose_no_increments(self) -> None:
+        """Counter updates from worker threads are never lost.
+
+        The Gerrit submit manager records outcomes from a
+        ThreadPoolExecutor, so the tracker must serialise its
+        mutations: each thread walks a PR through a transitory state
+        and a terminal outcome, and every increment must survive.
+        """
+        from concurrent.futures import ThreadPoolExecutor
+
+        tracker = MergeProgressTracker("org")
+        total = 64
+        tracker.set_total_prs(total)
+
+        def _submit_one(index: int) -> None:
+            key = f"org/repo#{index}"
+            tracker.track_pr_state(key, "submitting")
+            if index % 2 == 0:
+                tracker.merge_success(key)
+            else:
+                tracker.merge_failure(key)
+
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            list(executor.map(_submit_one, range(total)))
+
+        assert tracker.prs_merged == total // 2
+        assert tracker.prs_failed == total // 2
+        assert tracker.completed_prs == total
+        assert tracker._pr_states == {}
+
 
 class TestDisplayRendering:
     """Stats line renders transitory states then terminal counters."""
@@ -140,10 +170,11 @@ class TestDisplayRendering:
     def test_states_render_in_pipeline_order(self) -> None:
         tracker = MergeProgressTracker("org")
         tracker.rich_available = True
-        tracker.set_total_prs(6)
+        tracker.set_total_prs(7)
         tracker.track_pr_state("org/repo#1", "waiting")
         tracker.track_pr_state("org/repo#2", "rebasing")
         tracker.track_pr_state("org/repo#3", "rebased")
+        tracker.track_pr_state("org/repo#7", "submitting")
         tracker.merge_success("org/repo#4")
         tracker.merge_pending("org/repo#5")
         tracker.merge_failure("org/repo#6")
@@ -152,13 +183,15 @@ class TestDisplayRendering:
         assert "🔄 Rebasing: 1" in plain
         assert "⬆️ Rebased: 1" in plain
         assert "⏳ Waiting: 1" in plain
+        assert "📤 Submitting: 1" in plain
         assert "✅ Merged: 1" in plain
         assert "🤖 Pending: 1" in plain
         assert "❌ Failed: 1" in plain
         # Pipeline order: transitory states precede terminal counters.
         assert plain.index("Rebasing") < plain.index("Rebased")
         assert plain.index("Rebased") < plain.index("Waiting")
-        assert plain.index("Waiting") < plain.index("Merged")
+        assert plain.index("Waiting") < plain.index("Submitting")
+        assert plain.index("Submitting") < plain.index("Merged")
 
     def test_zero_counters_do_not_render(self) -> None:
         tracker = MergeProgressTracker("org")

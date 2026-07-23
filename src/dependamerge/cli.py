@@ -2231,6 +2231,10 @@ def _handle_gerrit_merge(
         # and terminal states against this tracker while the parallel
         # submission runs, and failures are recapped afterwards by
         # _print_gerrit_final_summary instead of interleaved lines.
+        # The tracker is created (unstarted) before the submit manager
+        # so it can be handed over, but only started inside the
+        # try/finally so it is always stopped, even when submission
+        # setup or the run itself raises.
         progress_tracker: MergeProgressTracker | None = None
         if show_progress:
             progress_tracker = MergeProgressTracker(
@@ -2240,7 +2244,6 @@ def _handle_gerrit_merge(
                 unit_label="changes",
             )
             progress_tracker.set_total_prs(len(all_changes))
-            progress_tracker.start()
 
         submit_manager = create_submit_manager(
             host=parsed_url.host,
@@ -2251,6 +2254,8 @@ def _handle_gerrit_merge(
         )
 
         try:
+            if progress_tracker is not None:
+                progress_tracker.start()
             results = submit_manager.submit_changes_parallel(all_changes)
         finally:
             if progress_tracker is not None:

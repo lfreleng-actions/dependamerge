@@ -445,10 +445,19 @@ class GerritService:
         if options is None:
             options = DEFAULT_LIST_OPTIONS
 
+        # Topics containing whitespace (or quotes) must be quoted in
+        # Gerrit query syntax, otherwise the bare value splits into
+        # separate query terms and the search silently matches nothing
+        # useful.  Plain topics stay unquoted.
+        topic_term = f"topic:{topic}"
+        if '"' in topic or any(ch.isspace() for ch in topic):
+            escaped = topic.replace("\\", "\\\\").replace('"', '\\"')
+            topic_term = f'topic:"{escaped}"'
+
         if include_merged:
-            query = f"topic:{topic} (status:open OR status:merged)"
+            query = f"{topic_term} (status:open OR status:merged)"
         else:
-            query = f"topic:{topic} status:open"
+            query = f"{topic_term} status:open"
 
         return self._query_changes(query, limit, 0, options)
 

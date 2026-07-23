@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import logging
 import sys
+import threading
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -479,11 +480,14 @@ class MergeProgressTracker(ProgressTracker):
 
     # Transitory display states in pipeline order.  Each entry is
     # ``(state_key, display_label)``; only non-zero states render.
+    # ``submitting`` is recorded by the Gerrit submit manager while a
+    # change's review + submit round-trips run.
     _STATE_ORDER: tuple[tuple[str, str], ...] = (
         ("rebasing", "🔄 Rebasing"),
         ("rebased", "⬆️ Rebased"),
         ("recreating", "♻️ Recreating"),
         ("waiting", "⏳ Waiting"),
+        ("submitting", "📤 Submitting"),
     )
 
     def __init__(
@@ -540,10 +544,17 @@ class MergeProgressTracker(ProgressTracker):
         # Transitory per-PR display states: pr_key -> state key from
         # ``_STATE_ORDER``.  Terminal outcomes remove the entry.
         self._pr_states: dict[str, str] = {}
+        # Counter and state mutations may arrive from worker threads
+        # (the Gerrit submit manager records outcomes from a
+        # ThreadPoolExecutor) while Rich's refresh thread renders the
+        # display, so both mutation and the render-time snapshot are
+        # guarded by this re-entrant lock.
+        self._state_lock = threading.RLock()
 
     def found_similar_pr(self, count: int = 1) -> None:
         """Update count of similar PRs found."""
-        self.similar_prs_found += count
+        with self._state_lock:
+            self.similar_prs_found += count
         self._refresh_display()
 
     def set_total_prs(self, total: int) -> None:
@@ -552,7 +563,8 @@ class MergeProgressTracker(ProgressTracker):
         When set, the progress display switches from repo-level
         to PR-level progress (e.g. ``3/9 PRs, 33%``).
         """
-        self.total_prs = total
+        with self._state_lock:
+            self.total_prs = total
         self._refresh_display()
 
     def track_pr_state(self, pr_key: str, state: str | None) -> None:
@@ -567,16 +579,19 @@ class MergeProgressTracker(ProgressTracker):
         transitory entry when given the PR key.
         """
         if state is None:
-            self._pr_states.pop(pr_key, None)
+            with self._state_lock:
+                self._pr_states.pop(pr_key, None)
         else:
-            self._pr_states[pr_key] = state
+            with self._state_lock:
+                self._pr_states[pr_key] = state
         self._refresh_display()
 
     def _finish_pr(self, pr_key: str | None) -> None:
         """Shared terminal-outcome bookkeeping.
 
         Clears the PR's transitory state (when a key is supplied) and
-        advances PR-level completion progress.
+        advances PR-level completion progress.  Callers must hold
+        ``_state_lock``.
         """
         if pr_key is not None:
             self._pr_states.pop(pr_key, None)
@@ -585,14 +600,16 @@ class MergeProgressTracker(ProgressTracker):
 
     def merge_success(self, pr_key: str | None = None) -> None:
         """Record a successful merge."""
-        self._finish_pr(pr_key)
-        self.prs_merged += 1
+        with self._state_lock:
+            self._finish_pr(pr_key)
+            self.prs_merged += 1
         self._refresh_display()
 
     def merge_failure(self, pr_key: str | None = None) -> None:
         """Record a failed merge."""
-        self._finish_pr(pr_key)
-        self.prs_failed += 1
+        with self._state_lock:
+            self._finish_pr(pr_key)
+            self.prs_failed += 1
         self._refresh_display()
 
     def merge_skipped(self, pr_key: str | None = None) -> None:
@@ -603,14 +620,16 @@ class MergeProgressTracker(ProgressTracker):
         by us.  Tracked separately so the final summary can show
         a non-zero ⏭️ Skipped count alongside Merged / Failed.
         """
-        self._finish_pr(pr_key)
-        self.prs_skipped += 1
+        with self._state_lock:
+            self._finish_pr(pr_key)
+            self.prs_skipped += 1
         self._refresh_display()
 
     def merge_blocked(self, pr_key: str | None = None) -> None:
         """Record a PR that is blocked and cannot merge in this run."""
-        self._finish_pr(pr_key)
-        self.prs_blocked += 1
+        with self._state_lock:
+            self._finish_pr(pr_key)
+            self.prs_blocked += 1
         self._refresh_display()
 
     def merge_pending(self, pr_key: str | None = None) -> None:
@@ -620,14 +639,16 @@ class MergeProgressTracker(ProgressTracker):
         pass; from this run's perspective the PR is terminal but
         neither merged nor failed.
         """
-        self._finish_pr(pr_key)
-        self.prs_pending += 1
+        with self._state_lock:
+            self._finish_pr(pr_key)
+            self.prs_pending += 1
         self._refresh_display()
 
     def increment_closed(self, pr_key: str | None = None) -> None:
         """Record a successful close."""
-        self._finish_pr(pr_key)
-        self.prs_closed += 1
+        with self._state_lock:
+            self._finish_pr(pr_key)
+            self.prs_closed += 1
         self._refresh_display()
 
     def pr_completed(self) -> None:
@@ -639,8 +660,9 @@ class MergeProgressTracker(ProgressTracker):
         progress percentage accurate for terminal states that no
         counter method covers.
         """
-        if self.total_prs > 0:
-            self.completed_prs += 1
+        with self._state_lock:
+            if self.total_prs > 0:
+                self.completed_prs += 1
         self._refresh_display()
 
     def _generate_display_text(self) -> Any:
@@ -657,17 +679,36 @@ class MergeProgressTracker(ProgressTracker):
         )
         label = self._custom_label or default_label
 
+        # Snapshot every counter guarded by _state_lock in one
+        # acquisition (together with the per-PR states) before
+        # rendering.  This method runs on Rich's refresh thread while
+        # worker threads mutate these fields, so reading them
+        # individually could otherwise observe a mixed snapshot (or,
+        # worst case, see total_prs flip to 0 between the guard and the
+        # division and raise ZeroDivisionError).
+        with self._state_lock:
+            total_prs = self.total_prs
+            completed_prs = self.completed_prs
+            similar_prs_found = self.similar_prs_found
+            prs_merged = self.prs_merged
+            prs_pending = self.prs_pending
+            prs_closed = self.prs_closed
+            prs_failed = self.prs_failed
+            prs_skipped = self.prs_skipped
+            prs_blocked = self.prs_blocked
+            pr_states = list(self._pr_states.values())
+
         # Main progress line for merge/close operations.
         # PR-level progress takes priority over repo-level progress
         # so repo-scoped merges show "3/9 PRs" instead of "0/1 repos".
-        if self.total_prs > 0:
-            progress_pct = (self.completed_prs / self.total_prs) * 100
+        if total_prs > 0:
+            progress_pct = (completed_prs / total_prs) * 100
             default_icon = "🚪" if self.is_close_operation else "🔀"
             icon = self._custom_icon or default_icon
             text.append(f"{icon} {label} in ", style="bold blue")
             text.append(f"{self.organization} ", style="bold cyan")
             text.append(
-                f"({self.completed_prs}/{self.total_prs} {self.unit_label}, ",
+                f"({completed_prs}/{total_prs} {self.unit_label}, ",
                 style="dim",
             )
             text.append(f"{progress_pct:.0f}%", style="bold green")
@@ -695,12 +736,13 @@ class MergeProgressTracker(ProgressTracker):
             text.append(f"\n   {self.current_operation}", style="dim")
 
         # Merge stats — transitory pipeline states first (in flow
-        # order), then terminal outcomes.
+        # order), then terminal outcomes.  The per-PR states and the
+        # counters below were snapshotted under _state_lock above.
         stats_parts: list[str] = []
-        if self.similar_prs_found > 0:
-            stats_parts.append(f"🔁 Similar: {self.similar_prs_found}")
+        if similar_prs_found > 0:
+            stats_parts.append(f"🔁 Similar: {similar_prs_found}")
         state_counts: dict[str, int] = {}
-        for pr_state in self._pr_states.values():
+        for pr_state in pr_states:
             state_counts[pr_state] = state_counts.get(pr_state, 0) + 1
         for state_key, label in self._STATE_ORDER:
             count = state_counts.get(state_key, 0)
@@ -715,22 +757,22 @@ class MergeProgressTracker(ProgressTracker):
                 stats_parts.append(
                     f"{state_key.capitalize()}: {state_counts[state_key]}"
                 )
-        if self.prs_merged > 0:
+        if prs_merged > 0:
             # A preview run merges nothing — the counter records PRs
             # judged mergeable, so label it accordingly.
-            merged_label = "\u2705 Mergeable" if self.preview else "\u2705 Merged"
-            stats_parts.append(f"{merged_label}: {self.prs_merged}")
-        if self.prs_pending > 0:
-            stats_parts.append(f"\U0001f916 Pending: {self.prs_pending}")
-        if self.prs_closed > 0:
-            stats_parts.append(f"\U0001f6aa Closed: {self.prs_closed}")
-        if self.prs_failed > 0:
-            failed_label = "\u274c Would fail" if self.preview else "\u274c Failed"
-            stats_parts.append(f"{failed_label}: {self.prs_failed}")
-        if self.prs_skipped > 0:
-            stats_parts.append(f"⏭️ Skipped: {self.prs_skipped}")
-        if self.prs_blocked > 0:
-            stats_parts.append(f"🛑 Blocked: {self.prs_blocked}")
+            merged_label = "✅ Mergeable" if self.preview else "✅ Merged"
+            stats_parts.append(f"{merged_label}: {prs_merged}")
+        if prs_pending > 0:
+            stats_parts.append(f"\U0001f916 Pending: {prs_pending}")
+        if prs_closed > 0:
+            stats_parts.append(f"\U0001f6aa Closed: {prs_closed}")
+        if prs_failed > 0:
+            failed_label = "❌ Would fail" if self.preview else "❌ Failed"
+            stats_parts.append(f"{failed_label}: {prs_failed}")
+        if prs_skipped > 0:
+            stats_parts.append(f"⏭️ Skipped: {prs_skipped}")
+        if prs_blocked > 0:
+            stats_parts.append(f"🛑 Blocked: {prs_blocked}")
 
         if stats_parts:
             text.append(f"\n   {' | '.join(stats_parts)}", style="dim")

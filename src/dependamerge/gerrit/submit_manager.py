@@ -34,7 +34,7 @@ from dependamerge.gerrit.models import (
 )
 
 if TYPE_CHECKING:
-    from dependamerge.progress_tracker import ProgressTracker
+    from dependamerge.progress_tracker import MergeProgressTracker
 
 
 log = logging.getLogger("dependamerge.gerrit.submit_manager")
@@ -69,7 +69,7 @@ class GerritSubmitManager:
         password: str | None = None,
         timeout: float = 30.0,
         max_workers: int = 5,
-        progress_tracker: ProgressTracker | None = None,
+        progress_tracker: MergeProgressTracker | None = None,
     ) -> None:
         """
         Initialize the submit manager.
@@ -139,7 +139,7 @@ class GerritSubmitManager:
         results: list[GerritSubmitResult] = []
 
         for change, _comparison in changes:
-            result = self._submit_single_change(change, review_labels, dry_run)
+            result = self._submit_with_tracking(change, review_labels, dry_run)
             results.append(result)
 
         return results
@@ -171,7 +171,7 @@ class GerritSubmitManager:
         with ThreadPoolExecutor(max_workers=self._max_workers) as executor:
             futures = [
                 executor.submit(
-                    self._submit_single_change, change, review_labels, dry_run
+                    self._submit_with_tracking, change, review_labels, dry_run
                 )
                 for change, _comparison in changes
             ]
@@ -192,6 +192,41 @@ class GerritSubmitManager:
                     )
 
         return results
+
+    def _submit_with_tracking(
+        self,
+        change: GerritChangeInfo,
+        review_labels: dict[str, int],
+        dry_run: bool,
+    ) -> GerritSubmitResult:
+        """Submit a single change while driving the progress tracker.
+
+        Mirrors the GitHub merge pipeline's tracker protocol: the
+        change enters a transitory ``submitting`` display state while
+        the review + submit round-trips run, then records a terminal
+        ``merge_success`` / ``merge_failure`` outcome (which also
+        clears the transitory entry and advances completion progress).
+        No-op when no tracker was supplied.
+        """
+        tracker = self._progress_tracker
+        change_key = f"{change.project}#{change.number}"
+        if tracker is not None:
+            tracker.track_pr_state(change_key, "submitting")
+        try:
+            result = self._submit_single_change(change, review_labels, dry_run)
+        except Exception:
+            # _submit_single_change catches expected errors; anything
+            # escaping is unexpected, but the tracker entry must not
+            # be left dangling in the transitory state.
+            if tracker is not None:
+                tracker.merge_failure(change_key)
+            raise
+        if tracker is not None:
+            if result.success:
+                tracker.merge_success(change_key)
+            else:
+                tracker.merge_failure(change_key)
+        return result
 
     def _submit_single_change(
         self,
@@ -482,7 +517,7 @@ def create_submit_manager(
     username: str | None = None,
     password: str | None = None,
     max_workers: int = 5,
-    progress_tracker: ProgressTracker | None = None,
+    progress_tracker: MergeProgressTracker | None = None,
 ) -> GerritSubmitManager:
     """
     Factory function to create a GerritSubmitManager.

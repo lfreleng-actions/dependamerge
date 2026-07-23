@@ -12,6 +12,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from dependamerge.gerrit.client import GerritRestError
 from dependamerge.gerrit.models import (
     GerritChangeInfo,
     GerritComparisonResult,
@@ -417,6 +418,117 @@ class TestSubmitChangesParallel:
         results = manager.submit_changes_parallel([])
 
         assert results == []
+
+
+class TestProgressTracking:
+    """Tests for progress tracker integration during submission.
+
+    The submit manager drives the same tracker protocol as the
+    GitHub merge pipeline: a transitory ``submitting`` state while
+    the review + submit round-trips run, then a terminal
+    ``merge_success`` / ``merge_failure`` outcome keyed by
+    ``project#number``.
+    """
+
+    @patch("dependamerge.gerrit.submit_manager.build_client")
+    def test_success_records_submitting_then_success(
+        self, mock_build_client, mock_client, sample_change
+    ):
+        """Test a successful submit drives the tracker states."""
+        mock_build_client.return_value = mock_client
+        mock_client.post.return_value = {}
+        tracker = MagicMock()
+
+        manager = GerritSubmitManager(
+            host="gerrit.example.org",
+            username="user",
+            password="pass",
+            progress_tracker=tracker,
+        )
+
+        results = manager.submit_changes([(sample_change, None)])
+
+        assert results[0].success
+        tracker.track_pr_state.assert_called_once_with("my-project#12345", "submitting")
+        tracker.merge_success.assert_called_once_with("my-project#12345")
+        tracker.merge_failure.assert_not_called()
+
+    @patch("dependamerge.gerrit.submit_manager.build_client")
+    def test_failure_records_merge_failure(
+        self, mock_build_client, mock_client, sample_change
+    ):
+        """Test a failed review drives merge_failure on the tracker."""
+        mock_build_client.return_value = mock_client
+        mock_client.post.side_effect = GerritRestError("boom")
+        tracker = MagicMock()
+
+        manager = GerritSubmitManager(
+            host="gerrit.example.org",
+            username="user",
+            password="pass",
+            progress_tracker=tracker,
+        )
+
+        results = manager.submit_changes([(sample_change, None)])
+
+        assert not results[0].success
+        tracker.merge_failure.assert_called_once_with("my-project#12345")
+        tracker.merge_success.assert_not_called()
+
+    @patch("dependamerge.gerrit.submit_manager.build_client")
+    def test_parallel_submission_drives_tracker_per_change(
+        self, mock_build_client, mock_client
+    ):
+        """Test parallel submission records one outcome per change."""
+        mock_build_client.return_value = mock_client
+        mock_client.post.return_value = {}
+        tracker = MagicMock()
+
+        manager = GerritSubmitManager(
+            host="gerrit.example.org",
+            username="user",
+            password="pass",
+            max_workers=2,
+            progress_tracker=tracker,
+        )
+
+        changes: list[tuple[GerritChangeInfo, GerritComparisonResult | None]] = [
+            (
+                GerritChangeInfo(
+                    number=i,
+                    change_id=f"I{i:040d}",
+                    project="proj",
+                    subject="Test",
+                    owner="bot",
+                    branch="main",
+                    status="NEW",
+                ),
+                None,
+            )
+            for i in range(3)
+        ]
+
+        results = manager.submit_changes_parallel(changes)
+
+        assert all(r.success for r in results)
+        assert tracker.merge_success.call_count == 3
+        assert tracker.track_pr_state.call_count == 3
+
+    @patch("dependamerge.gerrit.submit_manager.build_client")
+    def test_no_tracker_is_a_no_op(self, mock_build_client, mock_client, sample_change):
+        """Test submission works unchanged without a tracker."""
+        mock_build_client.return_value = mock_client
+        mock_client.post.return_value = {}
+
+        manager = GerritSubmitManager(
+            host="gerrit.example.org",
+            username="user",
+            password="pass",
+        )
+
+        results = manager.submit_changes([(sample_change, None)])
+
+        assert results[0].success
 
 
 class TestReviewOnly:

@@ -19,7 +19,7 @@ from dependamerge.cli import (
     _validate_override_sha,
     app,
 )
-from dependamerge.gerrit.models import GerritChangeInfo
+from dependamerge.gerrit.models import GerritChangeInfo, GerritComparisonResult
 from dependamerge.models import PullRequestInfo
 from dependamerge.url_parser import ChangeSource, ParsedUrl
 
@@ -1046,7 +1046,7 @@ class TestCLI:
         mock_confirm.return_value = True
 
         submit_manager = Mock()
-        submit_manager.submit_changes.return_value = []
+        submit_manager.submit_changes_parallel.return_value = []
         mock_create_submit_manager.return_value = submit_manager
 
         console = Console(record=True, width=120)
@@ -1059,7 +1059,7 @@ class TestCLI:
         )
 
         mock_confirm.assert_called_once_with(change, console)
-        submit_manager.submit_changes.assert_called_once()
+        submit_manager.submit_changes_parallel.assert_called_once()
 
     @patch("dependamerge.cli.create_submit_manager")
     @patch("dependamerge.cli._confirm_gerrit_submission")
@@ -1118,6 +1118,60 @@ class TestCLI:
         output = console.export_text()
         assert _generate_gerrit_continue_sha(change) in output
         assert "Test mode detected" in output
+
+    def test_gerrit_final_summary_all_submitted(self):
+        """Test the final summary reports submitted counts inline."""
+        from dependamerge.cli import _print_gerrit_final_summary
+        from dependamerge.gerrit.models import GerritSubmitResult
+
+        changes: list[tuple[GerritChangeInfo, GerritComparisonResult | None]] = [
+            (self._automation_gerrit_change(number=1), None),
+            (self._automation_gerrit_change(number=2), None),
+        ]
+        results = [
+            GerritSubmitResult.success_result(change_number=1, project="proj"),
+            GerritSubmitResult.success_result(change_number=2, project="proj"),
+        ]
+
+        console = Console(record=True, width=120)
+        _print_gerrit_final_summary(results, changes, console)
+
+        output = console.export_text()
+        assert "Final Results: 2 submitted, 0 failed" in output
+        assert "Failed changes" not in output
+
+    def test_gerrit_final_summary_reports_failures_with_urls(self):
+        """Test failed changes are recapped with URL and reason."""
+        from dependamerge.cli import _print_gerrit_final_summary
+        from dependamerge.gerrit.models import GerritSubmitResult
+
+        ok_change = self._automation_gerrit_change(number=1)
+        bad_change = self._automation_gerrit_change(number=2)
+        bad_change.url = "https://gerrit.example.org/c/proj/+/2"
+        changes: list[tuple[GerritChangeInfo, GerritComparisonResult | None]] = [
+            (ok_change, None),
+            (bad_change, None),
+        ]
+        results = [
+            GerritSubmitResult.success_result(change_number=1, project="proj"),
+            GerritSubmitResult.failure_result(
+                change_number=2,
+                project="proj",
+                error="Failed to submit (change may not be submittable)",
+                reviewed=True,
+            ),
+        ]
+
+        console = Console(record=True, width=120)
+        _print_gerrit_final_summary(results, changes, console)
+
+        output = console.export_text()
+        assert (
+            "Final Results: 1 submitted, 1 failed, 1 reviewed (not submitted)" in output
+        )
+        assert "Failed changes:" in output
+        assert "https://gerrit.example.org/c/proj/+/2" in output
+        assert "Failed to submit (change may not be submittable)" in output
 
     @patch("dependamerge.cli.GitHubClient")
     @patch("dependamerge.cli.PRComparator")

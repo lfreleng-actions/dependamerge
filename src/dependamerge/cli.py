@@ -40,6 +40,7 @@ from .gerrit import (
     GerritChangeInfo,
     GerritComparisonResult,
     GerritRestError,
+    GerritSubmitResult,
     create_gerrit_comparator,
     create_gerrit_service,
     create_submit_manager,
@@ -1902,6 +1903,51 @@ def _execute_org_confirmed_merge(
     _print_final_merge_summary(real_results)
 
 
+def _print_gerrit_final_summary(
+    results: list[GerritSubmitResult],
+    all_changes: list[tuple[GerritChangeInfo, GerritComparisonResult | None]],
+    console: Console,
+) -> None:
+    """Print the post-run 🚀 Final Results line and failure recap.
+
+    Mirrors the GitHub ``_print_final_merge_summary`` /
+    ``_print_failed_pr_details`` pair: per-change status lines are
+    not printed while the submission runs (progress is conveyed by
+    the live tracker counters), so this end-of-run report is the
+    only place failure reasons appear.
+
+    Args:
+        results: Submit results, one per attempted change.
+        all_changes: The (change, comparison) tuples that were
+            submitted; used to recover each change's web URL for the
+            failure recap (``GerritSubmitResult`` carries only the
+            project and number).
+        console: Rich console to print to.
+    """
+    submitted = sum(1 for r in results if r.submitted)
+    failed = [r for r in results if not r.success]
+    reviewed_only = sum(1 for r in results if r.reviewed and not r.submitted)
+
+    parts = [f"{submitted} submitted", f"{len(failed)} failed"]
+    if reviewed_only > 0:
+        parts.append(f"{reviewed_only} reviewed (not submitted)")
+    console.print(f"\n🚀 Final Results: {', '.join(parts)}")
+
+    if not failed:
+        return
+    url_by_key = {
+        (change.project, change.number): change.url for change, _ in all_changes
+    }
+    console.print("\n❌ Failed changes:")
+    for result in failed:
+        url = url_by_key.get((result.project, result.change_number)) or (
+            f"{result.project} #{result.change_number}"
+        )
+        reason = result.error or "no reason reported"
+        # markup=False so bracketed reasons are not eaten by Rich.
+        console.print(f"   • {url}\n     {reason}", markup=False)
+
+
 def _handle_gerrit_merge(
     parsed_url: ParsedUrl | ParsedGerritTopicUrl,
     no_confirm: bool,
@@ -1914,6 +1960,7 @@ def _handle_gerrit_merge(
     dry_run: bool = False,
     override: str | None = None,
     topic: str | None = None,
+    show_progress: bool = True,
 ) -> None:
     """
     Handle merge operation for a Gerrit change or topic search URL.
@@ -1934,6 +1981,9 @@ def _handle_gerrit_merge(
         topic: Explicit topic to scope the similar-change search to.
             When omitted, the topic is taken from the search URL (if
             given) or from the source change itself.
+        show_progress: If True, drive a live Rich progress tracker
+            during submission (in-place counters, matching the GitHub
+            merge path) instead of printing per-change status lines.
     """
     # Resolve Gerrit credentials from all sources using centralized function
     try:
@@ -2176,34 +2226,37 @@ def _handle_gerrit_merge(
 
         console.print(f"\n🚀 Submitting {len(all_changes)} changes...")
 
+        # Live in-place progress (same protocol as the GitHub merge
+        # path): the submit manager records each change's transitory
+        # and terminal states against this tracker while the parallel
+        # submission runs, and failures are recapped afterwards by
+        # _print_gerrit_final_summary instead of interleaved lines.
+        progress_tracker: MergeProgressTracker | None = None
+        if show_progress:
+            progress_tracker = MergeProgressTracker(
+                parsed_url.host,
+                operation_label="Submitting changes",
+                operation_icon="▶️",
+                unit_label="changes",
+            )
+            progress_tracker.set_total_prs(len(all_changes))
+            progress_tracker.start()
+
         submit_manager = create_submit_manager(
             host=parsed_url.host,
             base_path=parsed_url.base_path,
             username=credentials.username,
             password=credentials.password,
+            progress_tracker=progress_tracker,
         )
 
-        # Pass the tuples directly (submit_changes expects list of tuples)
-        results = submit_manager.submit_changes(all_changes)
+        try:
+            results = submit_manager.submit_changes_parallel(all_changes)
+        finally:
+            if progress_tracker is not None:
+                progress_tracker.stop()
 
-        # Display results (GerritSubmitResult has success/submitted/error fields)
-        submitted_count = sum(1 for r in results if r.submitted)
-        reviewed_count = sum(1 for r in results if r.reviewed and not r.submitted)
-        failed_count = sum(1 for r in results if not r.success)
-
-        console.print("\n📈 Results:")
-        console.print(f"   ✅ Submitted: {submitted_count}")
-        if reviewed_count > 0:
-            console.print(f"   📝 Reviewed (not submitted): {reviewed_count}")
-        if failed_count > 0:
-            console.print(f"   ❌ Failed: {failed_count}")
-
-        # Show details for failed submissions
-        for result in results:
-            if not result.success:
-                console.print(
-                    f"\n   ❌ {result.project} #{result.change_number}: {result.error}"
-                )
+        _print_gerrit_final_summary(results, all_changes, console)
 
     except typer.Exit:
         # Re-raise typer.Exit without treating it as an error
@@ -2582,6 +2635,7 @@ def merge(
             dry_run=dry_run,
             override=override,
             topic=topic,
+            show_progress=show_progress,
         )
         return
 

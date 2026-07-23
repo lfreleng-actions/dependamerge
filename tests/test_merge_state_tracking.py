@@ -170,6 +170,29 @@ class TestDisplayRendering:
         assert "Blocked" not in plain
         assert "Rebasing" not in plain
 
+    def test_unit_label_defaults_to_prs(self) -> None:
+        tracker = MergeProgressTracker("org")
+        tracker.rich_available = True
+        tracker.set_total_prs(2)
+        plain = tracker._generate_display_text().plain
+        assert "(0/2 PRs, " in plain
+
+    def test_unit_label_renders_custom_noun(self) -> None:
+        """Gerrit runs label the progress fraction with 'changes'."""
+        tracker = MergeProgressTracker(
+            "gerrit.example.org",
+            operation_label="Submitting changes",
+            operation_icon="\u25b6\ufe0f",
+            unit_label="changes",
+        )
+        tracker.rich_available = True
+        tracker.set_total_prs(3)
+        tracker.merge_success("proj#1")
+        plain = tracker._generate_display_text().plain
+        assert "Submitting changes in gerrit.example.org" in plain
+        assert "(1/3 changes, " in plain
+        assert "PRs" not in plain
+
     def test_unknown_state_rendered_defensively(self) -> None:
         tracker = MergeProgressTracker("org")
         tracker.rich_available = True

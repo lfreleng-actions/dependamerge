@@ -493,6 +493,7 @@ class MergeProgressTracker(ProgressTracker):
         operation_label: str | None = None,
         operation_icon: str | None = None,
         preview: bool = False,
+        unit_label: str = "PRs",
     ):
         """Initialize merge progress tracker.
 
@@ -512,6 +513,10 @@ class MergeProgressTracker(ProgressTracker):
                 "Would fail") instead of the execution labels
                 ("Merged" / "Failed") that would misstate what
                 happened.
+            unit_label: Noun used for the per-item progress fraction
+                (e.g. ``"3/9 PRs"``).  GitHub callers keep the default
+                ``"PRs"``; Gerrit callers pass ``"changes"`` so the
+                display matches the platform's terminology.
         """
         super().__init__(organization, show_pr_stats=True)
         self.similar_prs_found = 0
@@ -528,6 +533,7 @@ class MergeProgressTracker(ProgressTracker):
         self.preview = preview
         self._custom_label = operation_label
         self._custom_icon = operation_icon
+        self.unit_label = unit_label
         # PR-level progress (used for repo-scoped operations)
         self.total_prs = 0
         self.completed_prs = 0
@@ -661,7 +667,7 @@ class MergeProgressTracker(ProgressTracker):
             text.append(f"{icon} {label} in ", style="bold blue")
             text.append(f"{self.organization} ", style="bold cyan")
             text.append(
-                f"({self.completed_prs}/{self.total_prs} PRs, ",
+                f"({self.completed_prs}/{self.total_prs} {self.unit_label}, ",
                 style="dim",
             )
             text.append(f"{progress_pct:.0f}%", style="bold green")
@@ -793,6 +799,7 @@ class DummyProgressTracker(ProgressTracker):
         self.preview = False
         self._custom_label: str | None = None
         self._custom_icon: str | None = None
+        self.unit_label = "PRs"
         self.total_prs = 0
         self.completed_prs = 0
         self._pr_states: dict[str, str] = {}

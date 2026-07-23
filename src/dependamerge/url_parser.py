@@ -16,6 +16,10 @@ GitHub:
 Gerrit:
     https://gerrit.linuxfoundation.org/infra/c/project/name/+/12345
     https://gerrit.example.org/c/project/+/67890
+
+Gerrit topic search (see parse_gerrit_topic_url):
+    https://gerrit.example.org/q/topic:some-topic
+    https://gerrit.onap.org/r/q/topic:some-topic
 """
 
 from __future__ import annotations
@@ -23,7 +27,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from enum import Enum
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 # aislop-ignore-file ai-slop/hardcoded-url -- This module parses and builds
 # GitHub/Gerrit URLs, so URL literals here are the subject matter, not
@@ -70,6 +74,37 @@ class ParsedUrl:
     def is_github(self) -> bool:
         """Check if this URL is from GitHub."""
         return self.source == ChangeSource.GITHUB
+
+    @property
+    def is_gerrit(self) -> bool:
+        """Check if this URL is from Gerrit."""
+        return self.source == ChangeSource.GERRIT
+
+
+@dataclass(frozen=True)
+class ParsedGerritTopicUrl:
+    """
+    Parsed Gerrit topic search URL.
+
+    Represents a Gerrit query URL that scopes work to a topic, e.g.
+    ``https://gerrit.onap.org/r/q/topic:update-settings``.  Only
+    ``topic:`` queries are supported; other search operators in the
+    query are ignored for parsing purposes.
+
+    Attributes:
+        source: The code review platform (always Gerrit).
+        host: The hostname of the Gerrit server.
+        base_path: The base path for the Gerrit server (e.g., "r"),
+                   or None when the server is mounted at the root.
+        topic: The Gerrit topic name extracted from the query.
+        original_url: The original URL that was parsed.
+    """
+
+    source: ChangeSource
+    host: str
+    base_path: str | None
+    topic: str
+    original_url: str
 
     @property
     def is_gerrit(self) -> bool:
@@ -327,6 +362,96 @@ def _parse_gerrit_url(host: str, path: str, original_url: str) -> ParsedUrl:
         base_path=base_path,
         project=project,
         change_number=change_number,
+        original_url=original_url,
+    )
+
+
+def parse_gerrit_topic_url(url: str) -> ParsedGerritTopicUrl:
+    """
+    Parse a Gerrit topic search URL.
+
+    Supported formats (the optional base path, e.g. "r", precedes /q/):
+        https://gerrit.example.org/q/topic:some-topic
+        https://gerrit.onap.org/r/q/topic:some-topic
+        https://gerrit.example.org/#/q/topic:some-topic  (legacy UI)
+
+    Additional search operators in the query (separated by '+' or
+    whitespace) are tolerated; only the ``topic:`` term is extracted.
+    Quoted topics (``topic:"some topic"``) and percent-encoded
+    characters are handled.
+
+    Args:
+        url: The URL to parse.
+
+    Returns:
+        A ParsedGerritTopicUrl with the host, base path, and topic.
+
+    Raises:
+        UrlParseError: If the URL is not a Gerrit topic search URL.
+    """
+    original_url = url.strip()
+    if not original_url:
+        raise UrlParseError("URL cannot be empty")
+
+    normalized = original_url
+    if not normalized.startswith(("http://", "https://")):
+        normalized = "https://" + normalized
+
+    try:
+        parsed = urlparse(normalized)
+    except Exception as exc:
+        raise UrlParseError(f"Invalid URL format: {exc}") from exc
+
+    if not parsed.hostname:
+        raise UrlParseError("URL must include a hostname")
+
+    host = parsed.hostname.lower()
+
+    # The legacy UI keeps the query in the fragment (/#/q/...); the
+    # PolyGerrit UI keeps it in the path (/q/...).
+    path = unquote(parsed.path).rstrip("/")
+    fragment = unquote(parsed.fragment).rstrip("/")
+    if fragment.startswith("/q/"):
+        query_expr = fragment[len("/q/") :]
+        base_segments = [s for s in path.split("/") if s]
+    else:
+        segments = [s for s in path.split("/") if s]
+        if "q" not in segments:
+            raise UrlParseError(
+                f"Not a Gerrit search URL (no /q/ segment): {original_url}"
+            )
+        q_index = segments.index("q")
+        base_segments = segments[:q_index]
+        query_expr = "/".join(segments[q_index + 1 :])
+
+    if not query_expr:
+        raise UrlParseError(
+            f"Gerrit search URL contains no query expression: {original_url}"
+        )
+
+    # Gerrit search URLs separate terms with '+' (rendered as space).
+    match = re.search(
+        r'(?:^|[+\s])topic:(?:"([^"]+)"|([^+\s"]+))',
+        query_expr,
+    )
+    if not match:
+        raise UrlParseError(
+            "Only topic searches are supported for Gerrit query URLs. "
+            f"Expected: https://{host}/q/topic:some-topic "
+            f"(got query: {query_expr})"
+        )
+
+    topic = (match.group(1) or match.group(2) or "").strip()
+    if not topic:
+        raise UrlParseError("Gerrit topic cannot be empty")
+
+    base_path = "/".join(base_segments) if base_segments else None
+
+    return ParsedGerritTopicUrl(
+        source=ChangeSource.GERRIT,
+        host=host,
+        base_path=base_path,
+        topic=topic,
         original_url=original_url,
     )
 

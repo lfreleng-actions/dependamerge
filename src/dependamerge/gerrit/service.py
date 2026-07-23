@@ -44,7 +44,12 @@ DEFAULT_CHANGE_OPTIONS: list[str] = [
     "DETAILED_LABELS",
     "DETAILED_ACCOUNTS",
     "SUBMITTABLE",
-    "CURRENT_ACTIONS",  # Include available actions for permission checking
+    # Both action options are needed for permission checks: CHANGE_ACTIONS
+    # returns change-level actions, while CURRENT_ACTIONS returns
+    # revision-level actions (including 'submit') under
+    # revisions[<rev>].actions.
+    "CURRENT_ACTIONS",
+    "CHANGE_ACTIONS",
 ]
 
 # Default query options for listing changes
@@ -440,10 +445,19 @@ class GerritService:
         if options is None:
             options = DEFAULT_LIST_OPTIONS
 
+        # Topics containing whitespace (or quotes) must be quoted in
+        # Gerrit query syntax, otherwise the bare value splits into
+        # separate query terms and the search silently matches nothing
+        # useful.  Plain topics stay unquoted.
+        topic_term = f"topic:{topic}"
+        if '"' in topic or any(ch.isspace() for ch in topic):
+            escaped = topic.replace("\\", "\\\\").replace('"', '\\"')
+            topic_term = f'topic:"{escaped}"'
+
         if include_merged:
-            query = f"topic:{topic} (status:open OR status:merged)"
+            query = f"{topic_term} (status:open OR status:merged)"
         else:
-            query = f"topic:{topic} status:open"
+            query = f"{topic_term} status:open"
 
         return self._query_changes(query, limit, 0, options)
 
@@ -478,19 +492,26 @@ class GerritService:
         comparator: Any,
         only_automation: bool = True,
         limit: int = 500,
+        candidates: list[GerritChangeInfo] | None = None,
     ) -> list[tuple[GerritChangeInfo, GerritComparisonResult]]:
         """
         Find changes similar to the source change.
 
-        This method fetches all open changes and uses the provided
-        comparator to identify similar changes.
+        This method uses the provided comparator to identify similar
+        changes among the candidates. When no candidate list is given,
+        it falls back to scanning all open changes on the server.
 
         Args:
             source_change: The change to find similar changes for.
             comparator: A comparator object with a compare_gerrit_changes()
                        method (or compare_pull_requests for compatibility).
             only_automation: Whether to only match automation changes.
-            limit: Maximum number of changes to scan.
+            limit: Maximum number of changes to scan when no candidate
+                   list is given.
+            candidates: Optional pre-scoped candidate changes (e.g. the
+                        open changes sharing the source change's topic).
+                        Scoping via a server-side query is far cheaper
+                        and more reliable than the whole-server scan.
 
         Returns:
             List of (change_info, comparison_result) tuples for similar
@@ -502,13 +523,14 @@ class GerritService:
             source_change.number,
         )
 
-        all_changes = self.get_all_open_changes(limit=limit)
+        if candidates is None:
+            candidates = self.get_all_open_changes(limit=limit)
 
-        log.debug("Scanning %d open changes for similarity", len(all_changes))
+        log.debug("Scanning %d open changes for similarity", len(candidates))
 
         similar_changes: list[tuple[GerritChangeInfo, GerritComparisonResult]] = []
 
-        for change in all_changes:
+        for change in candidates:
             # Skip the source change itself
             if change.number == source_change.number:
                 continue

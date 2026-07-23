@@ -143,22 +143,26 @@ class GerritChangeInfo(BaseModel):
 
     # Content
     subject: str = Field(..., description="First line of commit message")
-    message: str | None = Field(None, description="Full commit message")
-    topic: str | None = Field(None, description="Change topic (if set)")
+    message: str | None = Field(default=None, description="Full commit message")
+    topic: str | None = Field(default=None, description="Change topic (if set)")
 
     # Author/owner
     owner: str = Field(..., description="Change owner username")
-    owner_email: str | None = Field(None, description="Change owner email")
+    owner_email: str | None = Field(default=None, description="Change owner email")
 
     # Branch info
     branch: str = Field(..., description="Target branch")
-    current_revision: str = Field("", description="Current revision SHA")
+    current_revision: str = Field(default="", description="Current revision SHA")
 
     # Status
     status: str = Field(..., description="Change status (NEW, MERGED, ABANDONED)")
-    submittable: bool = Field(False, description="Whether change can be submitted")
-    mergeable: bool | None = Field(None, description="Whether change is mergeable")
-    work_in_progress: bool = Field(False, description="Whether change is WIP")
+    submittable: bool = Field(
+        default=False, description="Whether change can be submitted"
+    )
+    mergeable: bool | None = Field(
+        default=None, description="Whether change is mergeable"
+    )
+    work_in_progress: bool = Field(default=False, description="Whether change is WIP")
 
     # Files
     files_changed: list[GerritFileChange] = Field(
@@ -171,15 +175,15 @@ class GerritChangeInfo(BaseModel):
     )
 
     # URLs
-    url: str = Field("", description="Web URL for the change")
+    url: str = Field(default="", description="Web URL for the change")
 
     # Timestamps
-    created: str = Field("", description="Creation timestamp")
-    updated: str = Field("", description="Last update timestamp")
+    created: str = Field(default="", description="Creation timestamp")
+    updated: str = Field(default="", description="Last update timestamp")
 
     # Submit requirements (Gerrit 3.x+)
     submit_requirements_met: bool = Field(
-        True, description="Whether all submit requirements are satisfied"
+        default=True, description="Whether all submit requirements are satisfied"
     )
 
     # Permissions - for checking what the current user can do
@@ -189,7 +193,11 @@ class GerritChangeInfo(BaseModel):
     )
     actions: dict[str, dict[str, Any]] = Field(
         default_factory=dict,
-        description="Available actions the caller can perform on the change",
+        description=(
+            "Union of change-level actions (CHANGE_ACTIONS) and "
+            "current-revision actions (CURRENT_ACTIONS) the caller can "
+            "perform. Revision-level actions include 'submit'."
+        ),
     )
 
     @classmethod
@@ -255,7 +263,16 @@ class GerritChangeInfo(BaseModel):
         # Extract permitted labels (what the current user can vote on)
         permitted_labels: dict[str, list[str]] = data.get("permitted_labels", {})
 
-        actions: dict[str, dict[str, Any]] = data.get("actions", {})
+        # Gerrit splits caller actions across two locations: change-level
+        # actions (populated by the CHANGE_ACTIONS query option) and
+        # revision-level actions such as 'submit', 'rebase', and
+        # 'cherrypick' (populated by CURRENT_ACTIONS under
+        # revisions[<rev>].actions). Merge both so permission checks see
+        # the complete picture regardless of which options were requested.
+        actions: dict[str, dict[str, Any]] = dict(data.get("actions") or {})
+        if current_revision and "revisions" in data:
+            revision_data = data["revisions"].get(current_revision, {})
+            actions.update(revision_data.get("actions") or {})
 
         # Check submit requirements (Gerrit 3.x+)
         submit_requirements_met = True
@@ -401,9 +418,11 @@ class GerritChangeInfo(BaseModel):
         """
         Check if the current user has the submit action available.
 
-        This checks the actions field returned by Gerrit when
-        CURRENT_ACTIONS is requested. Gerrit only exposes the submit
-        action once a change is submittable.
+        The submit action is a revision-level action that Gerrit returns
+        under revisions[<rev>].actions when CURRENT_ACTIONS is requested
+        (merged into ``actions`` by ``from_api_response``). Gerrit only
+        exposes the submit action once a change is submittable, and only
+        to callers with submit permission.
 
         Returns:
             True if the submit action is available.
@@ -491,10 +510,10 @@ class GerritSubmitResult(BaseModel):
     change_number: int = Field(..., description="The change number")
     project: str = Field(..., description="The project name")
     success: bool = Field(..., description="Whether submission succeeded")
-    reviewed: bool = Field(False, description="Whether review was applied")
-    submitted: bool = Field(False, description="Whether change was submitted")
-    error: str | None = Field(None, description="Error message if failed")
-    duration_seconds: float = Field(0.0, description="Operation duration")
+    reviewed: bool = Field(default=False, description="Whether review was applied")
+    submitted: bool = Field(default=False, description="Whether change was submitted")
+    error: str | None = Field(default=None, description="Error message if failed")
+    duration_seconds: float = Field(default=0.0, description="Operation duration")
 
     @classmethod
     def success_result(

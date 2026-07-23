@@ -476,6 +476,50 @@ class TestGerritServiceGetChangesByTopic:
         assert "topic:my-topic" in call_args
         assert "status:merged" in call_args
 
+    @patch("dependamerge.gerrit.service.build_client")
+    @patch("dependamerge.gerrit.service.create_url_builder")
+    def test_get_changes_by_topic_quotes_whitespace(
+        self,
+        mock_url_builder,
+        mock_build_client,
+        mock_client,
+        sample_change_data,
+    ):
+        """Test topics containing whitespace are quoted in the query.
+
+        parse_gerrit_topic_url() unquotes topics like topic:"some
+        topic", so the service must re-quote them or the bare value
+        splits into separate Gerrit query terms.
+        """
+        mock_build_client.return_value = mock_client
+        mock_client.get.return_value = [sample_change_data]
+
+        service = GerritService(host="gerrit.example.org")
+        service.get_changes_by_topic("some topic")
+
+        call_args = mock_client.get.call_args[0][0]
+        assert 'topic:"some topic"' in call_args
+        assert "status:open" in call_args
+
+    @patch("dependamerge.gerrit.service.build_client")
+    @patch("dependamerge.gerrit.service.create_url_builder")
+    def test_get_changes_by_topic_escapes_quotes(
+        self,
+        mock_url_builder,
+        mock_build_client,
+        mock_client,
+        sample_change_data,
+    ):
+        """Test embedded quotes in a topic are escaped when quoting."""
+        mock_build_client.return_value = mock_client
+        mock_client.get.return_value = [sample_change_data]
+
+        service = GerritService(host="gerrit.example.org")
+        service.get_changes_by_topic('odd"topic')
+
+        call_args = mock_client.get.call_args[0][0]
+        assert 'topic:"odd\\"topic"' in call_args
+
 
 class TestGerritServiceGetProjects:
     """Tests for get_projects method."""
@@ -551,6 +595,49 @@ class TestGerritServiceFindSimilarChanges:
         assert len(similar) == 1
         assert similar[0][0].number == 12346
         assert similar[0][1].confidence_score == 0.95
+
+    @patch("dependamerge.gerrit.service.build_client")
+    @patch("dependamerge.gerrit.service.create_url_builder")
+    def test_find_similar_changes_with_candidates_skips_server_scan(
+        self,
+        mock_url_builder,
+        mock_build_client,
+        mock_client,
+        sample_change_info,
+    ):
+        """Test that explicit candidates bypass the whole-server scan.
+
+        When candidates are provided (e.g. from a topic query), no
+        status:open query is issued and only the candidates are scored.
+        """
+        mock_build_client.return_value = mock_client
+
+        candidate = GerritChangeInfo(
+            number=99999,
+            change_id="I000",
+            project="candidate-project",
+            subject="Chore: Bump actions/checkout from 4.1.0 to 4.2.0",
+            owner="dependabot",
+            branch="main",
+            status="NEW",
+        )
+
+        mock_comparator = MagicMock()
+        mock_comparator.compare_gerrit_changes.return_value = (
+            GerritComparisonResult.similar(0.9, ["Same author"])
+        )
+
+        service = GerritService(host="gerrit.example.org")
+        similar = service.find_similar_changes(
+            sample_change_info,
+            mock_comparator,
+            candidates=[candidate],
+        )
+
+        assert len(similar) == 1
+        assert similar[0][0].number == 99999
+        # No server-wide scan should have run
+        mock_client.get.assert_not_called()
 
     @patch("dependamerge.gerrit.service.build_client")
     @patch("dependamerge.gerrit.service.create_url_builder")
@@ -835,6 +922,12 @@ class TestDefaultOptions:
         assert "CURRENT_REVISION" in DEFAULT_CHANGE_OPTIONS
         assert "CURRENT_FILES" in DEFAULT_CHANGE_OPTIONS
         assert "SUBMITTABLE" in DEFAULT_CHANGE_OPTIONS
+        # Both action options are required for permission checks: the
+        # 'submit' action only appears under revision-level actions
+        # (CURRENT_ACTIONS), while change-level actions need
+        # CHANGE_ACTIONS.
+        assert "CURRENT_ACTIONS" in DEFAULT_CHANGE_OPTIONS
+        assert "CHANGE_ACTIONS" in DEFAULT_CHANGE_OPTIONS
 
     def test_default_list_options(self):
         """Test default options for list queries."""

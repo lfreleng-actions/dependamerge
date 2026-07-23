@@ -16,6 +16,7 @@ from dependamerge.url_parser import (
     _host_matches,
     detect_source,
     parse_change_url,
+    parse_gerrit_topic_url,
     parse_org_url,
     parse_owner_arg,
 )
@@ -234,6 +235,104 @@ class TestParseGerritUrl:
 
         assert result.source == ChangeSource.GERRIT
         assert result.host == "gerrit.example.org"
+
+
+class TestParseGerritTopicUrl:
+    """Tests for parsing Gerrit topic search URLs."""
+
+    def test_topic_url_without_base_path(self):
+        """Test parsing a topic URL on a root-mounted server."""
+        url = "https://gerrit.example.org/q/topic:update-settings"
+        result = parse_gerrit_topic_url(url)
+
+        assert result.source == ChangeSource.GERRIT
+        assert result.is_gerrit is True
+        assert result.host == "gerrit.example.org"
+        assert result.base_path is None
+        assert result.topic == "update-settings"
+        assert result.original_url == url
+
+    def test_topic_url_with_base_path(self):
+        """Test parsing a topic URL with a base path (e.g. ONAP's /r/)."""
+        url = "https://gerrit.onap.org/r/q/topic:update-settings"
+        result = parse_gerrit_topic_url(url)
+
+        assert result.host == "gerrit.onap.org"
+        assert result.base_path == "r"
+        assert result.topic == "update-settings"
+
+    def test_topic_url_legacy_fragment_form(self):
+        """Test parsing the legacy UI form with the query in the fragment."""
+        url = "https://gerrit.example.org/#/q/topic:my-topic"
+        result = parse_gerrit_topic_url(url)
+
+        assert result.base_path is None
+        assert result.topic == "my-topic"
+
+    def test_topic_url_legacy_fragment_with_base_path(self):
+        """Test the legacy fragment form behind a base path."""
+        url = "https://gerrit.example.org/r/#/q/topic:my-topic"
+        result = parse_gerrit_topic_url(url)
+
+        assert result.base_path == "r"
+        assert result.topic == "my-topic"
+
+    def test_topic_url_with_extra_terms(self):
+        """Test extracting the topic among other search operators."""
+        url = "https://gerrit.example.org/q/topic:some-topic+status:open"
+        result = parse_gerrit_topic_url(url)
+
+        assert result.topic == "some-topic"
+
+    def test_topic_url_with_leading_terms(self):
+        """Test extracting the topic when it is not the first term."""
+        url = "https://gerrit.example.org/q/status:open+topic:some-topic"
+        result = parse_gerrit_topic_url(url)
+
+        assert result.topic == "some-topic"
+
+    def test_topic_url_quoted_topic(self):
+        """Test extracting a quoted topic value."""
+        url = 'https://gerrit.example.org/q/topic:"quoted-topic"'
+        result = parse_gerrit_topic_url(url)
+
+        assert result.topic == "quoted-topic"
+
+    def test_topic_url_percent_encoded(self):
+        """Test parsing a topic URL with a percent-encoded colon."""
+        url = "https://gerrit.example.org/q/topic%3Aupdate-settings"
+        result = parse_gerrit_topic_url(url)
+
+        assert result.topic == "update-settings"
+
+    def test_topic_url_without_scheme(self):
+        """Test parsing a topic URL without https:// prefix."""
+        url = "gerrit.onap.org/r/q/topic:update-settings"
+        result = parse_gerrit_topic_url(url)
+
+        assert result.host == "gerrit.onap.org"
+        assert result.base_path == "r"
+        assert result.topic == "update-settings"
+
+    def test_non_search_url_rejected(self):
+        """Test that a Gerrit change URL is not a topic search URL."""
+        with pytest.raises(UrlParseError, match="no /q/ segment"):
+            parse_gerrit_topic_url("https://gerrit.example.org/c/project/+/123")
+
+    def test_search_url_without_topic_rejected(self):
+        """Test that a non-topic search query is rejected."""
+        with pytest.raises(UrlParseError, match="Only topic searches"):
+            parse_gerrit_topic_url("https://gerrit.example.org/q/status:open")
+
+    def test_search_url_empty_query_rejected(self):
+        """Test that a search URL with no query expression is rejected."""
+        with pytest.raises(UrlParseError, match="no query expression"):
+            parse_gerrit_topic_url("https://gerrit.example.org/q/")
+
+    def test_empty_url_rejected(self):
+        """Test that an empty URL is rejected."""
+        with pytest.raises(UrlParseError, match="URL cannot be empty"):
+            parse_gerrit_topic_url("")
 
 
 class TestInvalidUrls:

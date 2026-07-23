@@ -71,11 +71,13 @@ from .progress_tracker import MergeProgressTracker, ProgressTracker
 from .resolve_conflicts import FixOptions, FixOrchestrator, PRSelection
 from .system_utils import get_default_workers
 from .url_parser import (
+    ParsedGerritTopicUrl,
     ParsedOrgUrl,
     ParsedRepoUrl,
     ParsedUrl,
     UrlParseError,
     parse_change_url,
+    parse_gerrit_topic_url,
     parse_org_url,
     parse_owner_arg,
     parse_repo_url,
@@ -1841,7 +1843,7 @@ def _execute_org_confirmed_merge(
 
 
 def _handle_gerrit_merge(
-    parsed_url: ParsedUrl,
+    parsed_url: ParsedUrl | ParsedGerritTopicUrl,
     no_confirm: bool,
     similarity_threshold: float,
     verbose: bool,
@@ -1851,12 +1853,14 @@ def _handle_gerrit_merge(
     netrc_optional: bool = True,
     dry_run: bool = False,
     override: str | None = None,
+    topic: str | None = None,
 ) -> None:
     """
-    Handle merge operation for a Gerrit change URL.
+    Handle merge operation for a Gerrit change or topic search URL.
 
     Args:
-        parsed_url: Parsed Gerrit URL with host, project, and change number.
+        parsed_url: Parsed Gerrit change URL (host, project, change
+            number) or topic search URL (host, topic).
         no_confirm: If True, skip confirmation prompt.
         similarity_threshold: Threshold for matching similar changes.
         verbose: Enable verbose output.
@@ -1867,6 +1871,9 @@ def _handle_gerrit_merge(
         dry_run: If True, preview only and never review or submit any
             change, even when ``no_confirm`` is also set.
         override: SHA hash to override non-automation change restriction.
+        topic: Explicit topic to scope the similar-change search to.
+            When omitted, the topic is taken from the search URL (if
+            given) or from the source change itself.
     """
     # Resolve Gerrit credentials from all sources using centralized function
     try:
@@ -1907,11 +1914,28 @@ def _handle_gerrit_merge(
         if not service.is_authenticated:
             console.print("⚠️ Warning: Service created but may not be authenticated")
 
-        console.print(f"📋 Fetching change {parsed_url.change_number}...")
-        source_change = service.get_change_info(parsed_url.change_number)
+        # Resolve the source change.  For a topic search URL there is no
+        # explicit change number: the first open change in the topic
+        # anchors the batch and the rest become candidates.
+        topic_changes: list[GerritChangeInfo] | None = None
+        if isinstance(parsed_url, ParsedGerritTopicUrl):
+            search_topic = topic or parsed_url.topic
+            console.print(f"📋 Fetching changes with topic '{search_topic}'...")
+            topic_changes = [
+                c for c in service.get_changes_by_topic(search_topic) if c.is_open
+            ]
+            if not topic_changes:
+                console.print(f"❌ No open changes found with topic '{search_topic}'")
+                raise typer.Exit(1)
+            # Refetch the anchor change: list queries omit the label,
+            # permission, and action detail the checks below rely on.
+            source_change = service.get_change_info(topic_changes[0].number)
+        else:
+            console.print(f"📋 Fetching change {parsed_url.change_number}...")
+            source_change = service.get_change_info(parsed_url.change_number)
 
         if source_change is None:
-            console.print(f"❌ Change {parsed_url.change_number} not found")
+            console.print("❌ Change not found")
             raise typer.Exit(1)
 
         # Display source change info using Rich table (same style as GitHub)
@@ -1978,7 +2002,7 @@ def _handle_gerrit_merge(
             if rebase_result["success"]:
                 console.print("✅ Rebase successful! Refreshing change info...")
                 # Refresh the change info after successful rebase
-                source_change = service.get_change_info(parsed_url.change_number)
+                source_change = service.get_change_info(source_change.number)
                 _display_change_info(
                     source_change,
                     console=console,
@@ -2002,11 +2026,37 @@ def _handle_gerrit_merge(
                 console.print(f"\n❌ Rebase failed: {rebase_result['error']}")
                 raise typer.Exit(1)
 
-        console.print(f"\n🔍 Searching for similar changes on {parsed_url.host}...")
+        # Prefer topic-scoped candidate discovery: an explicit --topic
+        # wins, then the topic from a search URL, then the source
+        # change's own topic.  A server-side topic query is far cheaper
+        # and more reliable than scanning every open change.
+        effective_topic = topic or source_change.topic
+        if isinstance(parsed_url, ParsedGerritTopicUrl):
+            effective_topic = topic or parsed_url.topic
+
+        candidates: list[GerritChangeInfo] | None = None
+        if effective_topic:
+            console.print(
+                f"\n🔍 Searching for changes with topic "
+                f"'{effective_topic}' on {parsed_url.host}..."
+            )
+            # topic_changes (when set) was fetched with this same topic
+            if topic_changes is not None:
+                candidates = topic_changes
+            else:
+                candidates = [
+                    c
+                    for c in service.get_changes_by_topic(effective_topic)
+                    if c.is_open
+                ]
+        else:
+            console.print(f"\n🔍 Searching for similar changes on {parsed_url.host}...")
+
         similar_changes = service.find_similar_changes(
             source_change,
             comparator,
             only_automation=only_automation,
+            candidates=candidates,
         )
 
         console.print(f"Found {len(similar_changes)} similar changes:")
@@ -2240,6 +2290,15 @@ def merge(
         "--include-human-prs",
         help="Include human-authored PRs when merging a repository (prompts for confirmation when human PRs are found)",
     ),
+    topic: str | None = typer.Option(
+        None,
+        "--topic",
+        help=(
+            "Gerrit only: scope the similar-change search to this topic. "
+            "When omitted, the topic is extracted automatically from a "
+            "Gerrit topic search URL or from the source change itself."
+        ),
+    ),
     dry_run: bool = typer.Option(
         False,
         "--dry-run",
@@ -2303,9 +2362,15 @@ def merge(
 
     1. Analyze the provided change
 
-    2. Find similar open changes on the server
+    2. Find similar open changes on the server (scoped to the change's
+       topic when it has one, or the --topic flag)
 
     3. Review (+2 Code-Review) and submit matching changes
+
+    Gerrit topic search URLs are also accepted; all open changes
+    sharing the topic form the batch:
+      https://gerrit.example.org/q/topic:some-topic
+      https://gerrit.onap.org/r/q/topic:some-topic
 
     Merges similar PRs/changes from the same automation tool.
 
@@ -2353,9 +2418,21 @@ def merge(
         )
         raise typer.Exit(1)
 
-    # Try as a specific PR/change URL first, then an owner-wide URL
-    # (bare owner / orgs/owner), then a single repository URL.
+    # Tolerate direct Python calls to ``merge`` (e.g. in tests), where
+    # Typer's ``OptionInfo`` default object is passed unresolved and
+    # would otherwise be truthy.
+    if not isinstance(topic, str):
+        topic = None
+    elif not topic.strip():
+        topic = None
+    else:
+        topic = topic.strip()
+
+    # Try as a specific PR/change URL first, then a Gerrit topic search
+    # URL, then an owner-wide URL (bare owner / orgs/owner), then a
+    # single repository URL.
     parsed_url: ParsedUrl | None = None
+    parsed_topic: ParsedGerritTopicUrl | None = None
     parsed_repo: ParsedRepoUrl | None = None
     parsed_org: ParsedOrgUrl | None = None
     change_err: UrlParseError | None = None
@@ -2363,6 +2440,13 @@ def merge(
         parsed_url = parse_change_url(pr_url)
     except UrlParseError as e:
         change_err = e
+        # Not a PR/change URL — try a Gerrit topic search URL next, so
+        # pasted dashboard URLs like /q/topic:some-topic work directly.
+        try:
+            parsed_topic = parse_gerrit_topic_url(pr_url)
+        except UrlParseError:
+            parsed_topic = None
+    if parsed_url is None and parsed_topic is None and change_err is not None:
         # Not a PR URL — try owner-wide before repository.  parse_org_url
         # is strict (only a bare owner or the canonical orgs/owner forms),
         # so a two-segment owner/repo URL falls through to parse_repo_url.
@@ -2411,9 +2495,21 @@ def merge(
                     console.print(f"❌ Invalid URL: {repo_err}")
                 raise typer.Exit(1) from None
 
-    if parsed_url is not None and parsed_url.is_gerrit:
+    if topic and not (
+        (parsed_url is not None and parsed_url.is_gerrit) or parsed_topic is not None
+    ):
+        console.print("❌ --topic is only supported for Gerrit URLs")
+        raise typer.Exit(1)
+
+    if parsed_topic is not None or (parsed_url is not None and parsed_url.is_gerrit):
+        gerrit_target: ParsedUrl | ParsedGerritTopicUrl
+        if parsed_topic is not None:
+            gerrit_target = parsed_topic
+        else:
+            assert parsed_url is not None
+            gerrit_target = parsed_url
         _handle_gerrit_merge(
-            parsed_url=parsed_url,
+            parsed_url=gerrit_target,
             no_confirm=no_confirm,
             similarity_threshold=similarity_threshold,
             verbose=verbose,
@@ -2423,6 +2519,7 @@ def merge(
             netrc_optional=netrc_optional,
             dry_run=dry_run,
             override=override,
+            topic=topic,
         )
         return
 

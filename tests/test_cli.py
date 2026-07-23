@@ -715,6 +715,7 @@ class TestCLI:
             change,
             comparator,
             only_automation=False,
+            candidates=None,
         )
 
     @patch("dependamerge.cli.create_gerrit_comparator")
@@ -753,6 +754,219 @@ class TestCLI:
 
         assert exc_info.value.code == 8
         service.find_similar_changes.assert_not_called()
+
+    @staticmethod
+    def _automation_gerrit_change(
+        number: int = 123,
+        project: str = "proj",
+        topic: str | None = None,
+    ) -> GerritChangeInfo:
+        return GerritChangeInfo(
+            number=number,
+            change_id=f"I{number}",
+            project=project,
+            subject="Chore: Bump actions/checkout from 4.1.0 to 4.2.0",
+            owner="dependabot",
+            branch="main",
+            status="NEW",
+            topic=topic,
+            permitted_labels={"Code-Review": ["-2", "-1", "0", "+1", "+2"]},
+        )
+
+    @patch("dependamerge.cli.create_gerrit_comparator")
+    @patch("dependamerge.cli.create_gerrit_service")
+    @patch("dependamerge.cli.resolve_gerrit_credentials")
+    def test_gerrit_merge_scopes_candidates_to_source_topic(
+        self,
+        mock_resolve_credentials,
+        mock_create_service,
+        mock_create_comparator,
+    ):
+        """Test the source change's own topic scopes the candidate search."""
+        change = self._automation_gerrit_change(topic="update-settings")
+        sibling = self._automation_gerrit_change(
+            number=124, project="other-proj", topic="update-settings"
+        )
+        credentials = Mock(is_valid=True, username="user", password="pass")
+        credentials.auth_method_display.return_value = ".netrc file"
+        mock_resolve_credentials.return_value = credentials
+
+        service = Mock(is_authenticated=True)
+        service.get_change_info.return_value = change
+        service.get_changes_by_topic.return_value = [sibling]
+        service.find_similar_changes.return_value = []
+        mock_create_service.return_value = service
+
+        comparator = Mock()
+        comparator.is_automation_change.return_value = True
+        mock_create_comparator.return_value = comparator
+
+        console = Console(record=True, width=120)
+        _handle_gerrit_merge(
+            parsed_url=self._gerrit_parsed_url(),
+            no_confirm=True,
+            similarity_threshold=0.8,
+            verbose=False,
+            console=console,
+            dry_run=True,
+        )
+
+        service.get_changes_by_topic.assert_called_once_with("update-settings")
+        service.find_similar_changes.assert_called_once_with(
+            change,
+            comparator,
+            only_automation=True,
+            candidates=[sibling],
+        )
+        output = console.export_text()
+        assert "update-settings" in output
+
+    @patch("dependamerge.cli.create_gerrit_comparator")
+    @patch("dependamerge.cli.create_gerrit_service")
+    @patch("dependamerge.cli.resolve_gerrit_credentials")
+    def test_gerrit_merge_topic_url_anchors_first_open_change(
+        self,
+        mock_resolve_credentials,
+        mock_create_service,
+        mock_create_comparator,
+    ):
+        """Test a topic search URL anchors on the first open topic change."""
+        from dependamerge.url_parser import ParsedGerritTopicUrl
+
+        anchor_listed = self._automation_gerrit_change(
+            number=200, topic="update-settings"
+        )
+        anchor_full = self._automation_gerrit_change(
+            number=200, topic="update-settings"
+        )
+        sibling = self._automation_gerrit_change(
+            number=201, project="other-proj", topic="update-settings"
+        )
+        credentials = Mock(is_valid=True, username="user", password="pass")
+        credentials.auth_method_display.return_value = ".netrc file"
+        mock_resolve_credentials.return_value = credentials
+
+        service = Mock(is_authenticated=True)
+        service.get_changes_by_topic.return_value = [anchor_listed, sibling]
+        service.get_change_info.return_value = anchor_full
+        service.find_similar_changes.return_value = []
+        mock_create_service.return_value = service
+
+        comparator = Mock()
+        comparator.is_automation_change.return_value = True
+        mock_create_comparator.return_value = comparator
+
+        parsed_topic = ParsedGerritTopicUrl(
+            source=ChangeSource.GERRIT,
+            host="gerrit.example.org",
+            base_path=None,
+            topic="update-settings",
+            original_url="https://gerrit.example.org/q/topic:update-settings",
+        )
+
+        console = Console(record=True, width=120)
+        _handle_gerrit_merge(
+            parsed_url=parsed_topic,
+            no_confirm=True,
+            similarity_threshold=0.8,
+            verbose=False,
+            console=console,
+            dry_run=True,
+        )
+
+        # The anchor change is refetched for full details
+        service.get_change_info.assert_called_once_with(200)
+        # The topic changes are reused as candidates (no second query)
+        service.get_changes_by_topic.assert_called_once_with("update-settings")
+        service.find_similar_changes.assert_called_once_with(
+            anchor_full,
+            comparator,
+            only_automation=True,
+            candidates=[anchor_listed, sibling],
+        )
+
+    @patch("dependamerge.cli.create_gerrit_comparator")
+    @patch("dependamerge.cli.create_gerrit_service")
+    @patch("dependamerge.cli.resolve_gerrit_credentials")
+    def test_gerrit_merge_topic_url_no_open_changes(
+        self,
+        mock_resolve_credentials,
+        mock_create_service,
+        mock_create_comparator,
+    ):
+        """Test a topic search URL with no open changes exits cleanly."""
+        from dependamerge.url_parser import ParsedGerritTopicUrl
+
+        credentials = Mock(is_valid=True, username="user", password="pass")
+        credentials.auth_method_display.return_value = ".netrc file"
+        mock_resolve_credentials.return_value = credentials
+
+        service = Mock(is_authenticated=True)
+        service.get_changes_by_topic.return_value = []
+        mock_create_service.return_value = service
+
+        console = Console(record=True, width=120)
+        with pytest.raises(typer.Exit) as exc_info:
+            _handle_gerrit_merge(
+                parsed_url=ParsedGerritTopicUrl(
+                    source=ChangeSource.GERRIT,
+                    host="gerrit.example.org",
+                    base_path=None,
+                    topic="empty-topic",
+                    original_url="https://gerrit.example.org/q/topic:empty-topic",
+                ),
+                no_confirm=True,
+                similarity_threshold=0.8,
+                verbose=False,
+                console=console,
+                dry_run=True,
+            )
+
+        assert exc_info.value.exit_code == 1
+        assert "No open changes found with topic 'empty-topic'" in (
+            console.export_text()
+        )
+
+    @patch("dependamerge.cli.create_gerrit_comparator")
+    @patch("dependamerge.cli.create_gerrit_service")
+    @patch("dependamerge.cli.resolve_gerrit_credentials")
+    def test_gerrit_merge_explicit_topic_flag_wins(
+        self,
+        mock_resolve_credentials,
+        mock_create_service,
+        mock_create_comparator,
+    ):
+        """Test --topic overrides the source change's own topic."""
+        change = self._automation_gerrit_change(topic="own-topic")
+        sibling = self._automation_gerrit_change(
+            number=124, project="other-proj", topic="forced-topic"
+        )
+        credentials = Mock(is_valid=True, username="user", password="pass")
+        credentials.auth_method_display.return_value = ".netrc file"
+        mock_resolve_credentials.return_value = credentials
+
+        service = Mock(is_authenticated=True)
+        service.get_change_info.return_value = change
+        service.get_changes_by_topic.return_value = [sibling]
+        service.find_similar_changes.return_value = []
+        mock_create_service.return_value = service
+
+        comparator = Mock()
+        comparator.is_automation_change.return_value = True
+        mock_create_comparator.return_value = comparator
+
+        console = Console(record=True, width=120)
+        _handle_gerrit_merge(
+            parsed_url=self._gerrit_parsed_url(),
+            no_confirm=True,
+            similarity_threshold=0.8,
+            verbose=False,
+            console=console,
+            dry_run=True,
+            topic="forced-topic",
+        )
+
+        service.get_changes_by_topic.assert_called_once_with("forced-topic")
 
     @patch("dependamerge.cli.GitHubClient")
     @patch("dependamerge.cli.PRComparator")

@@ -172,6 +172,27 @@ def _generate_gerrit_override_sha(change: GerritChangeInfo) -> str:
     return sha_hash[:16]
 
 
+def _generate_gerrit_continue_sha(change: GerritChangeInfo) -> str:
+    """
+    Generate a SHA hash for continuing after a Gerrit preview.
+
+    Mirrors _generate_continue_sha for the GitHub path: the value is
+    derived from the source change so the confirmation string is unique
+    per batch and cannot be replayed against a different change.
+
+    Args:
+        change: Source Gerrit change information
+
+    Returns:
+        First 16 hex characters of a SHA256 hash string.
+    """
+    combined_data = (
+        f"continue:{change.project}#{change.number}:{change.subject.strip()}"
+    )
+    sha_hash = hashlib.sha256(combined_data.encode("utf-8")).hexdigest()
+    return sha_hash[:16]
+
+
 def _validate_override_sha(
     provided_sha: str, pr_info: PullRequestInfo, commit_message_first_line: str
 ) -> bool:
@@ -326,6 +347,45 @@ def _format_gerrit_similarity(comparison: GerritComparisonResult) -> str:
         breakdown = ""
 
     return f"{author_text}{total_score}{breakdown}"
+
+
+def _confirm_gerrit_submission(
+    source_change: GerritChangeInfo,
+    console: Console,
+) -> bool:
+    """Prompt for the continue SHA before a real Gerrit submission.
+
+    Mirrors the interactive preview-then-confirm flow of the GitHub
+    path (_handle_preview_confirmation): the user must type a SHA
+    derived from the source change to proceed.
+
+    Returns:
+        True when the user confirmed and the submission should proceed.
+    """
+    continue_sha = _generate_gerrit_continue_sha(source_change)
+    console.print()
+    console.print(f"To proceed with merging enter: {continue_sha}")
+
+    try:
+        if "pytest" in sys.modules or os.getenv("TESTING"):
+            console.print("⚠️ Test mode detected - skipping interactive prompt")
+            return False
+
+        user_input = input(
+            "Enter the string above to continue (or press Enter to cancel): "
+        ).strip()
+
+        if user_input == continue_sha:
+            return True
+        if user_input == "":
+            console.print("❌ Merge cancelled by user.")
+        else:
+            console.print("❌ Invalid input. Merge cancelled.")
+    except KeyboardInterrupt:
+        console.print("\n❌ Merge cancelled by user.")
+    except EOFError:
+        console.print("\n❌ Merge cancelled.")
+    return False
 
 
 @dataclass
@@ -2091,8 +2151,10 @@ def _handle_gerrit_merge(
                 "succeed on some changes."
             )
 
+        # Preview what the run would do, then either stop (dry run),
+        # prompt for confirmation (interactive), or proceed straight to
+        # submission (--no-confirm).
         if not no_confirm or dry_run:
-            # Preview mode - show permission status
             label = "Dry run" if dry_run else "Preview"
             console.print(
                 f"\n📊 {label}: {len(all_changes)} changes would be "
@@ -2108,9 +2170,9 @@ def _handle_gerrit_merge(
                 )
             if dry_run:
                 console.print("\n🧪 Dry run: no changes were reviewed or submitted.")
-            else:
-                console.print("\nTo proceed, run with --no-confirm flag")
-            return
+                return
+            if not _confirm_gerrit_submission(source_change, console):
+                return
 
         console.print(f"\n🚀 Submitting {len(all_changes)} changes...")
 

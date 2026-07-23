@@ -968,6 +968,157 @@ class TestCLI:
 
         service.get_changes_by_topic.assert_called_once_with("forced-topic")
 
+    @patch("dependamerge.cli.create_gerrit_comparator")
+    @patch("dependamerge.cli.create_gerrit_service")
+    @patch("dependamerge.cli.resolve_gerrit_credentials")
+    def test_gerrit_merge_interactive_prompts_for_continue_sha(
+        self,
+        mock_resolve_credentials,
+        mock_create_service,
+        mock_create_comparator,
+    ):
+        """Test interactive Gerrit merges prompt with a continue SHA.
+
+        Without --no-confirm the preview must offer the same
+        SHA-confirmation flow as the GitHub path instead of telling the
+        user to re-run with --no-confirm.
+        """
+        from dependamerge.cli import _generate_gerrit_continue_sha
+
+        change = self._automation_gerrit_change()
+        credentials = Mock(is_valid=True, username="user", password="pass")
+        credentials.auth_method_display.return_value = ".netrc file"
+        mock_resolve_credentials.return_value = credentials
+
+        service = Mock(is_authenticated=True)
+        service.get_change_info.return_value = change
+        service.find_similar_changes.return_value = []
+        mock_create_service.return_value = service
+
+        comparator = Mock()
+        comparator.is_automation_change.return_value = True
+        mock_create_comparator.return_value = comparator
+
+        console = Console(record=True, width=120)
+        _handle_gerrit_merge(
+            parsed_url=self._gerrit_parsed_url(),
+            no_confirm=False,
+            similarity_threshold=0.8,
+            verbose=False,
+            console=console,
+        )
+
+        output = console.export_text()
+        expected_sha = _generate_gerrit_continue_sha(change)
+        assert f"To proceed with merging enter: {expected_sha}" in output
+        # Under pytest the interactive prompt is skipped without submitting
+        assert "Test mode detected" in output
+        assert "To proceed, run with --no-confirm" not in output
+
+    @patch("dependamerge.cli.create_submit_manager")
+    @patch("dependamerge.cli._confirm_gerrit_submission")
+    @patch("dependamerge.cli.create_gerrit_comparator")
+    @patch("dependamerge.cli.create_gerrit_service")
+    @patch("dependamerge.cli.resolve_gerrit_credentials")
+    def test_gerrit_merge_interactive_confirmed_submits(
+        self,
+        mock_resolve_credentials,
+        mock_create_service,
+        mock_create_comparator,
+        mock_confirm,
+        mock_create_submit_manager,
+    ):
+        """Test a confirmed interactive Gerrit merge proceeds to submit."""
+        change = self._automation_gerrit_change()
+        credentials = Mock(is_valid=True, username="user", password="pass")
+        credentials.auth_method_display.return_value = ".netrc file"
+        mock_resolve_credentials.return_value = credentials
+
+        service = Mock(is_authenticated=True)
+        service.get_change_info.return_value = change
+        service.find_similar_changes.return_value = []
+        mock_create_service.return_value = service
+
+        comparator = Mock()
+        comparator.is_automation_change.return_value = True
+        mock_create_comparator.return_value = comparator
+
+        mock_confirm.return_value = True
+
+        submit_manager = Mock()
+        submit_manager.submit_changes.return_value = []
+        mock_create_submit_manager.return_value = submit_manager
+
+        console = Console(record=True, width=120)
+        _handle_gerrit_merge(
+            parsed_url=self._gerrit_parsed_url(),
+            no_confirm=False,
+            similarity_threshold=0.8,
+            verbose=False,
+            console=console,
+        )
+
+        mock_confirm.assert_called_once_with(change, console)
+        submit_manager.submit_changes.assert_called_once()
+
+    @patch("dependamerge.cli.create_submit_manager")
+    @patch("dependamerge.cli._confirm_gerrit_submission")
+    @patch("dependamerge.cli.create_gerrit_comparator")
+    @patch("dependamerge.cli.create_gerrit_service")
+    @patch("dependamerge.cli.resolve_gerrit_credentials")
+    def test_gerrit_merge_interactive_declined_does_not_submit(
+        self,
+        mock_resolve_credentials,
+        mock_create_service,
+        mock_create_comparator,
+        mock_confirm,
+        mock_create_submit_manager,
+    ):
+        """Test a declined interactive Gerrit merge never submits."""
+        change = self._automation_gerrit_change()
+        credentials = Mock(is_valid=True, username="user", password="pass")
+        credentials.auth_method_display.return_value = ".netrc file"
+        mock_resolve_credentials.return_value = credentials
+
+        service = Mock(is_authenticated=True)
+        service.get_change_info.return_value = change
+        service.find_similar_changes.return_value = []
+        mock_create_service.return_value = service
+
+        comparator = Mock()
+        comparator.is_automation_change.return_value = True
+        mock_create_comparator.return_value = comparator
+
+        mock_confirm.return_value = False
+
+        console = Console(record=True, width=120)
+        _handle_gerrit_merge(
+            parsed_url=self._gerrit_parsed_url(),
+            no_confirm=False,
+            similarity_threshold=0.8,
+            verbose=False,
+            console=console,
+        )
+
+        mock_create_submit_manager.assert_not_called()
+
+    def test_confirm_gerrit_submission_test_mode_skips_prompt(self):
+        """Test _confirm_gerrit_submission never blocks under pytest."""
+        from dependamerge.cli import (
+            _confirm_gerrit_submission,
+            _generate_gerrit_continue_sha,
+        )
+
+        change = self._automation_gerrit_change()
+        console = Console(record=True, width=120)
+
+        confirmed = _confirm_gerrit_submission(change, console)
+
+        assert confirmed is False
+        output = console.export_text()
+        assert _generate_gerrit_continue_sha(change) in output
+        assert "Test mode detected" in output
+
     @patch("dependamerge.cli.GitHubClient")
     @patch("dependamerge.cli.PRComparator")
     @patch("dependamerge.github_service.GitHubService")

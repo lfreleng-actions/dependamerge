@@ -189,7 +189,11 @@ class GerritChangeInfo(BaseModel):
     )
     actions: dict[str, dict[str, Any]] = Field(
         default_factory=dict,
-        description="Available actions the caller can perform on the change",
+        description=(
+            "Union of change-level actions (CHANGE_ACTIONS) and "
+            "current-revision actions (CURRENT_ACTIONS) the caller can "
+            "perform. Revision-level actions include 'submit'."
+        ),
     )
 
     @classmethod
@@ -255,7 +259,16 @@ class GerritChangeInfo(BaseModel):
         # Extract permitted labels (what the current user can vote on)
         permitted_labels: dict[str, list[str]] = data.get("permitted_labels", {})
 
-        actions: dict[str, dict[str, Any]] = data.get("actions", {})
+        # Gerrit splits caller actions across two locations: change-level
+        # actions (populated by the CHANGE_ACTIONS query option) and
+        # revision-level actions such as 'submit', 'rebase', and
+        # 'cherrypick' (populated by CURRENT_ACTIONS under
+        # revisions[<rev>].actions). Merge both so permission checks see
+        # the complete picture regardless of which options were requested.
+        actions: dict[str, dict[str, Any]] = dict(data.get("actions") or {})
+        if current_revision and "revisions" in data:
+            revision_data = data["revisions"].get(current_revision, {})
+            actions.update(revision_data.get("actions") or {})
 
         # Check submit requirements (Gerrit 3.x+)
         submit_requirements_met = True
@@ -401,9 +414,11 @@ class GerritChangeInfo(BaseModel):
         """
         Check if the current user has the submit action available.
 
-        This checks the actions field returned by Gerrit when
-        CURRENT_ACTIONS is requested. Gerrit only exposes the submit
-        action once a change is submittable.
+        The submit action is a revision-level action that Gerrit returns
+        under revisions[<rev>].actions when CURRENT_ACTIONS is requested
+        (merged into ``actions`` by ``from_api_response``). Gerrit only
+        exposes the submit action once a change is submittable, and only
+        to callers with submit permission.
 
         Returns:
             True if the submit action is available.

@@ -71,3 +71,57 @@ class TestGerritDryRunLive:
         assert "Dry run: no changes were reviewed or submitted" in combined_output(
             result
         )
+
+
+class TestGerritPermissionParsingLive:
+    def test_change_info_merges_change_and_revision_actions(self, gerrit_settings):
+        """Parsed change actions include both change- and revision-level actions.
+
+        Gerrit returns the 'submit' action only under
+        ``revisions[<rev>].actions`` (CURRENT_ACTIONS); change-level
+        actions come from CHANGE_ACTIONS.  The permission checks rely on
+        ``GerritChangeInfo.actions`` being the union of both, so verify
+        that invariant against a real server response.
+        """
+        from dependamerge.gerrit.models import GerritChangeInfo
+        from dependamerge.gerrit.service import (
+            DEFAULT_CHANGE_OPTIONS,
+            create_gerrit_service,
+        )
+
+        service = create_gerrit_service(
+            host=gerrit_settings["host"],
+            base_path=gerrit_settings.get("base_path") or None,
+            username=gerrit_settings["username"],
+            password=gerrit_settings["password"],
+        )
+        changes = service.get_all_open_changes(limit=25)
+        if not changes:
+            pytest.skip(
+                f"No open changes found on '{gerrit_settings['host']}'; "
+                "skipping Gerrit permission parsing integration test"
+            )
+
+        params = "&".join(f"o={opt}" for opt in DEFAULT_CHANGE_OPTIONS)
+        endpoint = f"/changes/{changes[0].number}?{params}"
+        data = service._client.get(endpoint)
+
+        change = GerritChangeInfo.from_api_response(
+            data,
+            host=gerrit_settings["host"],
+            base_path=gerrit_settings.get("base_path") or None,
+        )
+
+        change_actions = set((data.get("actions") or {}).keys())
+        revision_data = (data.get("revisions") or {}).get(
+            data.get("current_revision", ""), {}
+        )
+        revision_actions = set((revision_data.get("actions") or {}).keys())
+
+        # An authenticated caller should see at least one action; if the
+        # server returned none the invariant below is vacuous, so skip.
+        if not (change_actions | revision_actions):
+            pytest.skip("Server returned no caller actions for the probed change")
+
+        assert change_actions <= set(change.actions.keys())
+        assert revision_actions <= set(change.actions.keys())

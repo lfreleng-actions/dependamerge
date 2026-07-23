@@ -566,6 +566,98 @@ class TestGerritChangeInfo:
 
         assert change.owner == "John Doe"
 
+    def test_from_api_response_merges_revision_actions(self):
+        """Test revision-level actions (CURRENT_ACTIONS) merge into actions.
+
+        Gerrit returns the 'submit' action under revisions[<rev>].actions
+        when CURRENT_ACTIONS is requested, not at the change level.
+        Shapes mirror live responses from gerrit.onap.org.
+        """
+        api_data = {
+            "_number": 146534,
+            "change_id": "I123",
+            "project": "ccsdk/apps",
+            "subject": "CI: Update maven settings in clm workflow",
+            "branch": "master",
+            "status": "NEW",
+            "owner": {"username": "kevin.sandi"},
+            "submittable": True,
+            "current_revision": "abc123",
+            "permitted_labels": {
+                "Code-Review": ["-2", "-1", " 0", "+1", "+2"],
+                "Verified": ["-1", " 0", "+1"],
+            },
+            "actions": {
+                "abandon": {"method": "POST", "enabled": True},
+                "topic": {"method": "PUT", "enabled": True},
+            },
+            "revisions": {
+                "abc123": {
+                    "actions": {
+                        "submit": {"method": "POST", "enabled": True},
+                        "rebase": {"method": "POST", "enabled": True},
+                        "cherrypick": {"method": "POST", "enabled": True},
+                    },
+                },
+            },
+        }
+
+        change = GerritChangeInfo.from_api_response(api_data)
+
+        # Change-level and revision-level actions are both present
+        assert "abandon" in change.actions
+        assert "submit" in change.actions
+        assert change.can_submit_action() is True
+        assert change.get_permission_warnings() == []
+
+    def test_from_api_response_revision_actions_only(self):
+        """Test actions populate from revision level with no change-level actions."""
+        api_data = {
+            "_number": 1,
+            "change_id": "I123",
+            "project": "proj",
+            "subject": "Test",
+            "branch": "main",
+            "status": "NEW",
+            "owner": {"username": "user"},
+            "current_revision": "abc123",
+            "revisions": {
+                "abc123": {
+                    "actions": {
+                        "submit": {"method": "POST", "enabled": True},
+                    },
+                },
+            },
+        }
+
+        change = GerritChangeInfo.from_api_response(api_data)
+
+        assert change.can_submit_action() is True
+
+    def test_from_api_response_null_actions(self):
+        """Test explicit null action values do not break parsing."""
+        api_data = {
+            "_number": 1,
+            "change_id": "I123",
+            "project": "proj",
+            "subject": "Test",
+            "branch": "main",
+            "status": "NEW",
+            "owner": {"username": "user"},
+            "current_revision": "abc123",
+            "actions": None,
+            "revisions": {
+                "abc123": {
+                    "actions": None,
+                },
+            },
+        }
+
+        change = GerritChangeInfo.from_api_response(api_data)
+
+        assert change.actions == {}
+        assert change.can_submit_action() is False
+
 
 class TestGerritComparisonResult:
     """Tests for GerritComparisonResult model."""

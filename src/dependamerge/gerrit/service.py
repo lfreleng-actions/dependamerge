@@ -44,7 +44,12 @@ DEFAULT_CHANGE_OPTIONS: list[str] = [
     "DETAILED_LABELS",
     "DETAILED_ACCOUNTS",
     "SUBMITTABLE",
-    "CURRENT_ACTIONS",  # Include available actions for permission checking
+    # Both action options are needed for permission checks: CHANGE_ACTIONS
+    # returns change-level actions, while CURRENT_ACTIONS returns
+    # revision-level actions (including 'submit') under
+    # revisions[<rev>].actions.
+    "CURRENT_ACTIONS",
+    "CHANGE_ACTIONS",
 ]
 
 # Default query options for listing changes

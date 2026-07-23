@@ -835,6 +835,12 @@ class TestDefaultOptions:
         assert "CURRENT_REVISION" in DEFAULT_CHANGE_OPTIONS
         assert "CURRENT_FILES" in DEFAULT_CHANGE_OPTIONS
         assert "SUBMITTABLE" in DEFAULT_CHANGE_OPTIONS
+        # Both action options are required for permission checks: the
+        # 'submit' action only appears under revision-level actions
+        # (CURRENT_ACTIONS), while change-level actions need
+        # CHANGE_ACTIONS.
+        assert "CURRENT_ACTIONS" in DEFAULT_CHANGE_OPTIONS
+        assert "CHANGE_ACTIONS" in DEFAULT_CHANGE_OPTIONS
 
     def test_default_list_options(self):
         """Test default options for list queries."""

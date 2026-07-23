@@ -141,6 +141,22 @@ class FixOrchestrator:
         self._progress = progress_tracker
         self._logger = logger or (lambda m: None)
 
+    def _safe_progress(self, method_name: str, *args: object) -> None:
+        """Invoke a progress-tracker method if available; ignore UI errors.
+
+        Progress display is best-effort: a missing tracker, a missing method,
+        or a failing render must never interrupt the fix flow.
+        """
+        if not self._progress:
+            return
+        method = getattr(self._progress, method_name, None)
+        if not callable(method):
+            return
+        try:
+            method(*args)
+        except Exception as exc:
+            _LOG.debug("Progress %s failed: %s", method_name, exc, exc_info=True)
+
     async def fetch_pr_details(
         self, selections: Sequence[PRSelection]
     ) -> list[PRContext]:
@@ -233,15 +249,9 @@ class FixOrchestrator:
 
         # Wrap in try/finally for cleanup
         try:
-            # Fetch detailed PR contexts
-            if self._progress:
-                op = getattr(self._progress, "update_operation", None)
-                if callable(op):
-                    try:
-                        op("Fetching PR details for fix candidates...")
-                    except Exception:
-                        # Progress display is best-effort; ignore UI errors.
-                        pass
+            self._safe_progress(
+                "update_operation", "Fetching PR details for fix candidates..."
+            )
 
             contexts = asyncio.run(self.fetch_pr_details(selections))
 
@@ -258,14 +268,9 @@ class FixOrchestrator:
 
             # Prefetch workspaces (clone & fetch) in parallel
             if to_prepare:
-                if self._progress:
-                    op = getattr(self._progress, "update_operation", None)
-                    if callable(op):
-                        try:
-                            op("Preparing workspaces (clone/fetch repos)...")
-                        except Exception:
-                            # Progress display is best-effort; ignore UI errors.
-                            pass
+                self._safe_progress(
+                    "update_operation", "Preparing workspaces (clone/fetch repos)..."
+                )
                 prepared += self._prepare_workspaces_parallel(
                     to_prepare, base_dir, options
                 )
@@ -290,14 +295,7 @@ class FixOrchestrator:
                     )
                     continue
 
-                if self._progress:
-                    suspend_fn = getattr(self._progress, "suspend", None)
-                    if callable(suspend_fn):
-                        try:
-                            suspend_fn()
-                        except Exception:
-                            # Progress display is best-effort; ignore UI errors.
-                            pass
+                self._safe_progress("suspend")
                 self._log(
                     f"Starting interactive rebase for {ctx.base_repo_full_name}#{ctx.pr_number} in {workspace}"
                 )
@@ -348,14 +346,7 @@ class FixOrchestrator:
                     )
                     self._log(f"{ctx.base_repo_full_name}#{ctx.pr_number}: Error: {e}")
                 finally:
-                    if self._progress:
-                        resume_fn = getattr(self._progress, "resume", None)
-                        if callable(resume_fn):
-                            try:
-                                resume_fn()
-                            except Exception:
-                                # Progress display is best-effort; ignore UI errors.
-                                pass
+                    self._safe_progress("resume")
 
             return results
         finally:
@@ -485,6 +476,7 @@ class FixOrchestrator:
             # via the module logger, then still emit the message on stdout
             # so interactive output is not lost.
             _LOG.warning("Injected logger failed; using stdout fallback", exc_info=True)
+            # aislop-ignore-next-line ai-slop/python-print-debug -- deliberate stdout fallback
             print(msg)
 
 

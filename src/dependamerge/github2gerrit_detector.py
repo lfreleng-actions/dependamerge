@@ -64,7 +64,6 @@ __all__ = [
 
 log = logging.getLogger("dependamerge.github2gerrit_detector")
 
-# HTML markers used by github2gerrit-action to delimit mapping blocks
 _START_MARKER = "<!-- github2gerrit:change-id-map v1 -->"
 _END_MARKER = "<!-- end github2gerrit:change-id-map -->"
 
@@ -75,7 +74,6 @@ _TOPIC_PATTERN = re.compile(r"Topic:\s*(GH-\S+)")
 _MODE_PATTERN = re.compile(r"Mode:\s*(squash|multi-commit)")
 _GITHUB_HASH_PATTERN = re.compile(r"GitHub-Hash:\s*([0-9a-f]+)")
 
-# Author names used by the GitHub Actions bot that posts mapping comments
 GITHUB2GERRIT_BOT_AUTHORS = frozenset(
     {
         "github-actions",
@@ -170,7 +168,6 @@ def detect_github2gerrit_comments(
     if not comments:
         return GitHub2GerritDetectionResult()
 
-    # Extract comment bodies with their indices
     bodies_with_index: list[tuple[int, str, dict[str, Any]]] = []
     for idx, comment in enumerate(comments):
         body = _extract_body(comment)
@@ -180,12 +177,10 @@ def detect_github2gerrit_comments(
     if not bodies_with_index:
         return GitHub2GerritDetectionResult()
 
-    # --- Pass 1: look for structured HTML markers ---
     result = _detect_via_markers(bodies_with_index)
     if result.has_mapping:
         return result
 
-    # --- Pass 2: heuristic detection ---
     return _detect_via_heuristic(bodies_with_index)
 
 
@@ -237,11 +232,6 @@ def has_github2gerrit_comments(comments: list[dict[str, Any]]) -> bool:
         if author in GITHUB2GERRIT_BOT_AUTHORS and _looks_like_mapping(body):
             return True
     return False
-
-
-# ---------------------------------------------------------------------------
-# Gerrit change URL construction helpers
-# ---------------------------------------------------------------------------
 
 
 def build_gerrit_change_url_from_mapping(
@@ -348,25 +338,14 @@ def build_gerrit_skip_message(
     Returns:
         A short descriptive string for log/UI output.
     """
-    change_id_short = mapping.primary_change_id[:12] if mapping.primary_change_id else "unknown"
-    return (
-        f"GitHub2Gerrit PR (topic: {mapping.topic}, "
-        f"Change-Id: {change_id_short}...)"
+    change_id_short = (
+        mapping.primary_change_id[:12] if mapping.primary_change_id else "unknown"
     )
-
-
-# ---------------------------------------------------------------------------
-# .gitreview fetching via GitHub API
-# ---------------------------------------------------------------------------
+    return f"GitHub2Gerrit PR (topic: {mapping.topic}, Change-Id: {change_id_short}...)"
 
 
 # NOTE: fetch_gitreview_from_github is re-exported at the top of this
 # module from dependamerge.gitreview — no inline implementation needed.
-
-
-# ---------------------------------------------------------------------------
-# Internal helpers
-# ---------------------------------------------------------------------------
 
 
 def _extract_body(comment: dict[str, Any]) -> str:

@@ -66,8 +66,6 @@ class PullRequestInfo(BaseModel):
     reviews: list[ReviewInfo] = []  # PR reviews
     review_comments: list[ReviewComment] = []  # Review comments (including Copilot)
 
-    # Optional fields used by the interactive fix workflow
-    # These enable cloning the correct repositories and pushing fixes.
     head_repo_full_name: str | None = None
     head_repo_clone_url: str | None = None
     base_repo_full_name: str | None = None

@@ -105,12 +105,10 @@ class GerritService:
         self._progress_tracker = progress_tracker
         self._similarity_threshold = similarity_threshold
 
-        # Build URL helper
         self._url_builder = create_url_builder(
             host, base_path=base_path, auto_discover=False
         )
 
-        # Build REST client
         self._client = build_client(
             host,
             base_path=base_path,
@@ -201,7 +199,6 @@ class GerritService:
         if options is None:
             options = DEFAULT_CHANGE_OPTIONS
 
-        # Build query URL
         endpoint = f"/changes/{change_number}"
         if options:
             params = "&".join(f"o={opt}" for opt in options)
@@ -219,7 +216,6 @@ class GerritService:
             if check_mergeable and change_info.status == "NEW":
                 mergeable_data = self.get_mergeable_status(change_number)
                 if mergeable_data.get("mergeable") is not None:
-                    # Update the change info with actual mergeable status
                     change_info = change_info.model_copy(
                         update={"mergeable": mergeable_data.get("mergeable")}
                     )
@@ -281,7 +277,6 @@ class GerritService:
         except GerritRestError as exc:
             # HTTP 409 indicates a merge conflict
             if exc.status_code == 409:
-                # Parse conflict details from response body
                 conflicting_files = self._parse_conflict_files(exc.response_body or "")
                 log.warning(
                     "Rebase failed for change %d: merge conflict in %s",
@@ -392,7 +387,6 @@ class GerritService:
         if options is None:
             options = DEFAULT_LIST_OPTIONS
 
-        # Build query string
         query_parts = ["status:open"]
         if project:
             query_parts.append(f"project:{project}")
@@ -508,7 +502,6 @@ class GerritService:
             source_change.number,
         )
 
-        # Fetch all open changes
         all_changes = self.get_all_open_changes(limit=limit)
 
         log.debug("Scanning %d open changes for similarity", len(all_changes))
@@ -573,7 +566,6 @@ class GerritService:
             remaining = limit - len(all_changes)
             current_limit = min(page_size, remaining)
 
-            # Build query URL
             params = [
                 f"q={query}",
                 f"n={current_limit}",
@@ -598,7 +590,6 @@ class GerritService:
             if not data or not isinstance(data, list):
                 break
 
-            # Parse each change
             page_changes = []
             for item in data:
                 try:
@@ -736,7 +727,6 @@ class GerritService:
         if s1 == s2:
             return 1.0
 
-        # Check for common patterns
         patterns = [
             "bump",
             "update",

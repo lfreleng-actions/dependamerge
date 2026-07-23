@@ -148,10 +148,6 @@ class GitHubService:
     async def close(self) -> None:
         await self._api.aclose()
 
-    # -----------------------
-    # ProgressTracker bridges
-    # -----------------------
-
     async def _on_rate_limited(self, reset_epoch: float) -> None:
         # Mark rate-limited and report current tuning metrics
         self._rate_limited = True
@@ -163,9 +159,14 @@ class GitHubService:
                 self._progress.update_operation(
                     f"Tuning: prs={DEFAULT_PRS_PAGE_SIZE} files={DEFAULT_FILES_PAGE_SIZE} comments={DEFAULT_COMMENTS_PAGE_SIZE} contexts={DEFAULT_CONTEXTS_PAGE_SIZE}"
                 )
-            except Exception:
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
                 # Progress display is best-effort; ignore UI errors.
-                pass
+                self.log.debug(
+                    f"Progress update failed (rate-limited): {exc}",
+                    exc_info=True,
+                )
 
     async def _on_rate_limit_cleared(self) -> None:
         # Clear rate-limited flag and report current tuning metrics
@@ -177,9 +178,14 @@ class GitHubService:
             self._progress.update_operation(
                 f"Tuning: prs={DEFAULT_PRS_PAGE_SIZE} files={DEFAULT_FILES_PAGE_SIZE} comments={DEFAULT_COMMENTS_PAGE_SIZE} contexts={DEFAULT_CONTEXTS_PAGE_SIZE}"
             )
-        except Exception:
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
             # Progress display is best-effort; ignore UI errors.
-            pass
+            self.log.debug(
+                f"Progress update failed (rate-limit cleared): {exc}",
+                exc_info=True,
+            )
 
     async def _on_metrics(self, concurrency: int, rps: float) -> None:
         """Receive current concurrency and RPS from the async client and push to progress display."""
@@ -188,13 +194,11 @@ class GitHubService:
         try:
             # Round RPS to a single decimal for display, actual value passed through
             self._progress.update_metrics(concurrency, rps)
-        except Exception:
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
             # Metrics are best-effort; ignore UI errors
-            pass
-
-    # -----------------------
-    # Public high-level APIs
-    # -----------------------
+            self.log.debug(f"Progress metrics update failed: {exc}", exc_info=True)
 
     async def scan_organization(
         self, org: str, include_drafts: bool = False
@@ -268,7 +272,6 @@ class GitHubService:
                     if self._progress:
                         self._progress.complete_repository(len(repo_unmergeables))
 
-                    # Return: unmergeables, prs count, scanned_repos_inc, errors
                     return repo_unmergeables, repo_total_prs, 1, repo_errors
                 except Exception as e:
                     if self._progress:
@@ -305,10 +308,6 @@ class GitHubService:
             scan_timestamp=datetime.now().isoformat(),
             errors=errors,
         )
-
-    # -------------------------------------------------
-    # Iterators and pagination for repos and repo PRs
-    # -------------------------------------------------
 
     async def _iter_org_repositories(self, org: str) -> AsyncIterator[dict[str, Any]]:
         """Iterate an owner's non-archived repositories (forks included).
@@ -545,10 +544,6 @@ class GitHubService:
         page_info: dict[str, Any] = prs.get("pageInfo") or {}
         return nodes, page_info
 
-    # -------------------------------
-    # PR analysis and model mappings
-    # -------------------------------
-
     async def _analyze_pr_node(
         self, repo_full_name: str, pr: dict[str, Any], include_drafts: bool = False
     ) -> UnmergeablePR | None:
@@ -568,9 +563,11 @@ class GitHubService:
         if self._progress:
             try:
                 self._progress.analyze_pr(pr.get("number", 0), repo_full_name)
-            except Exception:
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
                 # Progress display is best-effort; ignore UI errors.
-                pass
+                self.log.debug(f"Progress analyze_pr failed: {exc}", exc_info=True)
 
         reasons: list[UnmergeableReason] = []
 
@@ -1112,7 +1109,6 @@ class GitHubService:
         """
         cache_key = f"{owner}/{repo}:{branch}"
 
-        # Check cache first
         if cache_key in self._branch_protection_cache:
             return self._branch_protection_cache[cache_key]
 
@@ -1133,7 +1129,6 @@ class GitHubService:
                 self._branch_protection_cache[cache_key] = None
                 return None
 
-            # Start with repository-level merge settings
             protection = {
                 "allowsMergeCommits": repo_data.get("mergeCommitAllowed", True),
                 "allowsSquashMerges": repo_data.get("squashMergeAllowed", True),
@@ -1161,7 +1156,6 @@ class GitHubService:
 
         except Exception as e:
             error_str = str(e)
-            # Check for permission errors
             if (
                 "FORBIDDEN" in error_str
                 and "Resource not accessible by personal access token" in error_str
@@ -1231,10 +1225,6 @@ class GitHubService:
         )
         return default_method
 
-    # -----------------
-    # Helper methods
-    # -----------------
-
     def _split_owner_repo(self, full_name: str) -> tuple[str, str]:
         try:
             owner, name = full_name.split("/", 1)
@@ -1259,7 +1249,6 @@ class GitHubService:
             # GitHub is still calculating - treat as potentially mergeable
             self.log.debug("Mapped UNKNOWN to None (still calculating)")
             return None
-        # Log unexpected values for debugging
         self.log.warning(f"Unexpected mergeable value from GraphQL: {value}")
         return None
 
@@ -1408,7 +1397,6 @@ class GitHubService:
                 try:
                     owner, name = self._split_owner_repo(repo_full_name)
 
-                    # Get tags and releases
                     latest_tag, tag_date = await self._get_latest_tag(owner, name)
                     latest_release, release_date = await self._get_latest_release(
                         owner, name
@@ -1419,7 +1407,6 @@ class GitHubService:
                         latest_tag, latest_release, tag_date, release_date
                     )
 
-                    # Get PR statistics
                     pr_stats = await self._gather_pr_statistics(
                         owner, name, tag_date or release_date
                     )
@@ -1478,8 +1465,7 @@ class GitHubService:
             )
             if isinstance(tags_data, list) and len(tags_data) > 0:
                 tag_name = tags_data[0].get("name")
-                # Get commit info for the tag to get date
-                commit_sha = tags_data[0].get("commit", {}).get("sha")
+                commit_sha = (tags_data[0].get("commit") or {}).get("sha")
                 if commit_sha:
                     commit_data = await self._api.get(
                         f"/repos/{owner}/{name}/commits/{commit_sha}"
@@ -1554,9 +1540,9 @@ class GitHubService:
                     release_dt = datetime.strptime(release_date, "%Y/%m/%d")
                     if release_dt > tag_dt:
                         return "❌"
-                except Exception:
+                except Exception as exc:
                     # Date parsing failed, fall through to warning icon
-                    pass
+                    self.log.debug(f"Tag/release date parse failed: {exc}")
             return "⚠️"
         elif latest_tag and not latest_release:
             return "⚠️"
@@ -1589,7 +1575,6 @@ class GitHubService:
         }
 
         try:
-            # Get open PRs
             first_nodes, page_info = await self._fetch_repo_prs_first_page(owner, name)
             open_prs = list(first_nodes)
 
@@ -1631,7 +1616,7 @@ class GitHubService:
             if since_date:
                 merged_prs = await self._get_merged_prs_since(owner, name, since_date)
                 for pr in merged_prs:
-                    author = pr.get("user", {}).get("login", "").lower()
+                    author = (pr.get("user") or {}).get("login", "").lower()
                     is_automation = self._is_automation_author(author)
 
                     if is_automation:
@@ -1664,7 +1649,6 @@ class GitHubService:
             path = file_node.get("path", "")
             filename = path.split("/")[-1] if "/" in path else path
 
-            # Check for action definition files
             if filename.lower() in [p.lower() for p in action_patterns]:
                 return True
 

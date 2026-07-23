@@ -530,6 +530,68 @@ def _source_pr_modifies_workflows(ctx: _MergeContext) -> bool:
     return False
 
 
+def _report_missing_permissions(
+    missing_perms: list[str],
+    perm_results: dict[str, dict[str, Any]],
+) -> None:
+    """Print grouped guidance for missing token permissions and exit.
+
+    Groups failing operations by their guidance tuple so we don't repeat
+    the same URL block once per failed operation.  In the common 401 /
+    expired-token case every operation lands on the same guidance, which
+    used to produce four near-identical six-line blocks; under the grouped
+    renderer it collapses to a single list of operations followed by one
+    guidance block.  The 403 case (per-operation scope guidance) naturally
+    falls out as one group per distinct guidance tuple, so each operation
+    still gets its own scope hint.
+    """
+    console.print("\n❌ Token Permission Check Failed:\n")
+    groups: OrderedDict[
+        tuple[str | None, str | None, str | None],
+        list[tuple[str, str]],
+    ] = OrderedDict()
+    for op in missing_perms:
+        result = perm_results[op]
+        guidance = result.get("guidance") or {}
+        key = (
+            guidance.get("classic"),
+            guidance.get("fine_grained"),
+            guidance.get("fix"),
+        )
+        groups.setdefault(key, []).append((op, result.get("error", "")))
+
+    for key, items in groups.items():
+        classic, fine_grained, fix = key
+        # List the failing operations in this group.
+        for op, _err in items:
+            console.print(f"   • {op}")
+        # Show the shared error message once if every op in the group
+        # reports the same one (the 401 case); otherwise show each
+        # operation's message inline so distinct failures stay
+        # distinguishable.
+        distinct_errors = {err for _, err in items if err}
+        if len(distinct_errors) == 1:
+            console.print(f"\n   {next(iter(distinct_errors))}")
+        elif distinct_errors:
+            console.print()
+            for op, err in items:
+                if err:
+                    console.print(f"   {op}: {err}")
+        # Single guidance block for the whole group.
+        if classic or fine_grained or fix:
+            console.print()
+            if classic:
+                console.print(f"   Classic:       {classic}")
+            if fine_grained:
+                console.print(f"   Fine-grained:  {fine_grained}")
+            if fix:
+                console.print(f"   Fix:           {fix}")
+        console.print()  # blank line between groups
+
+    console.print("💡 Update your token permissions and try again.")
+    raise typer.Exit(code=3)
+
+
 def _check_merge_permissions(ctx: _MergeContext) -> None:
     """Pre-flight token permission check.
 
@@ -574,61 +636,7 @@ def _check_merge_permissions(ctx: _MergeContext) -> None:
             op for op, result in perm_results.items() if not result["has_permission"]
         ]
         if missing_perms:
-            console.print("\n❌ Token Permission Check Failed:\n")
-            # Group failing operations by their guidance tuple so we
-            # don't repeat the same URL block once per failed
-            # operation.  In the common 401 / expired-token case
-            # every operation lands on the same guidance, which
-            # used to produce four near-identical six-line blocks;
-            # under the grouped renderer it collapses to a single
-            # list of operations followed by one guidance block.
-            # The 403 case (per-operation scope guidance) naturally
-            # falls out as one group per distinct guidance tuple,
-            # so each operation still gets its own scope hint.
-            groups: OrderedDict[
-                tuple[str | None, str | None, str | None],
-                list[tuple[str, str]],
-            ] = OrderedDict()
-            for op in missing_perms:
-                result = perm_results[op]
-                guidance = result.get("guidance") or {}
-                key = (
-                    guidance.get("classic"),
-                    guidance.get("fine_grained"),
-                    guidance.get("fix"),
-                )
-                groups.setdefault(key, []).append((op, result.get("error", "")))
-
-            for key, items in groups.items():
-                classic, fine_grained, fix = key
-                # List the failing operations in this group.
-                for op, _err in items:
-                    console.print(f"   • {op}")
-                # Show the shared error message once if every op
-                # in the group reports the same one (the 401 case);
-                # otherwise show each operation's message inline
-                # so distinct failures stay distinguishable.
-                distinct_errors = {err for _, err in items if err}
-                if len(distinct_errors) == 1:
-                    console.print(f"\n   {next(iter(distinct_errors))}")
-                elif distinct_errors:
-                    console.print()
-                    for op, err in items:
-                        if err:
-                            console.print(f"   {op}: {err}")
-                # Single guidance block for the whole group.
-                if classic or fine_grained or fix:
-                    console.print()
-                    if classic:
-                        console.print(f"   Classic:       {classic}")
-                    if fine_grained:
-                        console.print(f"   Fine-grained:  {fine_grained}")
-                    if fix:
-                        console.print(f"   Fix:           {fix}")
-                console.print()  # blank line between groups
-
-            console.print("💡 Update your token permissions and try again.")
-            raise typer.Exit(code=3)
+            _report_missing_permissions(missing_perms, perm_results)
         console.print("✅ Token has required permissions")
     except GitHubPermissionError as e:
         console.print(f"\n❌ Permission check failed: {e}")
@@ -1227,17 +1235,14 @@ def _handle_repo_merge(
     # identically; the preview list below is derived from this order too.
     repo_prs = _repo_merge_order(repo_prs)
 
-    # Delegated to the shared bot-identity predicate so REST and GraphQL
-    # login forms (e.g. "dependabot[bot]" vs "dependabot") classify
-    # identically.
-    def _is_auto(author: str | None) -> bool:
-        return is_automation_author(author)
-
     automation_prs: list[PullRequestInfo] = []
     human_prs: list[PullRequestInfo] = []
 
     for pr in repo_prs:
-        if _is_auto(pr.author):
+        # is_automation_author normalizes REST and GraphQL login forms
+        # (e.g. "dependabot[bot]" vs "dependabot") so they classify
+        # identically.
+        if is_automation_author(pr.author):
             automation_prs.append(pr)
         else:
             human_prs.append(pr)
@@ -1623,14 +1628,10 @@ def _handle_org_merge(
     ctx.repo_name = owner_prs[0].repository_full_name.split("/", 1)[-1]
     _maybe_check_merge_permissions(ctx)
 
-    # Delegated to the shared bot-identity predicate (see _handle_repo_merge).
-    def _is_auto(author: str | None) -> bool:
-        return is_automation_author(author)
-
     automation_prs: list[PullRequestInfo] = []
     human_prs: list[PullRequestInfo] = []
     for pr in owner_prs:
-        if _is_auto(pr.author):
+        if is_automation_author(pr.author):
             automation_prs.append(pr)
         else:
             human_prs.append(pr)
@@ -2743,7 +2744,6 @@ def _display_pr_info(
     table.add_column("Property", style="cyan")
     table.add_column("Value", style="green")
 
-    # Get proper status instead of raw mergeable field
     status = github_client.get_pr_status_details(pr)
 
     table.add_row("Repository", pr.repository_full_name)
@@ -3704,18 +3704,15 @@ def _display_status_results(status_result, output_format: str):
     console.print()
     console.print("PR counts are for human/automation")
     console.print("\nAutomation tools supported:")
+    special_tool_labels = {
+        "[bot]": "Any other [bot] account",
+        "pre-commit": "pre-commit.ci",
+        "github-actions": "GitHub Actions",
+        "copilot": "GitHub Copilot",
+    }
     for tool in AUTOMATION_TOOLS:
-        # Format tool names nicely
-        if tool == "[bot]":
-            console.print("  • Any other [bot] account")
-        elif tool == "pre-commit":
-            console.print("  • pre-commit.ci")
-        elif tool == "github-actions":
-            console.print("  • GitHub Actions")
-        elif tool == "copilot":
-            console.print("  • GitHub Copilot")
-        else:
-            console.print(f"  • {tool.capitalize()}")
+        label = special_tool_labels.get(tool, tool.capitalize())
+        console.print(f"  • {label}")
     console.print()
 
     summary_table = Table()

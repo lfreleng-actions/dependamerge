@@ -34,43 +34,16 @@ from typing import Any
 
 log = logging.getLogger(__name__)
 
-# ───────────────────────────────────────────────────────────────────────
-# Constants
-# ───────────────────────────────────────────────────────────────────────
-
 DEFAULT_GERRIT_PORT: int = 29418
 """Default Gerrit SSH port when the ``port=`` line is absent."""
-
-# ───────────────────────────────────────────────────────────────────────
-# Precompiled regex patterns for INI-style .gitreview files
-#
-# These patterns:
-#   • are multiline (``(?m)``)
-#   • are case-insensitive on the key name (``(?i)``)
-#   • tolerate optional horizontal whitespace around ``=``
-#   • strip trailing whitespace / ``\r`` so Windows line endings are handled
-#
-# The trailing ``[ \t\r]*$`` component on every pattern is what absorbs
-# a Windows ``\r`` (and any trailing spaces/tabs) before the line
-# anchor, so values parsed from CRLF-terminated files do not retain a
-# stray carriage return.
-# ───────────────────────────────────────────────────────────────────────
 
 _HOST_RE = re.compile(r"(?mi)^host[ \t]*=[ \t]*(.+?)[ \t\r]*$")
 _PORT_RE = re.compile(r"(?mi)^port[ \t]*=[ \t]*(\d+)[ \t\r]*$")
 _PROJECT_RE = re.compile(r"(?mi)^project[ \t]*=[ \t]*(.+?)[ \t\r]*$")
 
-# ───────────────────────────────────────────────────────────────────────
-# Well-known Gerrit base paths
-# ───────────────────────────────────────────────────────────────────────
-
 _KNOWN_BASE_PATHS: dict[str, str] = {
     "gerrit.linuxfoundation.org": "infra",
 }
-
-# ───────────────────────────────────────────────────────────────────────
-# Data model
-# ───────────────────────────────────────────────────────────────────────
 
 
 @dataclass(frozen=True)
@@ -107,11 +80,6 @@ class GitReviewInfo:
         return bool(self.host)
 
 
-# ───────────────────────────────────────────────────────────────────────
-# Base-path derivation
-# ───────────────────────────────────────────────────────────────────────
-
-
 def derive_base_path(host: str) -> str | None:
     """Return the REST API base path for well-known Gerrit hosts.
 
@@ -132,11 +100,6 @@ def derive_base_path(host: str) -> str | None:
         not in the known-hosts table.
     """
     return _KNOWN_BASE_PATHS.get(host.lower().strip())
-
-
-# ───────────────────────────────────────────────────────────────────────
-# Pure parser
-# ───────────────────────────────────────────────────────────────────────
 
 
 def parse_gitreview(text: str) -> GitReviewInfo | None:
@@ -221,11 +184,6 @@ compatibility for any callers still using the old name.
 """
 
 
-# ───────────────────────────────────────────────────────────────────────
-# Async remote fetch: GitHub Contents API
-# ───────────────────────────────────────────────────────────────────────
-
-
 async def fetch_gitreview_from_github(
     github_client: Any,
     owner: str,
@@ -257,9 +215,7 @@ async def fetch_gitreview_from_github(
         data = await github_client.get(endpoint)
 
         if not isinstance(data, dict):
-            log.debug(
-                ".gitreview API response is not a dict for %s/%s", owner, repo
-            )
+            log.debug(".gitreview API response is not a dict for %s/%s", owner, repo)
             return None
 
         # The contents API returns base64-encoded content

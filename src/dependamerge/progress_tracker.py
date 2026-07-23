@@ -216,6 +216,7 @@ class ProgressTracker:
                 # prompt doesn't appear mid-line after carriage-return
                 # in-place updates.
                 if self._last_display and self._stdout_is_tty():
+                    # aislop-ignore-next-line ai-slop/python-print-debug -- terminal newline on teardown
                     print(flush=True)
         finally:
             self._restore_terminal_logging()
@@ -427,8 +428,10 @@ class ProgressTracker:
                 # \033[K clears from cursor to end-of-line so shorter
                 # updates don't leave trailing characters from the
                 # previous render.
+                # aislop-ignore-next-line ai-slop/python-print-debug -- progress render to stdout
                 print(f"\r{display}\033[K", end="", flush=True)
             else:
+                # aislop-ignore-next-line ai-slop/python-print-debug -- progress render to stdout
                 print(display)
             self._last_display = display
 
@@ -458,7 +461,6 @@ class ProgressTracker:
             "errors_count": self.errors_count,
             "elapsed_seconds": elapsed.total_seconds(),
             "elapsed_formatted": formatted,
-            # Backward-compatible alias used by cli.py
             "elapsed_time": formatted,
         }
 

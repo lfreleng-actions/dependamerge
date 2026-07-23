@@ -28,7 +28,6 @@ from urllib.parse import quote, urljoin, urlparse
 
 log = logging.getLogger("dependamerge.gerrit.urls")
 
-
 # Module-level cache for discovered base paths
 _BASE_PATH_CACHE: dict[str, str] = {}
 
@@ -153,16 +152,13 @@ def discover_base_path(
     if not host:
         return ""
 
-    # Check cache first
     cached = _BASE_PATH_CACHE.get(host)
     if cached is not None:
         return cached
 
     # Check circuit breaker - if open, fail fast with default
     if _check_circuit_breaker(host):
-        log.debug(
-            "Circuit breaker open for %s, skipping discovery", host
-        )
+        log.debug("Circuit breaker open for %s, skipping discovery", host)
         return ""
 
     start_time = time.monotonic()
@@ -195,9 +191,7 @@ def discover_base_path(
             # Check if we've exceeded the total time budget
             elapsed = time.monotonic() - start_time
             if elapsed >= max_total_time:
-                log.debug(
-                    "Discovery timeout for %s after %.1fs", host, elapsed
-                )
+                log.debug("Discovery timeout for %s after %.1fs", host, elapsed)
                 break
 
             url = f"{scheme}://{host}{probe}"
@@ -217,22 +211,13 @@ def discover_base_path(
                     _BASE_PATH_CACHE[host] = ""
                     return ""
 
-                # Handle redirects
                 if code in (301, 302, 303, 307, 308):
                     headers = getattr(resp, "headers", {}) or {}
-                    location = (
-                        headers.get("Location")
-                        or headers.get("location")
-                        or ""
-                    )
+                    location = headers.get("Location") or headers.get("location") or ""
                     if location:
-                        base_path = _extract_base_path(
-                            host, location, known_endpoints
-                        )
+                        base_path = _extract_base_path(host, location, known_endpoints)
                         _BASE_PATH_CACHE[host] = base_path
-                        log.debug(
-                            "Discovered base path for %s: %r", host, base_path
-                        )
+                        log.debug("Discovered base path for %s: %r", host, base_path)
                         return base_path
 
             except urllib.error.HTTPError as http_err:
@@ -248,13 +233,9 @@ def discover_base_path(
                         or ""
                     )
                     if location:
-                        base_path = _extract_base_path(
-                            host, location, known_endpoints
-                        )
+                        base_path = _extract_base_path(host, location, known_endpoints)
                         _BASE_PATH_CACHE[host] = base_path
-                        log.debug(
-                            "Discovered base path for %s: %r", host, base_path
-                        )
+                        log.debug("Discovered base path for %s: %r", host, base_path)
                         return base_path
 
             except urllib.error.URLError as url_err:
@@ -262,23 +243,14 @@ def discover_base_path(
                 network_failures += 1
                 reason = getattr(url_err, "reason", str(url_err))
 
-                # Check for specific network error types
                 if isinstance(reason, socket.gaierror):
-                    log.debug(
-                        "DNS resolution failed for %s: %s", host, reason
-                    )
+                    log.debug("DNS resolution failed for %s: %s", host, reason)
                 elif isinstance(reason, socket.timeout):
-                    log.debug(
-                        "Connection timeout for %s%s", host, probe
-                    )
+                    log.debug("Connection timeout for %s%s", host, probe)
                 elif isinstance(reason, ConnectionRefusedError):
-                    log.debug(
-                        "Connection refused for %s%s", host, probe
-                    )
+                    log.debug("Connection refused for %s%s", host, probe)
                 else:
-                    log.debug(
-                        "Network error for %s%s: %s", host, probe, reason
-                    )
+                    log.debug("Network error for %s%s: %s", host, probe, reason)
 
                 _record_circuit_breaker_failure(host)
                 continue
@@ -320,13 +292,10 @@ def discover_base_path(
     return ""
 
 
-def _extract_base_path(
-    host: str, location: str, known_endpoints: set[str]
-) -> str:
+def _extract_base_path(host: str, location: str, known_endpoints: set[str]) -> str:
     """Extract the base path from a redirect Location header."""
     parsed = urlparse(location)
 
-    # Get the path component
     path = parsed.path if parsed.scheme or parsed.netloc else location
 
     # Split into segments
@@ -375,7 +344,6 @@ class GerritUrlBuilder:
         if base_path is not None:
             self._base_path = base_path.strip().strip("/")
         else:
-            # Check environment variable first
             env_bp = os.getenv("GERRIT_HTTP_BASE_PATH", "").strip().strip("/")
             if env_bp:
                 self._base_path = env_bp
@@ -402,7 +370,9 @@ class GerritUrlBuilder:
     def _build_base_url(self) -> str:
         """Build the base URL with protocol and base path."""
         if self._base_path:
+            # aislop-ignore-next-line ai-slop/hardcoded-url -- host is caller-supplied
             return f"https://{self.host}/{self._base_path}/"
+        # aislop-ignore-next-line ai-slop/hardcoded-url -- host is caller-supplied
         return f"https://{self.host}/"
 
     def api_url(self, endpoint: str = "") -> str:
@@ -540,10 +510,7 @@ class GerritUrlBuilder:
 
     def __repr__(self) -> str:
         """String representation for debugging."""
-        return (
-            f"GerritUrlBuilder(host={self.host!r}, "
-            f"base_path={self._base_path!r})"
-        )
+        return f"GerritUrlBuilder(host={self.host!r}, base_path={self._base_path!r})"
 
 
 def create_url_builder(

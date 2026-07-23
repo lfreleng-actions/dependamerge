@@ -82,7 +82,6 @@ class GerritChangeComparator:
         reasons: list[str] = []
         scores: list[float] = []
 
-        # Check automation requirements
         if only_automation:
             source_is_auto = self.is_automation_change(source_change)
             target_is_auto = self.is_automation_change(target_change)
@@ -152,12 +151,10 @@ class GerritChangeComparator:
         # Combine relevant fields for checking
         text = f"{change.subject} {change.message or ''} {change.owner}".lower()
 
-        # Check for automation indicators
         for indicator in AUTOMATION_INDICATORS:
             if indicator in text:
                 return True
 
-        # Check for common automation commit patterns
         automation_patterns = [
             r"^chore\(deps\):",
             r"^build\(deps\):",
@@ -209,7 +206,6 @@ class GerritChangeComparator:
         if normalized.endswith("[bot]"):
             normalized = normalized[:-5]
 
-        # Remove common suffixes
         for suffix in ("-bot", "_bot", ".bot"):
             if normalized.endswith(suffix):
                 normalized = normalized[: -len(suffix)]
@@ -232,7 +228,6 @@ class GerritChangeComparator:
 
         For dependency updates, extracts and compares package names.
         """
-        # Extract package names for dependency updates
         package1 = self._extract_package_name(subject1)
         package2 = self._extract_package_name(subject2)
 
@@ -252,13 +247,9 @@ class GerritChangeComparator:
         """
         Normalize subject by removing version-specific information.
         """
-        # Remove version numbers
         subject = re.sub(r"v?\d+\.\d+\.\d+(?:\.\d+)?(?:-[a-zA-Z0-9.-]+)?", "", subject)
-        # Remove commit hashes
         subject = re.sub(r"\b[a-f0-9]{7,40}\b", "", subject)
-        # Remove dates
         subject = re.sub(r"\d{4}-\d{2}-\d{2}", "", subject)
-        # Normalize whitespace
         subject = " ".join(subject.split())
 
         return subject.lower()
@@ -286,7 +277,6 @@ class GerritChangeComparator:
             match = re.search(pattern, subject_lower)
             if match:
                 package = match.group(1).strip()
-                # Clean up package name
                 package = re.sub(r'^["\']|["\']$', "", package)
                 return package
 
@@ -307,7 +297,6 @@ class GerritChangeComparator:
         if len(norm1) < 50 or len(norm2) < 50:
             return 1.0 if norm1 == norm2 else 0.0
 
-        # Check for specific automation patterns
         pattern_score = self._compare_automation_patterns(message1, message2)
         if pattern_score > 0:
             return pattern_score
@@ -322,21 +311,12 @@ class GerritChangeComparator:
         # Convert to lowercase
         message = message.lower()
 
-        # Remove URLs
         message = re.sub(r"https?://[^\s]+", "", message)
-
-        # Remove version numbers
         message = re.sub(
             r"v?\d+\.\d+\.\d+(?:\.\d+)?(?:-[a-zA-Z0-9.-]+)?", "VERSION", message
         )
-
-        # Remove commit hashes
         message = re.sub(r"\b[a-f0-9]{7,40}\b", "COMMIT", message)
-
-        # Remove dates
         message = re.sub(r"\d{4}-\d{2}-\d{2}", "DATE", message)
-
-        # Normalize whitespace
         message = re.sub(r"\s+", " ", message).strip()
 
         return message
@@ -417,7 +397,6 @@ class GerritChangeComparator:
         if not source.files_changed or not target.files_changed:
             return 0.0
 
-        # Extract and normalize filenames
         source_files = {
             self._normalize_filename(f.filename) for f in source.files_changed
         }
@@ -448,7 +427,6 @@ class GerritChangeComparator:
         """
         Normalize filename for comparison.
         """
-        # Remove version-specific parts
         filename = re.sub(r"v?\d+\.\d+\.\d+(?:\.\d+)?", "", filename)
         return filename.lower()
 

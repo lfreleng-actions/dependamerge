@@ -354,7 +354,6 @@ def run_git(
 
     env = _build_git_env(env_overrides, lfs_skip=lfs_skip)
 
-    # Build a redacted command string for logging
     cmd_str = shlex.join(_redact_seq([str(a) for a in args]))  # type: ignore[arg-type]
     if logger:
         logger(f"$ {cmd_str}")
@@ -408,11 +407,6 @@ def run_git(
             stdout="",
             stderr=str(e),
         ) from e
-
-
-# -----------------------------
-# High-level git helper methods
-# -----------------------------
 
 
 def clone(
@@ -722,11 +716,6 @@ def rev_list_count(
         return 0
 
 
-# --------------------------------------
-# Secure temporary directory helpers
-# --------------------------------------
-
-
 def create_secure_tempdir(prefix: str = "dependamerge-") -> str:
     """
     Create a temporary directory with restrictive permissions (0700).
@@ -737,7 +726,7 @@ def create_secure_tempdir(prefix: str = "dependamerge-") -> str:
     path = tempfile.mkdtemp(prefix=prefix)
     try:
         os.chmod(path, 0o700)
-    except Exception:
+    except OSError:
         # Best effort; continue even if chmod fails (Windows, etc.)
         pass
     return path
@@ -756,7 +745,7 @@ def _chmod_tree_safe(
                 fp = Path(root) / name
                 try:
                     os.chmod(fp, file_mode)
-                except Exception:
+                except OSError:
                     # Best-effort: skip files we cannot chmod; the
                     # later rmtree retry handles stubborn paths.
                     pass
@@ -764,15 +753,15 @@ def _chmod_tree_safe(
                 dp = Path(root) / name
                 try:
                     os.chmod(dp, dir_mode)
-                except Exception:
+                except OSError:
                     # Best-effort: skip dirs we cannot chmod.
                     pass
         try:
             os.chmod(p, dir_mode)
-        except Exception:
+        except OSError:
             # Best-effort: ignore failure to chmod the tree root.
             pass
-    except Exception:
+    except OSError:
         # Ignore any errors; deletion attempts will proceed anyway
         pass
 
@@ -799,7 +788,7 @@ def secure_rmtree(path: PathLike) -> None:
                 else:
                     os.chmod(p, 0o600)
                 func(p)
-            except Exception:
+            except OSError:
                 # Give up on this path
                 pass
 

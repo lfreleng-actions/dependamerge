@@ -74,11 +74,6 @@ if TYPE_CHECKING:
     from .github_async import GitHubAsync
 
 
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
-
-
 @dataclass
 class RebaseContext:
     """Bundle of dependencies the rebase orchestrator needs.
@@ -648,11 +643,6 @@ async def perform_step5_rebase(
         owner=owner,
         repo=repo,
     )
-
-
-# ---------------------------------------------------------------------------
-# Internal helpers
-# ---------------------------------------------------------------------------
 
 
 def _set_tracker_state(

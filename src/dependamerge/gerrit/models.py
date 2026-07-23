@@ -210,7 +210,6 @@ class GerritChangeInfo(BaseModel):
         Returns:
             A GerritChangeInfo instance.
         """
-        # Extract basic fields
         number = data.get("_number", 0)
         change_id = data.get("change_id", "")
         project = data.get("project", "")
@@ -219,22 +218,18 @@ class GerritChangeInfo(BaseModel):
         status = data.get("status", "NEW")
         topic = data.get("topic")
 
-        # Extract owner info
         owner_data = data.get("owner", {})
         owner = owner_data.get("username") or owner_data.get("name", "unknown")
         owner_email = owner_data.get("email")
 
-        # Extract current revision
         current_revision = data.get("current_revision", "")
 
-        # Extract commit message from current revision
         message = None
         if current_revision and "revisions" in data:
             revision_data = data["revisions"].get(current_revision, {})
             commit_data = revision_data.get("commit", {})
             message = commit_data.get("message")
 
-        # Extract file changes from current revision
         files_changed: list[GerritFileChange] = []
         if current_revision and "revisions" in data:
             revision_data = data["revisions"].get(current_revision, {})
@@ -247,7 +242,6 @@ class GerritChangeInfo(BaseModel):
                     GerritFileChange.from_api_response(filename, file_info)
                 )
 
-        # Extract labels
         labels: list[GerritLabelInfo] = []
         labels_data = data.get("labels", {})
         for label_name, label_info in labels_data.items():
@@ -261,7 +255,6 @@ class GerritChangeInfo(BaseModel):
         # Extract permitted labels (what the current user can vote on)
         permitted_labels: dict[str, list[str]] = data.get("permitted_labels", {})
 
-        # Extract available actions
         actions: dict[str, dict[str, Any]] = data.get("actions", {})
 
         # Check submit requirements (Gerrit 3.x+)

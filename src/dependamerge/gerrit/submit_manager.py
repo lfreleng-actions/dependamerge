@@ -239,6 +239,95 @@ class GerritSubmitManager:
                 tracker.merge_failure(change_key)
         return result
 
+    def _precheck_submit(
+        self,
+        change: GerritChangeInfo,
+        dry_run: bool,
+        start_time: float,
+    ) -> GerritSubmitResult | None:
+        """Return a short-circuit result, or None when submission may proceed.
+
+        Rejects changes that cannot be submitted (not open, work in
+        progress) and satisfies dry runs without any network calls.
+        """
+        if not change.is_open:
+            return GerritSubmitResult.failure_result(
+                change_number=change.number,
+                project=change.project,
+                error=f"Change is not open (status: {change.status})",
+                duration=time.time() - start_time,
+            )
+
+        if change.work_in_progress:
+            return GerritSubmitResult.failure_result(
+                change_number=change.number,
+                project=change.project,
+                error="Change is marked as Work In Progress",
+                duration=time.time() - start_time,
+            )
+
+        if dry_run:
+            log.info(
+                "[DRY RUN] Would review and submit %s #%d",
+                change.project,
+                change.number,
+            )
+            return GerritSubmitResult.success_result(
+                change_number=change.number,
+                project=change.project,
+                reviewed=True,
+                submitted=True,
+                duration=time.time() - start_time,
+            )
+
+        return None
+
+    def _submit_error_result(
+        self,
+        change: GerritChangeInfo,
+        exc: Exception,
+        reviewed: bool,
+        start_time: float,
+    ) -> GerritSubmitResult:
+        """Map an exception raised during submission to a failure result.
+
+        Classifies the exception, logs it at the matching level (auth
+        and REST errors are expected; anything else is logged with a
+        traceback), and returns a failure result.
+        """
+        if isinstance(exc, GerritAuthError):
+            log.error(
+                "Authentication error for %s #%d: %s",
+                change.project,
+                change.number,
+                exc,
+            )
+            message = f"Authentication error: {exc}"
+        elif isinstance(exc, GerritRestError):
+            log.error(
+                "REST error for %s #%d: %s",
+                change.project,
+                change.number,
+                exc,
+            )
+            message = f"REST error: {exc}"
+        else:
+            log.exception(
+                "Unexpected error for %s #%d: %s",
+                change.project,
+                change.number,
+                exc,
+            )
+            message = f"Unexpected error: {exc}"
+
+        return GerritSubmitResult.failure_result(
+            change_number=change.number,
+            project=change.project,
+            error=message,
+            reviewed=reviewed,
+            duration=time.time() - start_time,
+        )
+
     def _submit_single_change(
         self,
         change: GerritChangeInfo,
@@ -258,50 +347,14 @@ class GerritSubmitManager:
         """
         start_time = time.time()
         reviewed = False
-        submitted = False
+
+        precheck = self._precheck_submit(change, dry_run, start_time)
+        if precheck is not None:
+            return precheck
 
         try:
-            # Check if change can be submitted
-            if not change.is_open:
-                return GerritSubmitResult.failure_result(
-                    change_number=change.number,
-                    project=change.project,
-                    error=f"Change is not open (status: {change.status})",
-                    duration=time.time() - start_time,
-                )
-
-            if change.work_in_progress:
-                return GerritSubmitResult.failure_result(
-                    change_number=change.number,
-                    project=change.project,
-                    error="Change is marked as Work In Progress",
-                    duration=time.time() - start_time,
-                )
-
-            if dry_run:
-                log.info(
-                    "[DRY RUN] Would review and submit %s #%d",
-                    change.project,
-                    change.number,
-                )
-                return GerritSubmitResult.success_result(
-                    change_number=change.number,
-                    project=change.project,
-                    reviewed=True,
-                    submitted=True,
-                    duration=time.time() - start_time,
-                )
-
             review_success = self._review_change(change.number, review_labels)
-            if review_success:
-                reviewed = True
-                log.info(
-                    "Applied review to %s #%d: %s",
-                    change.project,
-                    change.number,
-                    review_labels,
-                )
-            else:
+            if not review_success:
                 return GerritSubmitResult.failure_result(
                     change_number=change.number,
                     project=change.project,
@@ -309,16 +362,16 @@ class GerritSubmitManager:
                     reviewed=False,
                     duration=time.time() - start_time,
                 )
+            reviewed = True
+            log.info(
+                "Applied review to %s #%d: %s",
+                change.project,
+                change.number,
+                review_labels,
+            )
 
             submit_success = self._submit_change(change.number)
-            if submit_success:
-                submitted = True
-                log.info(
-                    "Submitted %s #%d",
-                    change.project,
-                    change.number,
-                )
-            else:
+            if not submit_success:
                 return GerritSubmitResult.failure_result(
                     change_number=change.number,
                     project=change.project,
@@ -326,59 +379,22 @@ class GerritSubmitManager:
                     reviewed=reviewed,
                     duration=time.time() - start_time,
                 )
+            log.info(
+                "Submitted %s #%d",
+                change.project,
+                change.number,
+            )
 
             return GerritSubmitResult.success_result(
                 change_number=change.number,
                 project=change.project,
                 reviewed=reviewed,
-                submitted=submitted,
-                duration=time.time() - start_time,
-            )
-
-        except GerritAuthError as exc:
-            log.error(
-                "Authentication error for %s #%d: %s",
-                change.project,
-                change.number,
-                exc,
-            )
-            return GerritSubmitResult.failure_result(
-                change_number=change.number,
-                project=change.project,
-                error=f"Authentication error: {exc}",
-                reviewed=reviewed,
-                duration=time.time() - start_time,
-            )
-
-        except GerritRestError as exc:
-            log.error(
-                "REST error for %s #%d: %s",
-                change.project,
-                change.number,
-                exc,
-            )
-            return GerritSubmitResult.failure_result(
-                change_number=change.number,
-                project=change.project,
-                error=f"REST error: {exc}",
-                reviewed=reviewed,
+                submitted=True,
                 duration=time.time() - start_time,
             )
 
         except Exception as exc:
-            log.exception(
-                "Unexpected error for %s #%d: %s",
-                change.project,
-                change.number,
-                exc,
-            )
-            return GerritSubmitResult.failure_result(
-                change_number=change.number,
-                project=change.project,
-                error=f"Unexpected error: {exc}",
-                reviewed=reviewed,
-                duration=time.time() - start_time,
-            )
+            return self._submit_error_result(change, exc, reviewed, start_time)
 
     def _review_change(
         self,

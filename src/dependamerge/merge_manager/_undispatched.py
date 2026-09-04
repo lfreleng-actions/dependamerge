@@ -14,7 +14,7 @@ from __future__ import annotations
 import asyncio
 
 from ..models import PullRequestInfo
-from ..rule_violations import workflow_name_fragments
+from ..rule_violations import name_spans, workflow_name_fragments
 from ._base import _MergeManagerBase
 
 
@@ -291,27 +291,25 @@ class _UndispatchedWorkflowMixin(_MergeManagerBase):
 
         The observed runs settle it without another request: any
         *contiguous span* of fragments that rejoins into a run which
-        dispatched accounts for all of them.  Every matching span is
-        applied, including overlapping ones.  Committing to one and
-        skipping its overlaps would let an arbitrary tie-break reject a
-        partition that does explain the list: with runs ``A``, ``A, B``
-        and ``B, C``, fragments ``A|B|C`` are wholly explained by
-        ``A`` + ``B, C``, but claiming ``A, B`` first would leave ``C``
-        looking undispatched.  A fragment any span can account for is
-        therefore accounted for, which keeps every ambiguity on the
-        waiting side.  A one-fragment span is the ordinary case, which
-        keeps a plain two-workflow violation behaving exactly as before.
+        dispatched accounts for all of them.  The spans come from
+        :func:`rule_violations.workflow_name_spans`, which states that
+        rule once for every reading of the list.
 
-        Both spacings are tried because only the separator GitHub emits
-        is known for certain.
+        Every matching span is applied, including overlapping ones.
+        Committing to one and skipping its overlaps would let an
+        arbitrary tie-break reject a partition that does explain the
+        list: with runs ``A``, ``A, B`` and ``B, C``, fragments
+        ``A|B|C`` are wholly explained by ``A`` + ``B, C``, but claiming
+        ``A, B`` first would leave ``C`` looking undispatched.  A
+        fragment any span can account for is therefore accounted for,
+        which keeps every ambiguity on the waiting side.  A one-fragment
+        span is the ordinary case, which keeps a plain two-workflow
+        violation behaving exactly as before.
         """
-        total = len(names)
-        accounted = [False] * total
-        for width in range(1, total + 1):
-            for start in range(total - width + 1):
-                span = names[start : start + width]
-                if any(sep.join(span) in dispatched for sep in (", ", ",")):
-                    accounted[start : start + width] = [True] * width
+        accounted = [False] * len(names)
+        for start, width, joined in name_spans(names):
+            if joined in dispatched:
+                accounted[start : start + width] = [True] * width
         return [name for name, seen in zip(names, accounted, strict=True) if not seen]
 
     async def _stop_for_undispatched_workflows(

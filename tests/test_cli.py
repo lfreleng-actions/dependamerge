@@ -1555,6 +1555,64 @@ class TestFormatFailureReason:
             "• build",
         ]
 
+    def test_both_kinds_are_listed_not_just_the_workflows(self):
+        # Reproduces lfreleng-actions/dependamerge#482: a rejection
+        # naming a workflow *and* a status check reported the workflows
+        # only, so the failing ``pre-commit.ci - pr`` context that was
+        # actually blocking the merge never appeared.
+        reason = (
+            "Repository rule violations found Required workflows "
+            "'Package Hardening Audit, SHA Pinned Actions 📌' are not "
+            'satisfied Required status check "pre-commit.ci - pr" is failing.'
+        )
+        assert _format_failure_reason(reason) == [
+            "Repository rule violations found / Required workflows not satisfied"
+            " / Required status checks failed",
+            "• Required workflow: Package Hardening Audit",
+            "• Required workflow: SHA Pinned Actions 📌",
+            "• Required status check: pre-commit.ci - pr",
+        ]
+
+    def test_each_kind_keeps_its_own_verb_when_they_differ(self):
+        # The status check has failed while the workflows have merely not
+        # finished.  One shared verb would report the workflows as failed
+        # (the outcome word nearest the end of the string), which is the
+        # opposite of what waiting can fix.
+        reason = (
+            "Repository rule violations found Required status check "
+            '"pre-commit.ci - pr" is failing. Required workflows '
+            "'Zizmor Scan 🌈' are not satisfied"
+        )
+        assert _format_failure_reason(reason) == [
+            "Repository rule violations found / Required workflows not satisfied"
+            " / Required status checks failed",
+            "• Required workflow: Zizmor Scan 🌈",
+            "• Required status check: pre-commit.ci - pr",
+        ]
+
+    def test_ruleset_marker_without_names_is_left_alone(self):
+        # The marker alone carries no condition names, so there is
+        # nothing to expand into bullets and the prose is all we have.
+        reason = "Repository rule violations found"
+        assert _format_failure_reason(reason) == [reason]
+
+    def test_a_quote_inside_a_workflow_name_is_not_a_status_check(self):
+        # Status-check names are quoted individually, so reading them
+        # from the whole string also picks up any double quote a
+        # *workflow* name happens to contain -- inventing a context
+        # called 'Fast', and handing DCO the workflows' verb.  Each
+        # clause is read only within its own span.
+        reason = (
+            "Repository rule violations found Required status check "
+            '"DCO" is expected. Required workflows \'Build "Fast"\' failed'
+        )
+        assert _format_failure_reason(reason) == [
+            "Repository rule violations found / Required workflows failed"
+            " / Required status checks not satisfied",
+            '• Required workflow: Build "Fast"',
+            "• Required status check: DCO",
+        ]
+
 
 def _make_merge_context(show_progress: bool) -> _MergeContext:
     """Build a minimal ``_MergeContext`` for tracker-lifecycle tests."""
@@ -1891,3 +1949,63 @@ class TestCloseDryRun:
         assert "Dry run" in result.stdout
         # The close manager must have been constructed in preview mode.
         assert captured.get("preview_mode") is True
+
+
+class TestARuleNameMayContainAnotherClausesWords:
+    """A rule name is arbitrary text, so a marker search finds names too.
+
+    Locating each clause marker outside the quoted name spans is what
+    stops a workflow called ``Build Required status check "DCO"`` from
+    inventing a status context, and a context called ``Run Required
+    workflows fast`` from truncating its own clause.
+    """
+
+    def test_a_status_marker_inside_a_workflow_name_invents_nothing(self):
+        reason = (
+            "Repository rule violations found Required workflows "
+            "'Build Required status check \"DCO\"' failed"
+        )
+        assert _format_failure_reason(reason) == [
+            "Repository rule violations found / Required workflows failed",
+            '• Build Required status check "DCO"',
+        ]
+
+    def test_a_workflow_marker_inside_a_context_name_truncates_nothing(self):
+        reason = (
+            "Repository rule violations found Required status check "
+            '"Run Required workflows fast" is failing.'
+        )
+        assert _format_failure_reason(reason) == [
+            "Repository rule violations found / Required status checks failed",
+            "• Run Required workflows fast",
+        ]
+
+    def test_an_apostrophe_in_a_later_clause_does_not_close_the_list(self):
+        # The scan for the workflow list's closing quote must ignore
+        # apostrophes inside a following status-check name, or the whole
+        # status clause is swallowed into a single workflow name.
+        reason = (
+            "Repository rule violations found Required workflows "
+            "'Build' are not satisfied Required status check "
+            "\"CI 'failed'\" is failing"
+        )
+        assert _format_failure_reason(reason) == [
+            "Repository rule violations found / Required workflows not satisfied"
+            " / Required status checks failed",
+            "• Required workflow: Build",
+            "• Required status check: CI 'failed'",
+        ]
+
+    def test_an_apostrophe_in_a_context_name_invents_no_workflow(self):
+        # The context name carries both the workflow marker *and* an
+        # apostrophe, so a raw marker search treats that apostrophe as
+        # the opening quote of a workflow list and manufactures a
+        # workflow out of the rest of the sentence.
+        reason = (
+            "Repository rule violations found Required status check "
+            '"Run Required workflows Don\'t Fail" is failing.'
+        )
+        assert _format_failure_reason(reason) == [
+            "Repository rule violations found / Required status checks failed",
+            "• Run Required workflows Don't Fail",
+        ]

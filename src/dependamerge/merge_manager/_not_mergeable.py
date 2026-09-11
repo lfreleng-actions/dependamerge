@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+from ..check_names import summarise_check_names
 from ..models import PullRequestInfo
 from ._live_blockers import _LiveBlockerMixin
 from ._types import MergeResult, MergeStatus, _merged_from_payload
@@ -282,18 +283,22 @@ class _NotMergeableMixin(_LiveBlockerMixin):
         half of a picture whose other half held the real cause, and
         replacing the rejection with it would trade a stale reason for a
         confidently wrong one.
+
+        The unproven names are *summarised* rather than listed.  A matrix
+        job reports one check per cell, so eight of them arrive as 800
+        characters of comma-joined parameters --- wrapped mid-name by the
+        terminal, and unsplittable by eye because the names contain
+        commas themselves.  Proven blockers are listed in full: there are
+        few of them and they are the answer.
         """
+        blockers = "; ".join(blocking)
+        others = summarise_check_names(also_failing)
         if blocking and also_failing:
-            return (
-                "blocked by "
-                + "; ".join(blocking)
-                + "; also failing: "
-                + ", ".join(also_failing)
-            )
+            return f"blocked by {blockers}; also failing: {others}"
         if blocking:
-            return "blocked by " + "; ".join(blocking)
+            return f"blocked by {blockers}"
         if also_failing and complete:
-            return "failing checks: " + ", ".join(also_failing)
+            return f"failing checks: {others}"
         return None
 
     async def _handle_not_mergeable_pr(

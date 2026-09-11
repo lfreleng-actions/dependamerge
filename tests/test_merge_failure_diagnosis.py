@@ -33,6 +33,7 @@ import pytest
 
 from dependamerge.check_runs import failing_check_names
 from dependamerge.cli._merge_report import (
+    _display_merge_results,
     _print_failed_pr_details,
     _print_final_merge_summary,
 )
@@ -1755,3 +1756,74 @@ class TestNothingIsBothBlockerAndAlsoFailing:
         out = await mgr._confirm_failure(pr, result)
 
         assert out.error == "blocked by required status check: lint"
+
+
+class TestTheCountsAppearOnce:
+    """A finished run said the same numbers three times.
+
+    The live tracker, then a line per category, then Final Results --
+    in three different orders and formats. Only the summary line is
+    kept for a real run; preview mode has no summary line, so its
+    per-category lines remain the only counts.
+    """
+
+    @staticmethod
+    def _results():
+        return [
+            MergeResult(pr_info=_pr("a", 1), status=MergeStatus.MERGED),
+            MergeResult(pr_info=_pr("b", 2), status=MergeStatus.FAILED, error="x"),
+            MergeResult(pr_info=_pr("c", 3), status=MergeStatus.UNSETTLED, error="y"),
+        ]
+
+    def test_a_real_run_states_them_once(self, capsys) -> None:
+        _display_merge_results(self._results(), no_confirm=True)
+        out = capsys.readouterr().out
+
+        assert "Final Results: 1 merged, 1 failed, 1 unsettled" in out
+        # The per-category lines would repeat every one of those counts.
+        assert "❌ Failed 1" not in out
+        assert "⏱️ Unsettled 1 PR" not in out
+
+    def test_preview_keeps_its_own_counts(self, capsys) -> None:
+        """There is no summary line to carry them in preview mode."""
+        _display_merge_results(self._results(), no_confirm=False)
+        out = capsys.readouterr().out
+
+        assert "Final Results" not in out
+        assert "Would fail to merge 1 PR" in out
+
+    def test_the_confirmed_path_states_them_once_too(self, capsys) -> None:
+        _print_final_merge_summary(self._results())
+        out = capsys.readouterr().out
+
+        assert "Final Results: 1 merged, 1 failed, 1 unsettled" in out
+        assert "🛑 Blocked" not in out
+
+    def test_the_unsettled_hint_survives(self, capsys) -> None:
+        """Dropping the line must not drop what it told the operator."""
+        _display_merge_results(self._results(), no_confirm=True)
+
+        assert "will merge on a re-run" in capsys.readouterr().out
+
+
+class TestCountsReadAsEnglish:
+    """ "Unsettled 1 PRs" reads as a typo and taints the number beside it."""
+
+    def test_one_is_singular(self, capsys) -> None:
+        _display_merge_results(
+            [MergeResult(pr_info=_pr("a", 1), status=MergeStatus.BLOCKED)],
+            no_confirm=False,
+        )
+
+        assert "🛑 Blocked 1 PR\n" in capsys.readouterr().out
+
+    def test_several_are_plural(self, capsys) -> None:
+        _display_merge_results(
+            [
+                MergeResult(pr_info=_pr("a", i), status=MergeStatus.BLOCKED)
+                for i in range(3)
+            ],
+            no_confirm=False,
+        )
+
+        assert "🛑 Blocked 3 PRs" in capsys.readouterr().out

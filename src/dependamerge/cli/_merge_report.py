@@ -23,12 +23,26 @@ from ..rule_violations import (
 from ._app import console
 
 
+def _prs(count: int) -> str:
+    """``"1 PR"`` or ``"7 PRs"``.
+
+    A run reporting "Unsettled 1 PRs" reads as a typo, which invites the
+    reader to distrust the number beside it.
+    """
+    return f"{count} PR" if count == 1 else f"{count} PRs"
+
+
 def _print_final_merge_summary(real_results: list[MergeResult]) -> None:
     """Print the post-run 🚀 Final Results line and per-outcome recap.
 
     Shared by the org / repo / similar-PR confirmed-merge paths so
     every outcome category (including closed-without-merge) renders
     identically regardless of scope.
+
+    The counts appear once.  Each category previously also printed its
+    own line, so a run finishing with anything other than merges said
+    the same numbers twice in two different orders --- and the live
+    tracker had already said them a third time.
     """
     final_merged = sum(1 for r in real_results if r.status.value == "merged")
     final_failed = sum(1 for r in real_results if r.status.value == "failed")
@@ -52,19 +66,8 @@ def _print_final_merge_summary(real_results: list[MergeResult]) -> None:
     if final_closed > 0:
         parts.append(f"{final_closed} closed")
     console.print(f"\n🚀 Final Results: {', '.join(parts)}")
-    if final_skipped > 0:
-        console.print(f"⏭️ Skipped {final_skipped} PRs")
-    if final_blocked > 0:
-        console.print(f"🛑 Blocked {final_blocked} PRs")
     if final_unsettled > 0:
-        console.print(
-            f"⏱️ Unsettled {final_unsettled} PRs "
-            "(the refusal no longer applies; re-run to merge)"
-        )
-    if final_closed > 0:
-        console.print(f"🚪 Closed without merging: {final_closed} PRs")
-    if final_auto_merge > 0:
-        console.print(f"⏳ Auto-merge pending for {final_auto_merge} PRs")
+        console.print("   ⏱️ Unsettled PRs will merge on a re-run")
 
     _print_failed_pr_details(real_results)
 
@@ -159,7 +162,12 @@ def _display_merge_results(
     merge_results: list[MergeResult],
     no_confirm: bool,
 ) -> None:
-    """Print the final summary of merge results."""
+    """Print the final summary of merge results.
+
+    In preview mode the per-category lines are the only counts, so they
+    are printed.  After a real run the ``📈 Final Results`` line carries
+    the same numbers, and printing both said everything twice.
+    """
     merged_count = sum(1 for r in merge_results if r.status.value == "merged")
     failed_count = sum(1 for r in merge_results if r.status.value == "failed")
     skipped_count = sum(1 for r in merge_results if r.status.value == "skipped")
@@ -170,24 +178,19 @@ def _display_merge_results(
         1 for r in merge_results if r.status.value == "auto_merge_pending"
     )
 
-    if failed_count > 0:
-        if not no_confirm:
-            console.print(f"❌ Would fail to merge {failed_count} PRs")
-        else:
-            console.print(f"❌ Failed {failed_count} PRs")
-    if skipped_count > 0:
-        console.print(f"⏭️ Skipped {skipped_count} PRs")
-    if blocked_count > 0:
-        console.print(f"🛑 Blocked {blocked_count} PRs")
-    if unsettled_count > 0:
-        console.print(
-            f"⏱️ Unsettled {unsettled_count} PRs "
-            "(the refusal no longer applies; re-run to merge)"
-        )
-    if closed_count > 0:
-        console.print(f"🚪 Closed without merging: {closed_count} PRs")
-    if auto_merge_count > 0:
-        console.print(f"⏳ Auto-merge pending for {auto_merge_count} PRs")
+    if not no_confirm:
+        if failed_count > 0:
+            console.print(f"❌ Would fail to merge {_prs(failed_count)}")
+        if skipped_count > 0:
+            console.print(f"⏭️ Skipped {_prs(skipped_count)}")
+        if blocked_count > 0:
+            console.print(f"🛑 Blocked {_prs(blocked_count)}")
+        if unsettled_count > 0:
+            console.print(f"⏱️ Unsettled {_prs(unsettled_count)}")
+        if closed_count > 0:
+            console.print(f"🚪 Closed without merging: {_prs(closed_count)}")
+        if auto_merge_count > 0:
+            console.print(f"⏳ Auto-merge pending for {_prs(auto_merge_count)}")
 
     if no_confirm:
         parts = [f"{merged_count} merged"]
@@ -203,5 +206,7 @@ def _display_merge_results(
         if closed_count > 0:
             parts.append(f"{closed_count} closed")
         console.print(f"📈 Final Results: {', '.join(parts)}")
+        if unsettled_count > 0:
+            console.print("   ⏱️ Unsettled PRs will merge on a re-run")
 
     _print_failed_pr_details(merge_results)

@@ -16,6 +16,7 @@ import asyncio
 from typing import (
     Any,
 )
+from urllib.parse import quote
 
 from ._base import _GitHubAsyncBase
 
@@ -118,8 +119,16 @@ class _RequiredChecksMixin(_GitHubAsyncBase):
         """
         checks: list[dict[str, Any]] = []
         try:
+            # Branch names may contain '/' (``release/v2``), so the name is
+            # URL-encoded before interpolation --- otherwise the extra
+            # segments produce a path that cannot exist, and the 404 that
+            # follows is indistinguishable from the definitive "this
+            # branch has no protection".  The sibling lookups in
+            # ``_checks`` and ``_signatures`` encode for the same reason.
+            encoded_branch = quote(branch, safe="")
             data = await self.get(
-                f"/repos/{owner}/{repo}/branches/{branch}/protection/required_status_checks"
+                f"/repos/{owner}/{repo}/branches/{encoded_branch}"
+                "/protection/required_status_checks"
             )
         except asyncio.CancelledError:
             raise
@@ -160,8 +169,9 @@ class _RequiredChecksMixin(_GitHubAsyncBase):
         Get required status checks for a branch by inspecting rulesets.
 
         Only rulesets whose ``conditions.ref_name`` patterns match *branch*
-        are considered.  Falls back to branch protection rules if rulesets
-        are not available.
+        are considered.  Classic branch protection is read as well and
+        the two are unioned, because GitHub enforces both: they are
+        cumulative rather than alternatives.
         Returns ``(checks, reliable)``, where each check is a dict with
         'context' and optionally 'integration_id', deduplicated by
         ``context``.
@@ -178,9 +188,22 @@ class _RequiredChecksMixin(_GitHubAsyncBase):
         required-check configuration is repo/branch-level state that does
         not change while dependamerge runs, and the block-reason analysis
         consults it repeatedly (several times per blocked PR).  The
-        uncached path costs 2 + N requests (repo + ruleset list + one
-        detail GET per ruleset), so the cache saves a burst of API
-        traffic on every repeat.  Results assembled while any of those
+        uncached path costs 3 + N requests (repo metadata, ruleset list,
+        one detail GET per ruleset, and branch protection), so the cache
+        saves a burst of API traffic on every repeat.  The cost is per
+        ``owner/repo@branch`` rather than per pull request.
+
+        That holds *per repository* under the striped scheduler owner-wide
+        runs use, which keeps at most one pull request per repository in
+        flight, so the first read populates the cache before the next
+        asks.  The flat scheduler starts every pull request at once and
+        the cache has no single-flight lock, so concurrent first reads of
+        one repository can each issue these requests --- flat scheduling
+        is used for single-PR and single-repository batches, where the
+        duplication is bounded by that batch.
+
+        Results assembled
+        while any of those
         requests failed are *not* cached: the fetch treats errors as
         "no required checks", and pinning that error-derived verdict
         for the whole session could misclassify blocked PRs long after
@@ -213,7 +236,22 @@ class _RequiredChecksMixin(_GitHubAsyncBase):
         # belong to a branch this pull request is not targeting.
         default_branch = await self._resolve_default_branch(owner, repo)
 
-        # Try rulesets first (org-level and repo-level)
+        # Rulesets and classic branch protection are **cumulative**, not
+        # alternatives: GitHub enforces every requirement either one
+        # declares.  Consulting protection only when rulesets came back
+        # empty therefore returned a partial set --- and reported it
+        # reliable, because the skipped lookup could not report a
+        # failure it was never asked to perform.
+        #
+        # A branch with a ruleset requiring ``A`` and protection
+        # requiring ``B`` yielded ``['A']``, which silently disabled the
+        # pre-commit.ci repair for any repository that enforces that
+        # context through protection while a ruleset also applies.
+        #
+        # Both are read now and unioned; ``_add`` already deduplicates by
+        # context, so a check required by both appears once.  The extra
+        # request is per ``owner/repo@branch`` and cached for the
+        # session, not per pull request.
         ruleset_checks, reliable = await self._fetch_ruleset_required_checks(
             owner, repo, branch, default_branch
         )
@@ -221,15 +259,13 @@ class _RequiredChecksMixin(_GitHubAsyncBase):
             reliable = False
         _add(ruleset_checks)
 
-        # Fall back to branch protection if no ruleset checks found
-        if not required_checks:
-            (
-                bp_checks,
-                bp_reliable,
-            ) = await self._fetch_branch_protection_required_checks(owner, repo, branch)
-            if not bp_reliable:
-                reliable = False
-            _add(bp_checks)
+        (
+            bp_checks,
+            bp_reliable,
+        ) = await self._fetch_branch_protection_required_checks(owner, repo, branch)
+        if not bp_reliable:
+            reliable = False
+        _add(bp_checks)
 
         if reliable:
             self._required_checks_cache[cache_key] = list(required_checks)

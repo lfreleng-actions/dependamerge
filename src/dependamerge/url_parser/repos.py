@@ -19,8 +19,9 @@ from .hosts import (
     unsupported_host_message,
 )
 from .models import ChangeSource, ParsedOrgUrl, ParsedRepoUrl, UrlParseError
+from .owner import require_owner, require_owner_from_path
 from .redaction import redact_target
-from .shorthand import default_github_host, looks_like_owner, normalize_target
+from .shorthand import default_github_host, normalize_target
 
 # aislop-ignore-file ai-slop/hardcoded-url -- This module parses and builds
 # GitHub/Gerrit URLs, so URL literals here are the subject matter, not
@@ -125,7 +126,7 @@ def parse_repo_url(url: str) -> ParsedRepoUrl:
             f"Invalid GitHub repository URL format. Expected: https://{host}/owner/repo"
         )
 
-    owner = parts[0]
+    owner = require_owner_from_path(parts[0], host)
     repo = parts[1]
 
     return ParsedRepoUrl(
@@ -217,7 +218,7 @@ def parse_org_url(url: str) -> ParsedOrgUrl:
                 f"Invalid GitHub organization URL format. Expected: "
                 f"https://{host}/orgs/owner"
             )
-        owner = rest[0]
+        owner = require_owner_from_path(rest[0], host)
         return ParsedOrgUrl(
             source=ChangeSource.GITHUB,
             host=host,
@@ -232,7 +233,7 @@ def parse_org_url(url: str) -> ParsedOrgUrl:
             f"https://{host}/owner (an organization or user login)"
         )
 
-    owner = parts[0]
+    owner = require_owner_from_path(parts[0], host)
     return ParsedOrgUrl(
         source=ChangeSource.GITHUB,
         host=host,
@@ -270,15 +271,12 @@ def parse_owner_target(value: str) -> tuple[str, str]:
     if not bare:
         raise UrlParseError("Owner name or URL cannot be empty")
     if "/" not in bare and "://" not in bare:
-        if not looks_like_owner(bare):
-            # The same boundary the shorthand expansion enforces: text
-            # that cannot be a login is rejected rather than sent to
-            # the API as an owner that cannot exist.
-            raise UrlParseError(
-                f"Not a valid GitHub owner name: {bare!r}. Logins are "
-                "alphanumerics and hyphens, at most 39 characters."
-            )
-        return (bare, default_github_host())
+        # The same boundary the shorthand expansion enforces, and the
+        # same one :func:`parse_org_url` now applies to a URL-derived
+        # owner: text that cannot be a login is rejected rather than
+        # sent to the API as an owner that cannot exist.
+        host = default_github_host()
+        return (require_owner(bare, host), host)
 
     parsed = parse_org_url(value)
     return (parsed.owner, parsed.host)
@@ -337,11 +335,6 @@ def parse_owner_arg(value: str) -> str:
         # extract, so treat it the same as an empty value.
         raise UrlParseError("Owner name or URL cannot be empty")
     if "/" not in bare and "://" not in bare:
-        if not looks_like_owner(bare):
-            raise UrlParseError(
-                f"Not a valid GitHub owner name: {bare!r}. Logins are "
-                "alphanumerics and hyphens, at most 39 characters."
-            )
-        return bare
+        return require_owner(bare, default_github_host())
 
     return parse_org_url(value).owner

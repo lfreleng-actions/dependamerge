@@ -22,6 +22,7 @@ from urllib.parse import urlparse
 from .git_suffix import has_stray_git_suffix
 from .hosts import _host_matches
 from .models import ChangeSource, ParsedUrl, UrlParseError
+from .owner import require_owner_from_path
 from .redaction import redact_target
 from .shorthand import normalize_target
 
@@ -146,7 +147,7 @@ def _parse_github_url(host: str, path: str, original_url: str) -> ParsedUrl:
             f"https://{host}/owner/repo/pull/123"
         )
 
-    owner = match.group(1)
+    owner = require_owner_from_path(match.group(1), host)
     repo = match.group(2)
     pr_number = int(match.group(3))
 

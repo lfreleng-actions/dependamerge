@@ -57,6 +57,7 @@ from .models import (
     ParsedUrl,
     UrlParseError,
 )
+from .owner import require_owner, require_owner_from_path
 from .redaction import redact_target
 from .repos import (
     parse_org_url,
@@ -105,6 +106,8 @@ __all__ = [
     "parse_repo_url",
     "pull_request_url_for",
     "reject_port_bearing_host",
+    "require_owner",
+    "require_owner_from_path",
     "set_github_host",
     "has_stray_git_suffix",
     "redact_target",

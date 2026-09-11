@@ -31,6 +31,7 @@ from ..url_parser import (
     normalize_target,
     redact_target,
     reject_port_bearing_host,
+    require_owner_from_path,
     unsupported_host_message,
 )
 from .actions import _GitHubActionMixin
@@ -176,7 +177,10 @@ class GitHubClient(_GitHubQueryMixin, _GitHubActionMixin, _GitHubStatusMixin):
         if match is None:
             raise UrlParseError(f"Invalid GitHub PR URL: {redact_target(url)}")
         return (
-            match.group("owner"),
+            # The same gate the owner-wide and repository parsers apply,
+            # so a pull request URL cannot be the one shape that sends
+            # an impossible login to the API.
+            require_owner_from_path(match.group("owner"), host),
             match.group("repo"),
             int(match.group("number")),
         )

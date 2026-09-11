@@ -96,7 +96,23 @@ class ProgressTracker(_TerminalLoggingMixin):
             self.rich_available = False
 
     def stop(self) -> None:
-        """Stop the live progress display."""
+        """Stop the live progress display.
+
+        The run is over, so nothing is in progress: the operation line is
+        cleared before the display is torn down.  Rich's final
+        non-transient refresh then renders a frame that agrees, and the
+        plain-text fallback is repainted explicitly --- it draws in place
+        with a carriage return, so clearing the field leaves the old
+        characters on the terminal until something overwrites them.
+
+        Cleared *here* rather than in each writer because the writers
+        race.  The per-PR merge label and the wait ticker both own this
+        field, and only the ticker clears --- and only when it wrote
+        last.  So a finished run advertised whichever message happened
+        to land last, which is timing rather than truth.  ``stop`` is
+        the one place that knows the run has ended.
+        """
+        self.current_operation = ""
         # Stop the live display *before* restoring terminal logging so the
         # teardown itself stays quiet even if ``live.stop()`` raises;
         # restore always runs via ``finally``.
@@ -109,10 +125,14 @@ class ProgressTracker(_TerminalLoggingMixin):
                     # the terminal no longer accepts control sequences.
                     pass
             else:
-                # Non-Rich fallback: emit a final newline so the shell
-                # prompt doesn't appear mid-line after carriage-return
-                # in-place updates.
+                # Non-Rich fallback: the operation was painted in place with
+                # a carriage return, so clearing the field is not enough
+                # --- the characters are still on the terminal until
+                # something overwrites them.  Repaint first, then emit
+                # the final newline so the shell prompt does not appear
+                # mid-line.
                 if self._last_display and self._stdout_is_tty():
+                    self._fallback_display()
                     # aislop-ignore-next-line ai-slop/python-print-debug -- terminal newline on teardown
                     print(flush=True)
         finally:

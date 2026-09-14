@@ -153,10 +153,21 @@ class _FailureReportingMixin(_FailureSummaryFromExceptionMixin):
             about the failure says the pull request was judged, so it is
             not withdrawable.  Only a status GitHub uses for a verdict
             makes it so.
+
+            A **superseded** exception is treated as no exception.  The
+            retry loop stores what it caught and never clears it, so an
+            attempt that raised a 502 and a later one that got
+            ``merged: false`` leave the 502 behind the answer.  Reading
+            it would name a transport error as the cause of a refusal
+            GitHub reached on the PR's state --- a worse diagnosis than
+            the state itself gives, and one that withholds a withdrawal
+            the refusal has earned.
         """
         # Check if we have a stored exception for this PR
         pr_key = f"{pr_info.repository_full_name}#{pr_info.number}"
         last_exception = self._last_merge_exception.get(pr_key)
+        if last_exception is not None and self._last_merge_was_answered.get(pr_key):
+            last_exception = None
         self.log.debug(
             f"_get_failure_summary called for {pr_key}, mergeable_state={pr_info.mergeable_state}, mergeable={pr_info.mergeable}, has_exception={last_exception is not None}"
         )

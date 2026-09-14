@@ -63,6 +63,14 @@ class _MergeRetryMixin(_MergeManagerBase):
                 if await self._dispatch_merge(pr_info, owner, repo):
                     return True
 
+                # The API answered, which supersedes any exception an
+                # earlier attempt stored: that question has since been
+                # asked again and got a reply.  Recorded rather than
+                # clearing the exception, because the recoveries keyed
+                # on it ask whether GitHub *ever* named a cause this
+                # run, and clearing would disable them.
+                self._last_merge_was_answered[f"{owner}/{repo}#{pr_info.number}"] = True
+
                 # Merge failed, check if we can fix it
                 self.log.warning(
                     f"⚠️ Merge API returned false for PR {owner}/{repo}#{pr_info.number} (attempt {attempt + 1})"
@@ -151,6 +159,9 @@ class _MergeRetryMixin(_MergeManagerBase):
         pr_key = f"{owner}/{repo}#{pr_info.number}"
         self._last_merge_exception[pr_key] = exc
         self._last_merge_exception_head[pr_key] = pr_info.head_sha
+        # This attempt ended in an exception, so it is now the last
+        # event --- superseding an answer an earlier attempt received.
+        self._last_merge_was_answered[pr_key] = False
         self.log.debug(
             f"Stored exception for {pr_key}: {type(exc).__name__}: {str(exc)[:200]}"
         )

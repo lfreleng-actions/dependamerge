@@ -148,11 +148,23 @@ class _RequiredWorkflowWaitMixin(_MergeManagerBase):
                         merged = await self._github_client.merge_pull_request(
                             owner, repo, pr_info.number, merge_method
                         )
+                        # The API answered, so this attempt supersedes
+                        # any exception stored before it.  Maintained
+                        # here as well as in the retry loop because this
+                        # path dispatches its own single merge call and
+                        # would otherwise leave the signal describing an
+                        # attempt two cycles old.
+                        self._last_merge_was_answered[pr_key] = True
                 except GitHubPermissionError:
                     raise
                 except Exception as exc:
                     self._last_merge_exception[pr_key] = exc
                     self._last_merge_exception_head[pr_key] = pr_info.head_sha
+                    # Written beside the two above, and for the same
+                    # reason: this exception is now the last event, and
+                    # a stale ``True`` here would have the diagnosis
+                    # discard the freshest rejection it has.
+                    self._last_merge_was_answered[pr_key] = False
                     if not self._merge_error_indicates_pending_workflows(str(exc)):
                         # The rejection reason changed (e.g. a workflow
                         # finished and *failed*) — terminal; let the

@@ -864,7 +864,7 @@ class TestTheRecreatedMergeConfirmsBeforeFailing:
         replacement = _pr(number=107)
         mgr._approve_pr = AsyncMock(return_value=True)  # type: ignore[method-assign]
         # GitHub refused the dispatch because auto-merge already started.
-        mgr._dispatch_recreated_merge = AsyncMock(return_value=False)  # type: ignore[method-assign]
+        mgr._dispatch_recreated_merge = AsyncMock(return_value=(False, True))  # type: ignore[method-assign]
         # The replacement is in fact merged.
         client.get = AsyncMock(
             return_value={"state": "closed", "merged": True, "merged_at": "2026-08-25"}
@@ -881,7 +881,7 @@ class TestTheRecreatedMergeConfirmsBeforeFailing:
         mgr, client = _mgr()
         replacement = _pr(number=107)
         mgr._approve_pr = AsyncMock(return_value=True)  # type: ignore[method-assign]
-        mgr._dispatch_recreated_merge = AsyncMock(return_value=False)  # type: ignore[method-assign]
+        mgr._dispatch_recreated_merge = AsyncMock(return_value=(False, True))  # type: ignore[method-assign]
         # The replacement is still open: the merge really did fail.
         client.get = AsyncMock(
             return_value={"state": "open", "merged": False, "merged_at": None}
@@ -906,7 +906,7 @@ class TestTheRecreatedMergeConfirmsBeforeFailing:
         mgr, _ = _mgr()
         replacement = _pr(number=107)
         mgr._approve_pr = AsyncMock(return_value=True)  # type: ignore[method-assign]
-        mgr._dispatch_recreated_merge = AsyncMock(return_value=True)  # type: ignore[method-assign]
+        mgr._dispatch_recreated_merge = AsyncMock(return_value=(True, False))  # type: ignore[method-assign]
 
         flow = self._flow(mgr)
         await mgr._merge_recreated_pr(flow, replacement)

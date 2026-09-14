@@ -13,11 +13,11 @@ from the conflict handler so that it reads as the sequence it is.
 from __future__ import annotations
 
 from ..models import PullRequestInfo
-from ._base import _MergeManagerBase
+from ._failure_summary import _FailureSummaryFromExceptionMixin, _is_state_verdict
 from ._types import MergeResult, MergeStatus
 
 
-class _MergeConflictWaitMixin(_MergeManagerBase):
+class _MergeConflictWaitMixin(_FailureSummaryFromExceptionMixin):
     """Waiting out a dependabot rebase and reporting where it ended."""
 
     def _finish_conflict_close(
@@ -219,9 +219,57 @@ class _MergeConflictWaitMixin(_MergeManagerBase):
             exc,
         )
         result.status = MergeStatus.FAILED
+        # Deliberately *not* marked as a refusal.  Approval raised, which
+        # is the run failing rather than GitHub judging the pull
+        # request, so a later clean reading says nothing about whether
+        # it would raise again --- and withdrawing it would bury the
+        # exception the message carries.  The conflict wording here
+        # describes what preceded the failure, not its cause.
         result.error = f"rebase cleared the conflict but approval failed: {exc}"
         self._pr_status(f"❌ Failed: {pr_info.html_url}", level="error")
         return result
+
+    def _rebased_merge_was_refused(self, pr_info: PullRequestInfo) -> bool:
+        """Whether a failed merge attempt was GitHub judging the PR.
+
+        ``_merge_pr_with_retry`` reports the run's own troubles with the
+        same ``False`` it uses for a refusal: a 502 that exhausted its
+        retries, or a 422 the loop stopped on, are indistinguishable at
+        the call site from GitHub answering ``merged: false``.  Only the
+        last of those is a reading of the pull request, so only it may
+        be withdrawn on a later clean one --- withdrawing a transport
+        or configuration error would bury it and advise a re-run that
+        fails identically.
+
+        Defers to :meth:`_failure_summary_from_exception`, the same
+        classifier :meth:`_get_failure_summary` applies to the same
+        stored exception, and falls back the same way when it declines
+        to judge.  Reimplementing the decision here would diverge from
+        it: a bodyless ``405`` on a PR reading ``clean`` is a *transient*
+        API failure by that classifier, and this helper runs on exactly
+        that state, so a bare status allowlist would withdraw the one
+        case the classifier singles out as not being a verdict.
+
+        No stored exception means nothing was raised and the API itself
+        answered, which is a verdict.
+
+        A *stale* entry --- one from an attempt before the rebase --- can
+        only be read when the attempt just made raised nothing, since
+        any exception it did raise would have replaced it.  So the worst
+        such an entry causes is a refusal left standing, which is the
+        behaviour before this path opted in at all.  Erring the other
+        way would need a fresh non-verdict exception to go unstored.
+        """
+        pr_key = f"{pr_info.repository_full_name}#{pr_info.number}"
+        last_exception = self._last_merge_exception.get(pr_key)
+        if last_exception is None:
+            return True
+        classified = self._failure_summary_from_exception(
+            pr_key, last_exception, pr_info
+        )
+        if classified is not None:
+            return classified[1]
+        return _is_state_verdict(str(last_exception))
 
     async def _merge_rebased_pr(
         self, pr_info: PullRequestInfo, owner: str, repo: str, result: MergeResult
@@ -229,8 +277,14 @@ class _MergeConflictWaitMixin(_MergeManagerBase):
         """Merge a rebased PR directly, auto-merge being unavailable.
 
         If the rebase left the PR mergeable, merge it now; otherwise it
-        will not land on its own — report the failure rather than a
+        will not land on its own --- report the failure rather than a
         misleading ``AUTO_MERGE_PENDING`` that would never resolve.
+
+        Reaching the failure without attempting a merge means the PR was
+        not ``clean``, which is a reading of the pull request and can
+        stop being true a moment later, so the confirmation step is
+        allowed to withdraw it.  Reaching it *after* an attempt is only
+        sometimes that; see :meth:`_rebased_merge_was_refused`.
         """
         if pr_info.mergeable_state == "clean":
             dispatch_lock = await self._get_merge_dispatch_lock(owner, repo)
@@ -243,8 +297,12 @@ class _MergeConflictWaitMixin(_MergeManagerBase):
                     level="debug",
                 )
                 return result
+            refused = self._rebased_merge_was_refused(pr_info)
+        else:
+            refused = True
 
         result.status = MergeStatus.FAILED
+        result.merge_refused = refused
         result.error = (
             "rebase cleared the conflict but the PR could not be merged "
             "(auto-merge unavailable)"

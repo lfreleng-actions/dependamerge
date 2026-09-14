@@ -107,12 +107,23 @@ class _MergeConflictMixin(_MergeConflictWaitMixin):
     def _report_unresolved_conflict(
         self, pr_info: PullRequestInfo, result: MergeResult
     ) -> MergeResult:
-        """Report a conflict no rebase of ours is going to clear."""
+        """Report a conflict no rebase of ours is going to clear.
+
+        Marked as a refusal, because ``dirty`` is a reading of the pull
+        request rather than a failure of the run --- and a reading that
+        expires.  This tool requests dependabot rebases, and dependabot
+        rebases on its own when the base moves, so a conflict present
+        when the merge was attempted is routinely gone by the time the
+        summary prints.  Without the mark the confirmation step cannot
+        withdraw it, and an operator is sent to resolve a conflict that
+        is no longer there.
+        """
         self._pr_status(
             f"🔀 Merge conflict: {pr_info.html_url}",
             level="info",
         )
         result.status = MergeStatus.FAILED
+        result.merge_refused = True
         result.error = "merge conflicts"
         return result
 

@@ -13,7 +13,7 @@ from the conflict handler so that it reads as the sequence it is.
 from __future__ import annotations
 
 from ..models import PullRequestInfo
-from ._failure_summary import _FailureSummaryFromExceptionMixin, _is_state_verdict
+from ._failure_summary import _FailureSummaryFromExceptionMixin
 from ._types import MergeResult, MergeStatus
 
 
@@ -241,14 +241,9 @@ class _MergeConflictWaitMixin(_FailureSummaryFromExceptionMixin):
         or configuration error would bury it and advise a re-run that
         fails identically.
 
-        Defers to :meth:`_failure_summary_from_exception`, the same
-        classifier :meth:`_get_failure_summary` applies to the same
-        stored exception, and falls back the same way when it declines
-        to judge.  Reimplementing the decision here would diverge from
-        it: a bodyless ``405`` on a PR reading ``clean`` is a *transient*
-        API failure by that classifier, and this helper runs on exactly
-        that state, so a bare status allowlist would withdraw the one
-        case the classifier singles out as not being a verdict.
+        Defers to :meth:`_exception_is_a_refusal`, the judgement
+        :meth:`_get_failure_summary` makes about the same stored
+        exception, so the two cannot disagree about one exception.
 
         An exception the API has since answered past is not consulted
         at all.  The loop records which came last, because it stores
@@ -265,12 +260,7 @@ class _MergeConflictWaitMixin(_FailureSummaryFromExceptionMixin):
         last_exception = self._last_merge_exception.get(pr_key)
         if last_exception is None:
             return True
-        classified = self._failure_summary_from_exception(
-            pr_key, last_exception, pr_info
-        )
-        if classified is not None:
-            return classified[1]
-        return _is_state_verdict(str(last_exception))
+        return self._exception_is_a_refusal(pr_key, last_exception, pr_info)
 
     async def _merge_rebased_pr(
         self, pr_info: PullRequestInfo, owner: str, repo: str, result: MergeResult

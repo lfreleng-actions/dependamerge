@@ -25,12 +25,12 @@ from __future__ import annotations
 
 from ..bot_identity import is_dependabot
 from ..models import PullRequestInfo
-from ._base import _MergeManagerBase
+from ._failure_summary import _FailureSummaryFromExceptionMixin
 from ._single_pr_context import _MergeFlow
 from ._types import MergeStatus, RecreateCause, RecreateResult
 
 
-class _SinglePrRecreateMixin(_MergeManagerBase):
+class _SinglePrRecreateMixin(_FailureSummaryFromExceptionMixin):
     """The dependabot recreate trigger and the merge of the new PR."""
 
     async def _maybe_recreate_dependabot_pr(
@@ -104,7 +104,7 @@ class _SinglePrRecreateMixin(_MergeManagerBase):
         new_owner, new_repo = recreated_pr.repository_full_name.split("/", 1)
         await self._approve_pr(new_owner, new_repo, recreated_pr.number)
 
-        new_merged = await self._dispatch_recreated_merge(
+        new_merged, refused = await self._dispatch_recreated_merge(
             new_owner, new_repo, recreated_pr
         )
 
@@ -128,13 +128,14 @@ class _SinglePrRecreateMixin(_MergeManagerBase):
         #
         # So confirm against the **replacement** before reporting.
         result.status = MergeStatus.FAILED
-        # Deliberately not marked as a refusal.  ``_dispatch_recreated_merge``
-        # converts every exception to ``False`` --- an unusable client, a
-        # permission error, a transport failure --- so this ``False``
-        # does not distinguish GitHub declining the merge from the run
-        # failing to ask.  Marking it would let a replacement that reads
-        # ``clean`` be reported as merely unsettled, losing whichever of
-        # those actually happened.
+        # Marked only when GitHub judged the *replacement*.  The dispatch
+        # reports the run's own troubles with the same failure it uses
+        # for a refusal --- an uninitialised client, a permission error,
+        # a transport failure --- so it says which, and only a refusal
+        # may be withdrawn by a later clean reading.  Withdrawing a
+        # permission error would identify it as a mergeability verdict
+        # and then hide it, which is the more damaging direction.
+        result.merge_refused = refused
         result.pr_info = recreated_pr
         result.error = (
             f"Dependabot recreated PR #{recreated_pr.number} but merge still failed"
@@ -161,8 +162,32 @@ class _SinglePrRecreateMixin(_MergeManagerBase):
 
     async def _dispatch_recreated_merge(
         self, new_owner: str, new_repo: str, recreated_pr: PullRequestInfo
-    ) -> bool:
-        """Merge the recreated PR under the per-repo dispatch lock."""
+    ) -> tuple[bool, bool]:
+        """Merge the recreated PR under the per-repo dispatch lock.
+
+        Returns ``(merged, refused)``.  ``refused`` says GitHub declined
+        the merge on the replacement's *state*, which is the only kind
+        of failure a later clean reading may withdraw.  A bare boolean
+        could not: it reported an uninitialised client, a missing token
+        scope and a 502 with the same ``False`` GitHub uses to decline,
+        so the caller had to treat every failure as unwithdrawable to
+        avoid hiding the ones that are.
+
+        No exception means the API itself answered, so a ``False`` is
+        GitHub judging the pull request.  A ``True`` declined nothing,
+        and pairing it with ``refused`` would leave a contradiction in
+        the tuple for a field no caller reads after a success.  An
+        exception is put to :meth:`_exception_is_a_refusal`, the
+        judgement the rest of the pipeline already makes about a merge
+        exception.
+
+        The answer is returned rather than recorded in
+        ``_last_merge_exception``, which the other two dispatch sites
+        maintain.  Those are read after the call stack has unwound; this
+        one is consumed by its immediate caller, so run-scoped state
+        would be write-only bookkeeping --- and a third writer of an
+        invariant nothing reads is how the invariant gets broken.
+        """
         new_merge_method = self._pr_merge_methods.get(
             f"{new_owner}/{new_repo}", self.default_merge_method
         )
@@ -186,5 +211,6 @@ class _SinglePrRecreateMixin(_MergeManagerBase):
                 recreated_pr.number,
                 merge_err,
             )
-            new_merged = False
-        return new_merged
+            pr_key = f"{recreated_pr.repository_full_name}#{recreated_pr.number}"
+            return False, self._exception_is_a_refusal(pr_key, merge_err, recreated_pr)
+        return new_merged, not new_merged

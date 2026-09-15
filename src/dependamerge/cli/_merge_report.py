@@ -9,6 +9,7 @@ failure reasons into readable guidance, and lists the PRs that could not
 be merged.
 """
 
+from ..error_text import summarise_error
 from ..merge_manager import (
     MergeResult,
 )
@@ -89,7 +90,7 @@ def _format_failure_reason(reason: str) -> list[str]:
     quoted, comma-separated clause.  We split that into the type line
     plus a bullet per name for both the ``Required workflows`` and
     ``Required status check(s)`` variants.  Reasons we do not recognise
-    are returned unchanged as a single line.
+    are reduced to a single line and returned as they are.
 
     One rejection can name **both** kinds, and each is reported: a
     failing status context such as ``pre-commit.ci - pr`` used to be
@@ -99,12 +100,17 @@ def _format_failure_reason(reason: str) -> list[str]:
     have not finished routinely accompany a context that has failed.
     """
     if not is_rule_violation(reason):
-        return [reason]
+        # The unrecognised reason is whatever an exception said, which
+        # for an ``httpx`` error is two lines.  Reduced here rather than
+        # where it was composed: every route that reports a reason it
+        # could not classify arrives at this branch, including the
+        # catch-all that assigns ``str(e)`` for any escaping exception.
+        return [summarise_error(reason)]
 
     workflows = required_workflow_names(reason)
     checks = required_status_check_names(reason)
     if not workflows and not checks:
-        return [reason]
+        return [summarise_error(reason)]
 
     headings = [RULE_VIOLATION_MARKER]
     if workflows:

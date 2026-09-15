@@ -11,6 +11,7 @@ from enum import Enum
 
 from rich.console import Console
 
+from .error_text import summarise_error
 from .github_async import GitHubAsync
 from .github_async import PermissionError as GitHubPermissionError
 from .models import ComparisonResult, PullRequestInfo
@@ -293,9 +294,15 @@ class AsyncCloseManager:
                 )
 
                 if attempt >= self.max_retries:
+                    # The run's last word on this PR, so the reason is
+                    # reduced here: nothing downstream passes a
+                    # ``CloseResult`` through the merge report's
+                    # formatter.  The log keeps the raw text, which is
+                    # what a diagnosis wants.
+                    reason = summarise_error(error_msg)
                     result.status = CloseStatus.FAILED
-                    result.error = error_msg
-                    self._console.print(f"❌ Failed: {pr_info.html_url} [{error_msg}]")
+                    result.error = reason
+                    self._console.print(f"❌ Failed: {pr_info.html_url} [{reason}]")
                     self.log.error(
                         f"Failed to close {pr_info.repository_full_name}#{pr_info.number}: {error_msg}"
                     )
@@ -349,9 +356,16 @@ class AsyncCloseManager:
         result: CloseResult,
         error: Exception,
     ) -> None:
-        """Fail the close after an error we do not handle specifically."""
+        """Fail the close after an error we do not handle specifically.
+
+        Reached only by an exception raised *outside* the retry loop,
+        which swallows its own and reports them itself.  Both reduce the
+        reason the same way, because either can be the run's last word on
+        a pull request and neither is passed through the merge report's
+        formatter.
+        """
         result.status = CloseStatus.FAILED
-        result.error = f"Unexpected error: {error}"
+        result.error = f"Unexpected error: {summarise_error(error)}"
         self._console.print(f"❌ Failed: {pr_info.html_url} [{result.error}]")
         self.log.error(
             f"Unexpected error closing {pr_info.repository_full_name}#{pr_info.number}: {error}"

@@ -23,6 +23,7 @@ from ..error_codes import (
     ExitCode,
     exit_with_error,
 )
+from ..error_text import summarise_error
 from ..gerrit import (
     GerritChangeComparator,
     GerritChangeInfo,
@@ -82,7 +83,7 @@ def _print_gerrit_final_summary(
         url = url_by_key.get((result.project, result.change_number)) or (
             f"{result.project} #{result.change_number}"
         )
-        reason = result.error or "no reason reported"
+        reason = summarise_error(result.error) if result.error else "no reason reported"
         # markup=False so bracketed reasons are not eaten by Rich.
         console.print(f"   • {url}\n     {reason}", markup=False)
 

@@ -218,6 +218,15 @@ class _LifecycleMixin(_MergeManagerBase):
         # a force-push in between invalidates it; see
         # ``_wait_for_required_workflows_and_retry``.
         self._last_merge_exception_head: dict[str, str] = {}
+        # Whether the *last* thing to happen on a merge attempt was the
+        # API answering rather than an exception being raised.  The
+        # stored exception alone cannot say: nothing clears it when a
+        # later attempt gets a reply, so a 502 followed by a
+        # ``merged: false`` leaves the 502 behind it.  Readers asking
+        # "why did this fail" need the last event; readers asking "did
+        # GitHub ever say this" --- the approval and workflow recoveries
+        # --- deliberately do not, and go on reading the exception.
+        self._last_merge_was_answered: dict[str, bool] = {}
 
         # Track PRs that were just approved (for post-approval merge retry)
         self._recently_approved: set[str] = set()

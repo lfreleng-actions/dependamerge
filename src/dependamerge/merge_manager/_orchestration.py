@@ -65,6 +65,7 @@ class _OrchestrationMixin(_MergeManagerBase):
         self._semantic_title_aligned.clear()
         self._last_merge_exception.clear()
         self._last_merge_exception_head.clear()
+        self._last_merge_was_answered.clear()
         # The block-reason memo lives on the client rather than here,
         # but it is run-scoped for the same reason and its expiry window
         # can outlast the gap between two runs.

@@ -250,17 +250,18 @@ class _MergeConflictWaitMixin(_FailureSummaryFromExceptionMixin):
         that state, so a bare status allowlist would withdraw the one
         case the classifier singles out as not being a verdict.
 
+        An exception the API has since answered past is not consulted
+        at all.  The loop records which came last, because it stores
+        what it caught and never clears it: a 502 on one attempt and a
+        ``merged: false`` on the next would otherwise leave the 502
+        speaking for a refusal it did not cause.
+
         No stored exception means nothing was raised and the API itself
         answered, which is a verdict.
-
-        A *stale* entry --- one from an attempt before the rebase --- can
-        only be read when the attempt just made raised nothing, since
-        any exception it did raise would have replaced it.  So the worst
-        such an entry causes is a refusal left standing, which is the
-        behaviour before this path opted in at all.  Erring the other
-        way would need a fresh non-verdict exception to go unstored.
         """
         pr_key = f"{pr_info.repository_full_name}#{pr_info.number}"
+        if self._last_merge_was_answered.get(pr_key):
+            return True
         last_exception = self._last_merge_exception.get(pr_key)
         if last_exception is None:
             return True

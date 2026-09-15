@@ -72,6 +72,7 @@ class _MergeManagerBase:
     _github_service: GitHubService | None
     _last_merge_exception: dict[str, Exception]
     _last_merge_exception_head: dict[str, str]
+    _last_merge_was_answered: dict[str, bool]
     _max_wait: float | None
     _merge_dispatch_locks: dict[str, asyncio.Lock]
     _merge_dispatch_locks_lock: asyncio.Lock

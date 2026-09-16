@@ -78,6 +78,31 @@ def _is_state_verdict(error_msg: str) -> bool:
 class _FailureSummaryFromExceptionMixin(_MergeManagerBase):
     """Reading a merge failure reason out of the exception that caused it."""
 
+    def _exception_is_a_refusal(
+        self,
+        pr_key: str,
+        exc: Exception,
+        pr_info: PullRequestInfo,
+    ) -> bool:
+        """Whether an exception says GitHub judged the pull request.
+
+        The judgement :meth:`_get_failure_summary` makes, without the
+        reason text --- callers that already know what to report still
+        need to know whether a later clean reading may withdraw it.
+
+        Shared rather than repeated because the decision is subtler than
+        the status allowlist it looks like.  :func:`_is_state_verdict`
+        is consulted **only** when the fuller classifier declines to
+        judge, since that classifier singles out a bodyless ``405`` on a
+        PR reading ``clean`` as a *transient* API failure --- the one
+        405 that is not a verdict, and the one a bare allowlist gets
+        wrong.
+        """
+        classified = self._failure_summary_from_exception(pr_key, exc, pr_info)
+        if classified is not None:
+            return classified[1]
+        return _is_state_verdict(str(exc))
+
     def _failure_summary_from_exception(
         self,
         pr_key: str,

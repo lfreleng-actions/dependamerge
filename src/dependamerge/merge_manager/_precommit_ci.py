@@ -164,17 +164,27 @@ class _PrecommitCiMixin(_PrecommitWaitMixin):
     ) -> tuple[bool, dict[str, Any] | None]:
         """Read the pre-commit.ci status on the PR's head commit.
 
-        Returns a ``(fetched, status)`` pair.  ``fetched`` is False when
-        the commit status could not be read at all, which suppresses the
-        retrigger; a True with a ``None`` status means pre-commit.ci has
-        reported nothing yet.
+        Returns a ``(fetched, status)`` pair.  ``fetched`` is False only
+        when the status was **absent from an incomplete reading**, which
+        suppresses the retrigger: nothing was established either way.  A
+        True with a status is that status, whether or not the reading
+        finished; a True with ``None`` is confirmed absence from a
+        complete one, meaning pre-commit.ci has reported nothing yet.
+
+        Finding the status settles the question however the reading
+        ended, so a partial one is consulted before it is judged.  Only
+        **absence** needs the reading to be complete --- a context
+        missing from pages we chose to stop fetching is unknown rather
+        than unreported, and acting on it posts a nudge for a hook that
+        may have reported perfectly well.
         """
-        fetched, statuses = await self._combined_statuses(
+        complete, statuses = await self._combined_statuses(
             repo_owner, repo_name, pr_info
         )
-        if not fetched:
-            return False, None
-        return True, find_precommit_status({"statuses": statuses})
+        status = find_precommit_status({"statuses": statuses})
+        if status is not None:
+            return True, status
+        return complete, None
 
     def _precommit_run_is_stuck(
         self,

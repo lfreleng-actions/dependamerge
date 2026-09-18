@@ -1470,3 +1470,385 @@ class TestTheStatusReadIsNotTruncated:
 
         assert result is False
         assert client.get.await_count == 1
+
+
+class TestACappedReadIsNotEvidenceOfAbsence:
+    """The page cap reintroduces the truncation bug at 1,000 contexts.
+
+    Stopping because the request budget ran out says nothing about what
+    the next page held, so reporting that read as complete claims a
+    status is absent from a set we chose to stop reading.
+
+    On a ``blocked`` PR that costs twice: an unnecessary
+    ``pre-commit.ci run``, and -- because a status never found yields no
+    timestamp -- a duplicate check that widens from this incident to the
+    pull request's whole history, which is what ``since`` exists to
+    prevent.
+    """
+
+    @staticmethod
+    def _full_page() -> dict[str, list[dict[str, str]]]:
+        return {
+            "statuses": [
+                {"context": f"other-{i}", "state": "success"} for i in range(100)
+            ]
+        }
+
+    @pytest.mark.asyncio
+    async def test_a_capped_read_posts_no_comment(self):
+        """``blocked``, so an absent status would otherwise be nudged."""
+        mgr, client = _make_manager()
+        client.get_required_status_checks = AsyncMock(
+            return_value=[{"context": "pre-commit.ci - pr"}]
+        )
+        # Ten full pages, none carrying pre-commit.ci: the read stops on
+        # the cap with the question still open.
+        client.get.side_effect = [self._full_page() for _ in range(10)]
+        client.post_issue_comment = AsyncMock()
+
+        # Sleep is patched so a regression fails rather than hangs: on
+        # the unfixed path this posts the nudge and parks in the poll
+        # loop, which would stall the suite instead of reporting.
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            result = await mgr._trigger_stale_precommit_ci(
+                _make_pr_info(), treat_missing_as_stuck=True
+            )
+
+        assert result is False
+        client.post_issue_comment.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_the_cap_still_bounds_the_requests(self):
+        """The budget is the point of the cap, and it still holds."""
+        mgr, client = _make_manager()
+        client.get_required_status_checks = AsyncMock(
+            return_value=[{"context": "pre-commit.ci - pr"}]
+        )
+        client.get.side_effect = [self._full_page() for _ in range(10)]
+        client.post_issue_comment = AsyncMock()
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            await mgr._trigger_stale_precommit_ci(
+                _make_pr_info(), treat_missing_as_stuck=True
+            )
+
+        assert client.get.await_count == 10
+
+    @pytest.mark.asyncio
+    async def test_a_status_found_within_the_cap_is_still_read(self):
+        """The control: a complete read keeps deciding as it did.
+
+        Nine full pages then a short one carrying an errored run --- the
+        data ran out rather than the budget, so the reading stands and
+        the error is acted on rather than discarded.
+        """
+        mgr, client = _make_manager()
+        client.get_required_status_checks = AsyncMock(
+            return_value=[{"context": "pre-commit.ci - pr"}]
+        )
+        pages = [self._full_page() for _ in range(9)]
+        pages.append(
+            {"statuses": [{"context": "pre-commit.ci - pr", "state": "failure"}]}
+        )
+        client.get.side_effect = pages
+        client.post_issue_comment = AsyncMock()
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            result = await mgr._trigger_stale_precommit_ci(
+                _make_pr_info(), treat_missing_as_stuck=True
+            )
+
+        # A reported ``failure`` is a hook that ran, so it is left alone
+        # --- and that verdict required reading all ten pages.
+        assert result is False
+        assert client.get.await_count == 10
+        client.post_issue_comment.assert_not_called()
+
+
+class TestOnlyAbsenceNeedsACompleteReading:
+    """A capped read is still evidence of what it did find.
+
+    Treating the whole reading as unusable would discard a status
+    already in hand: a ``pre-commit.ci - pr`` seen on page three is
+    conclusive whatever pages four onward hold, and refusing to act on
+    it strands the repair this path exists to make.
+    """
+
+    @staticmethod
+    def _full_page(index: int = 0, **extra: object) -> dict[str, object]:
+        """A full page of distinct statuses, ids following the offset."""
+        base = index * 100
+        page: dict[str, object] = {
+            "statuses": [
+                {"id": base + i, "context": f"other-{base + i}", "state": "success"}
+                for i in range(100)
+            ]
+        }
+        page.update(extra)
+        return page
+
+    @staticmethod
+    def _settled_poll() -> dict[str, object]:
+        """A short page the post-trigger poll can conclude on."""
+        return {
+            "statuses": [
+                {
+                    "id": 999999,
+                    "context": "pre-commit.ci - pr",
+                    "state": "success",
+                    "updated_at": "2026-09-18T12:00:00Z",
+                }
+            ]
+        }
+
+    @pytest.mark.asyncio
+    async def test_a_status_seen_before_the_cap_is_acted_on(self):
+        """Found on page one, with the budget filled afterwards.
+
+        An ``error`` is pre-commit.ci failing to complete a run, which
+        this path repairs by re-triggering.  Discarding the reading
+        because later pages filled the budget would strand that repair
+        --- the status was in hand before the cap was reached.
+        """
+        mgr, client = _make_manager()
+        client.get_required_status_checks = AsyncMock(
+            return_value=[{"context": "pre-commit.ci - pr"}]
+        )
+        first = {
+            "statuses": [
+                {
+                    "id": 1,
+                    "context": "pre-commit.ci - pr",
+                    "state": "error",
+                    "updated_at": "2026-09-18T09:00:00Z",
+                }
+            ]
+            + [
+                {"id": 100 + i, "context": f"other-{i}", "state": "success"}
+                for i in range(99)
+            ]
+        }
+        # Ten status pages, then the comment lookup, then the poll --
+        # which gets a short page so it settles rather than exhausting
+        # the mock and reading an error path this test is not about.
+        client.get.side_effect = (
+            [first]
+            + [self._full_page(i) for i in range(1, 10)]
+            + [[], self._settled_poll()]
+        )
+        client.post_issue_comment = AsyncMock()
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            await mgr._trigger_stale_precommit_ci(
+                _make_pr_info(), treat_missing_as_stuck=True
+            )
+
+        # The errored run was re-triggered rather than thrown away with
+        # the truncated reading.
+        client.post_issue_comment.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_an_exact_budget_is_complete_when_the_count_says_so(self):
+        """1,000 statuses fill the budget and are nonetheless all of them.
+
+        ``total_count`` is the payload's own answer, so the boundary
+        where a full last page is also the last page does not have to
+        read as truncated --- and a genuinely absent status there is
+        still repaired.
+        """
+        mgr, client = _make_manager()
+        client.get_required_status_checks = AsyncMock(
+            return_value=[{"context": "pre-commit.ci - pr"}]
+        )
+        client.get.side_effect = [
+            self._full_page(i, total_count=1000) for i in range(10)
+        ] + [[], self._settled_poll()]
+        client.post_issue_comment = AsyncMock()
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            await mgr._trigger_stale_precommit_ci(
+                _make_pr_info(), treat_missing_as_stuck=True
+            )
+
+        # The reading is complete, so the absent status is genuinely
+        # absent and the nudge is warranted.
+        client.post_issue_comment.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_a_count_that_grows_mid_read_is_not_satisfied(self):
+        """The page-one count cannot certify a read that outgrew it.
+
+        Statuses come back newest first, so one posted between requests
+        shifts every later entry down a slot --- and can push one past
+        the cap while the original count still says ten pages is all of
+        them.  Trusting the first figure would certify exactly the
+        truncation this guards against.
+        """
+        mgr, client = _make_manager()
+        client.get_required_status_checks = AsyncMock(
+            return_value=[{"context": "pre-commit.ci - pr"}]
+        )
+        pages = [self._full_page(0, total_count=1000)]
+        # A status arrives mid-read; later pages report the new total.
+        pages += [self._full_page(i, total_count=1001) for i in range(1, 10)]
+        client.get.side_effect = pages
+        client.post_issue_comment = AsyncMock()
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            await mgr._trigger_stale_precommit_ci(
+                _make_pr_info(), treat_missing_as_stuck=True
+            )
+
+        # 1,000 read against a count of 1,001: still short, so absence
+        # proves nothing and no nudge is posted.
+        client.post_issue_comment.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_page_is_not_the_shortest_page(self):
+        """A shape we cannot parse is not an empty result.
+
+        ``{"statuses": {}}`` filters down to nothing, which would read
+        as the shortest page of all and certify that every context is
+        absent --- posting a nudge on the strength of a response the
+        code could not understand.
+        """
+        mgr, client = _make_manager()
+        client.get_required_status_checks = AsyncMock(
+            return_value=[{"context": "pre-commit.ci - pr"}]
+        )
+        client.get.side_effect = [{"statuses": {}, "total_count": 0}]
+        client.post_issue_comment = AsyncMock()
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            await mgr._trigger_stale_precommit_ci(
+                _make_pr_info(), treat_missing_as_stuck=True
+            )
+
+        client.post_issue_comment.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("payload", [{}, {"statuses": None}])
+    async def test_a_missing_status_list_is_not_an_empty_one(self, payload):
+        """The endpoint always carries the key, so its absence is noise.
+
+        Coercing it to an empty list would read as a complete reading of
+        a commit with no statuses at all, which is the one shape that
+        makes every context conclusively absent.
+        """
+        mgr, client = _make_manager()
+        client.get_required_status_checks = AsyncMock(
+            return_value=[{"context": "pre-commit.ci - pr"}]
+        )
+        client.get.side_effect = [payload]
+        client.post_issue_comment = AsyncMock()
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            await mgr._trigger_stale_precommit_ci(
+                _make_pr_info(), treat_missing_as_stuck=True
+            )
+
+        client.post_issue_comment.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_entries_that_do_not_parse_leave_the_page_partial(self):
+        """Dropped entries make a page short for the wrong reason.
+
+        The surviving objects are still evidence --- a target among them
+        is found --- but the page cannot also be read as proof that
+        nothing else exists.
+        """
+        mgr, client = _make_manager()
+        client.get_required_status_checks = AsyncMock(
+            return_value=[{"context": "pre-commit.ci - pr"}]
+        )
+        client.get.side_effect = [
+            {"statuses": [{"id": 1, "context": "other", "state": "success"}, "junk"]}
+        ]
+        client.post_issue_comment = AsyncMock()
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            await mgr._trigger_stale_precommit_ci(
+                _make_pr_info(), treat_missing_as_stuck=True
+            )
+
+        client.post_issue_comment.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_row_returned_twice_does_not_satisfy_the_count(self):
+        """Offset paging can repeat a row and miss another entirely.
+
+        An insertion ahead of the cursor shifts a row from page one onto
+        page two, so the same entry arrives twice while the row that was
+        pushed past the cap is never read.  Counting arrivals would then
+        reach ``total_count`` and certify an absence nobody established
+        --- the erroneous nudge this whole change exists to prevent.
+        Counting distinct ids is what makes the proof mean what it says.
+        """
+        mgr, client = _make_manager()
+        client.get_required_status_checks = AsyncMock(
+            return_value=[{"context": "pre-commit.ci - pr"}]
+        )
+        pages = [self._full_page(i, total_count=1000) for i in range(10)]
+        # Page two repeats page one's last row, as a front insertion
+        # would: 1,000 rows arrive, but only 999 of them are distinct.
+        second = list(pages[1]["statuses"])  # type: ignore[arg-type]
+        second[0] = dict(pages[0]["statuses"][99])  # type: ignore[index]
+        pages[1] = {"statuses": second, "total_count": 1000}
+        client.get.side_effect = pages
+        client.post_issue_comment = AsyncMock()
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            await mgr._trigger_stale_precommit_ci(
+                _make_pr_info(), treat_missing_as_stuck=True
+            )
+
+        client.post_issue_comment.assert_not_called()
+
+
+class TestThePollConsultsAPartialReadingToo:
+    """``_poll_precommit_status`` makes the same presence judgement.
+
+    It previously returned no outcome whenever the reading was
+    incomplete, which discarded a terminal status sitting in the pages
+    it had already read and left the wait running to its deadline for a
+    run that had finished.
+    """
+
+    @staticmethod
+    def _full_page() -> dict[str, object]:
+        return {
+            "statuses": [
+                {"context": f"other-{i}", "state": "success"} for i in range(100)
+            ]
+        }
+
+    @pytest.mark.asyncio
+    async def test_a_terminal_status_before_the_cap_ends_the_wait(self):
+        mgr, client = _make_manager()
+        first = {
+            "statuses": [
+                {
+                    "context": "pre-commit.ci - pr",
+                    "state": "success",
+                    "updated_at": "2026-09-18T09:00:00Z",
+                }
+            ]
+            + [{"context": f"other-{i}", "state": "success"} for i in range(99)]
+        }
+        # Nine more full pages fill the budget, so the reading is
+        # partial --- but the answer was on page one.
+        client.get.side_effect = [first] + [self._full_page() for _ in range(9)]
+
+        outcome = await mgr._poll_precommit_status("owner", "repo", _make_pr_info())
+
+        assert outcome is True
+
+    @pytest.mark.asyncio
+    async def test_an_absent_status_still_reads_as_pending(self):
+        """The control: nothing found is nothing decided, as before."""
+        mgr, client = _make_manager()
+        client.get.side_effect = [self._full_page() for _ in range(10)]
+
+        outcome = await mgr._poll_precommit_status("owner", "repo", _make_pr_info())
+
+        assert outcome is None

@@ -87,7 +87,10 @@ class TestTheRefusalIsWordedOnce:
         with pytest.raises(UrlParseError) as caught:
             ENTRY_POINTS[entry]("not a url")
 
-        assert "Not a valid GitHub owner name: 'not a url'" in str(caught.value)
+        # Echoed up to and including the first unsafe character, which a
+        # space is: the gate and the echo share one definition, so the
+        # fault stays visible without printing whatever follows it.
+        assert "Not a valid GitHub owner name: 'not \u2026'" in str(caught.value)
         assert "alphanumerics and hyphens, at most 39 characters" in str(caught.value)
 
 

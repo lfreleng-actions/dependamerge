@@ -46,6 +46,7 @@ from .hosts import (
     derive_api_urls,
     is_supported_github_host,
     pull_request_url_for,
+    reject_path_parameters,
     reject_port_bearing_host,
     unsupported_host_message,
 )
@@ -57,7 +58,11 @@ from .models import (
     ParsedUrl,
     UrlParseError,
 )
-from .owner import require_owner, require_owner_from_path
+from .names import (
+    require_owner,
+    require_owner_from_path,
+    require_repo,
+)
 from .redaction import redact_target
 from .repos import (
     parse_org_url,
@@ -105,9 +110,11 @@ __all__ = [
     "parse_owner_target",
     "parse_repo_url",
     "pull_request_url_for",
+    "reject_path_parameters",
     "reject_port_bearing_host",
     "require_owner",
     "require_owner_from_path",
+    "require_repo",
     "set_github_host",
     "has_stray_git_suffix",
     "redact_target",

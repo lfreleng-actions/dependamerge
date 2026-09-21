@@ -15,11 +15,12 @@ from urllib.parse import urlparse
 from .git_suffix import has_stray_git_suffix
 from .hosts import (
     is_supported_github_host,
+    reject_path_parameters,
     reject_port_bearing_host,
     unsupported_host_message,
 )
 from .models import ChangeSource, ParsedOrgUrl, ParsedRepoUrl, UrlParseError
-from .owner import require_owner, require_owner_from_path
+from .names import require_owner, require_owner_from_path, require_repo
 from .redaction import redact_target
 from .shorthand import default_github_host, normalize_target
 
@@ -77,6 +78,7 @@ def parse_repo_url(url: str) -> ParsedRepoUrl:
     reject_port_bearing_host(parsed.netloc.lower(), "Repository")
     if not is_supported_github_host(host):
         raise UrlParseError(unsupported_host_message(host, "Repository"))
+    reject_path_parameters(parsed, url)
 
     # Try to extract owner/repo from the path
     # Expected: /owner/repo or /owner/repo/pulls
@@ -127,7 +129,7 @@ def parse_repo_url(url: str) -> ParsedRepoUrl:
         )
 
     owner = require_owner_from_path(parts[0], host)
-    repo = parts[1]
+    repo = require_repo(parts[1])
 
     return ParsedRepoUrl(
         source=ChangeSource.GITHUB,
@@ -192,6 +194,7 @@ def parse_org_url(url: str) -> ParsedOrgUrl:
     reject_port_bearing_host(parsed.netloc.lower(), "Owner-wide")
     if not is_supported_github_host(host):
         raise UrlParseError(unsupported_host_message(host, "Owner-wide"))
+    reject_path_parameters(parsed, url)
 
     if has_stray_git_suffix(path):
         # Normalisation preserves the suffix on anything that is not a

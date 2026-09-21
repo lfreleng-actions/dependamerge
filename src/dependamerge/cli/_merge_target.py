@@ -220,7 +220,17 @@ def _report_unparsable_url(
             # something that will not change the outcome.
             console.print(f"❌ Invalid URL: {change_err}")
     else:
-        console.print(f"❌ Invalid URL: {repo_err}")
+        # github.com.  A PR-shaped path that was rejected failed on
+        # something *within* the URL --- an impossible owner or
+        # repository name, a non-numeric number --- so the change
+        # parser's complaint is the specific one.  The repository
+        # parser's fallback for this shape advises passing the full PR
+        # URL, which the operator has just done: guidance that
+        # contradicts the input reads as the tool not having looked.
+        if _PR_SHAPED_PATH_RE.match(path):
+            console.print(f"❌ Invalid URL: {change_err}")
+        else:
+            console.print(f"❌ Invalid URL: {repo_err}")
     raise typer.Exit(1) from None
 
 

@@ -445,6 +445,7 @@ class TestTheRemedyMatchesTheFault:
         [
             "https://ghe.corp.example.com/acme/widget/pull/abc",
             "https://ghe.corp.example.com/acme/widget/pull/7/files.git",
+            "https://ghe.corp.example.com/acme/widget/pull/7;other",
         ],
     )
     def test_a_pr_shaped_fault_does_not_advise_declaring_a_host(self, url):

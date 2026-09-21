@@ -30,6 +30,7 @@ from ..url_parser import (
     is_supported_github_host,
     normalize_target,
     redact_target,
+    reject_conflicting_host_declaration,
     reject_path_parameters,
     reject_port_bearing_host,
     require_owner_from_path,
@@ -127,6 +128,11 @@ class GitHubClient(_GitHubQueryMixin, _GitHubActionMixin, _GitHubStatusMixin):
         # reason it is there --- it resolves to a bare hostname.
         reject_port_bearing_host(parsed.netloc.lower(), "Pull request")
         host = (parsed.hostname or "").lower()
+        # This parser is its own host-policy boundary: ``close`` and the
+        # merge client setup reach it without passing through
+        # ``url_parser``, so a contradiction checked only there would
+        # leave this route accepting a host declared both ways.
+        reject_conflicting_host_declaration(host)
         if not is_supported_github_host(host):
             # Declaration guidance only helps when the URL is otherwise
             # a pull request.  Offering it for something that is not

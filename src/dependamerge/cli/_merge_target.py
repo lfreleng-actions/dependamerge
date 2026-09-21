@@ -24,6 +24,7 @@ import typer
 
 from ..local_repo import LocalTarget, detect_local_target
 from ..url_parser import (
+    HostDeclarationError,
     ParsedGerritTopicUrl,
     ParsedOrgUrl,
     ParsedRepoUrl,
@@ -31,11 +32,14 @@ from ..url_parser import (
     UrlParseError,
     _host_matches,
     _is_gerrit_url,
+    is_declared_gerrit_host,
+    looks_like_topic_search,
     normalize_target,
     parse_change_url,
     parse_gerrit_topic_url,
     parse_org_url,
     parse_repo_url,
+    reject_conflicting_host_declaration,
 )
 from ._app import console
 
@@ -110,6 +114,19 @@ def _resolve_target_url(pr_url: str) -> str:
         raise typer.Exit(1)
 
     if target.is_gerrit:
+        # A contradiction about the host has to be reported before the
+        # checkout guidance, not after: this branch exits without
+        # reaching any parser, so it is the only place the omitted
+        # target ever gets checked.  ``_looks_like_gerrit_remote``
+        # cannot do it --- it returns a bool and runs before this
+        # command's error guard, so raising there would print a
+        # traceback rather than a message.
+        try:
+            reject_conflicting_host_declaration(target.host)
+        except HostDeclarationError as exc:
+            console.print(f"❌ {exc}")
+            raise typer.Exit(1) from None
+
         # Stop here rather than letting a Gerrit checkout fall through
         # to the GitHub path, which would fail somewhere far less
         # informative.  Gerrit changes are addressed by change or topic,
@@ -241,6 +258,15 @@ def _parse_merge_target(pr_url: str) -> _MergeTarget:
     then an owner-wide URL (bare owner / orgs/owner), then a single
     repository URL.
 
+    A refusal about the *host* stops the cascade rather than joining it.
+    Every other failure says "not this shape, try the next"; a
+    declaration refusal says "not this host, whatever the shape", so
+    continuing asks three more parsers a question already answered --- and
+    the operator was then shown whichever of them complained last.  A
+    Gerrit topic URL on a host declared as GitHub reported an invalid
+    *repository name* of ``topic:``, which describes neither the fault
+    nor its remedy.
+
     Args:
         pr_url: The URL as the operator typed it.
 
@@ -248,20 +274,80 @@ def _parse_merge_target(pr_url: str) -> _MergeTarget:
         The target, with exactly one field set.
 
     Raises:
+        typer.Exit: The URL matches none of the accepted shapes, or
+            names a host whose declarations refuse it.
+    """
+    try:
+        return _classify_merge_target(pr_url)
+    except HostDeclarationError as exc:
+        console.print(f"❌ {exc}")
+        raise typer.Exit(1) from None
+
+
+def _target_host_is_declared_gerrit(target: str) -> bool:
+    """Whether *target* names a host the operator declared as Gerrit.
+
+    Best-effort and deliberately silent: it decides which *error* to
+    report, so a target too malformed to yield a host simply falls
+    through to the ordinary cascade.
+    """
+    try:
+        parsed = urlparse(normalize_target(target))
+    except (UrlParseError, ValueError):
+        return False
+    return is_declared_gerrit_host((parsed.hostname or "").lower())
+
+
+def _classify_merge_target(pr_url: str) -> _MergeTarget:
+    """Try each accepted URL shape in turn.
+
+    Raises:
+        HostDeclarationError: A declaration refuses the host outright.
         typer.Exit: The URL matches none of the accepted shapes.
     """
     target = _MergeTarget()
     change_err: UrlParseError | None = None
+    # ``HostDeclarationError`` is re-raised at each step rather than
+    # joining ``UrlParseError``, which it subclasses.  Catching it here
+    # would put an authoritative answer about the host back into the
+    # cascade it is meant to stop.
     try:
         target.url = parse_change_url(pr_url)
+    except HostDeclarationError:
+        raise
     except UrlParseError as e:
         change_err = e
         # Not a PR/change URL — try a Gerrit topic search URL next, so
         # pasted dashboard URLs like /q/topic:some-topic work directly.
         try:
             target.topic = parse_gerrit_topic_url(pr_url)
-        except UrlParseError:
+        except HostDeclarationError:
+            raise
+        except UrlParseError as topic_err:
             target.topic = None
+            if looks_like_topic_search(pr_url):
+                # The input is unmistakably a topic search, so the topic
+                # parser's complaint is the one worth reading.  Letting
+                # it join the cascade printed GitHub repository guidance
+                # for a Gerrit dashboard URL --- and buried real faults
+                # the parser had found, an unsupported port among them.
+                console.print(f"❌ Invalid URL: {topic_err}")
+                raise typer.Exit(1) from None
+        if target.topic is None and _target_host_is_declared_gerrit(pr_url):
+            # The host is a declared Gerrit server and neither Gerrit
+            # shape fitted, so the change parser's complaint about the
+            # format is the only useful answer.  Letting the cascade
+            # continue ended with the repository parser telling the
+            # operator to declare a GitHub host --- for a host they had
+            # declared as Gerrit.
+            #
+            # After the topic attempt, not before it: on a declared
+            # host ``parse_change_url`` routes every path to the change
+            # parser, so a perfectly good ``/q/topic:`` URL arrives
+            # here carrying a change-format error.  Exiting first
+            # refused it.
+            console.print(f"❌ Invalid URL: {e}")
+            raise typer.Exit(1) from None
     if target.url is None and target.topic is None and change_err is not None:
         # Not a PR URL — try owner-wide before repository.  parse_org_url
         # is strict (only a bare owner or the canonical orgs/owner forms),
@@ -270,10 +356,14 @@ def _parse_merge_target(pr_url: str) -> _MergeTarget:
         # mis-parsed by parse_repo_url as owner="orgs", repo="owner".
         try:
             target.org = parse_org_url(pr_url)
+        except HostDeclarationError:
+            raise
         except UrlParseError as org_err:
             # Not an owner URL — try as a repository URL
             try:
                 target.repo = parse_repo_url(pr_url)
+            except HostDeclarationError:
+                raise
             except UrlParseError as repo_err:
                 _report_unparsable_url(pr_url, change_err, org_err, repo_err)
     return target

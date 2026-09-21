@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from urllib.parse import urlparse
 
+from .gerrit_routing import reject_conflicting_host_declaration
 from .git_suffix import has_stray_git_suffix
 from .hosts import (
     is_supported_github_host,
@@ -76,6 +77,7 @@ def parse_repo_url(url: str) -> ParsedRepoUrl:
     # choke point for repository URLs --- do NOT scatter additional host
     # checks elsewhere.
     reject_port_bearing_host(parsed.netloc.lower(), "Repository")
+    reject_conflicting_host_declaration(host)
     if not is_supported_github_host(host):
         raise UrlParseError(unsupported_host_message(host, "Repository"))
     reject_path_parameters(parsed, url)
@@ -192,6 +194,7 @@ def parse_org_url(url: str) -> ParsedOrgUrl:
     # host.  This is the single choke point for owner-wide URLs --- do
     # NOT scatter additional host checks elsewhere.
     reject_port_bearing_host(parsed.netloc.lower(), "Owner-wide")
+    reject_conflicting_host_declaration(host)
     if not is_supported_github_host(host):
         raise UrlParseError(unsupported_host_message(host, "Owner-wide"))
     reject_path_parameters(parsed, url)
@@ -279,6 +282,11 @@ def parse_owner_target(value: str) -> tuple[str, str]:
         # owner: text that cannot be a login is rejected rather than
         # sent to the API as an owner that cannot exist.
         host = default_github_host()
+        # The resolved default is a host like any other, so a
+        # contradiction about it has to be reported here too --- the
+        # bare branch never reaches ``parse_org_url``, where the check
+        # for a URL-derived owner lives.
+        reject_conflicting_host_declaration(host)
         return (require_owner(bare, host), host)
 
     parsed = parse_org_url(value)
@@ -338,6 +346,8 @@ def parse_owner_arg(value: str) -> str:
         # extract, so treat it the same as an empty value.
         raise UrlParseError("Owner name or URL cannot be empty")
     if "/" not in bare and "://" not in bare:
-        return require_owner(bare, default_github_host())
+        host = default_github_host()
+        reject_conflicting_host_declaration(host)
+        return require_owner(bare, host)
 
     return parse_org_url(value).owner

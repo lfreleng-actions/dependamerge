@@ -21,11 +21,10 @@ from typer.testing import CliRunner
 
 from dependamerge.cli import app
 from dependamerge.gitreview import GitReviewInfo
+from dependamerge.local_remote import _safe_for_log, host_suggests_gerrit
 from dependamerge.local_repo import (
     LocalTarget,
-    _safe_for_log,
     detect_local_target,
-    host_suggests_gerrit,
     remote_url,
     repository_root,
 )
@@ -561,11 +560,15 @@ class TestCredentialsNeverReachTheLog:
     def test_declined_remote_does_not_log_its_password(self, repo, caplog):
         _git(repo, "remote", "add", "origin", "ftp://user:hunter2@host/repo.git")
 
-        with caplog.at_level(logging.DEBUG, logger="dependamerge.local_repo"):
+        with caplog.at_level(logging.DEBUG, logger="dependamerge.local_remote"):
             assert detect_local_target(repo) is None
 
-        assert "hunter2" not in caplog.text
+        # The record has to exist for the rest to mean anything.  The
+        # redaction lives in ``local_remote``, and capturing the wrong
+        # logger filtered it out --- leaving a test that passed because
+        # it saw nothing at all.
         assert "***" in caplog.text
+        assert "hunter2" not in caplog.text
 
 
 class TestLocalTargetModel:

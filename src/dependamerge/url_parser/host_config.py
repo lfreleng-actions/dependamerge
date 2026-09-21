@@ -212,7 +212,7 @@ def _safe_to_show(host: str) -> str:
     return without_query
 
 
-def _clean_host(value: str) -> str:
+def _clean_host(value: str, label: str = "GitHub") -> str:
     """Reduce a configured value to a bare lowercase hostname.
 
     Raises rather than trimming a port.  Ports are unsupported end to
@@ -229,6 +229,10 @@ def _clean_host(value: str) -> str:
     by looking like github.com, and then addressed ``evil.example``,
     because that is the authority a URL of that shape actually names.
 
+    *label* names the platform in the message.  The rule is the same for
+    a Gerrit declaration --- both are trusted values that decide where a
+    request goes --- so it is the wording that varies, not the check.
+
     Raises:
         UrlParseError: The value names a port, or is not a hostname.
     """
@@ -239,14 +243,14 @@ def _clean_host(value: str) -> str:
     if name and port:
         shown = _safe_to_show(host)
         raise UrlParseError(
-            f"Configured GitHub host {shown!r} names a port, which is not "
+            f"Configured {label} host {shown!r} names a port, which is not "
             "supported: the port cannot be carried through to the API "
             f"base URL, so requests would go to {_safe_to_show(name)} on "
             "the default port instead. Configure the host without a port."
         )
     if not _HOSTNAME_RE.match(host):
         raise UrlParseError(
-            f"Configured GitHub host {_safe_to_show(host)!r} is not a bare "
+            f"Configured {label} host {_safe_to_show(host)!r} is not a bare "
             "hostname. Credentials, paths and query strings are not "
             "accepted here, because a value of that shape addresses a "
             "different server than it appears to. Configure the hostname "

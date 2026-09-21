@@ -15,7 +15,7 @@ from ..url_parser import (
     parse_owner_target,
 )
 from ._app import app, console
-from ._github_host import apply_github_host
+from ._github_host import apply_gerrit_host, apply_github_host
 from ._reports import _display_status_results
 
 
@@ -35,6 +35,15 @@ def status(
             "GitHub host to address, e.g. a GitHub Enterprise Server "
             "install. Takes priority over DEPENDAMERGE_GITHUB_HOST and "
             "GH_HOST, and declares the host as permitted."
+        ),
+    ),
+    gerrit_host: str | None = typer.Option(
+        None,
+        "--gerrit-host",
+        help=(
+            "Gerrit host to address. Declaring it routes that host to "
+            "Gerrit whatever a URL path looks like, and stops a host "
+            "declared as GitHub being treated as Gerrit."
         ),
     ),
     output_format: str = typer.Option(
@@ -60,6 +69,7 @@ def status(
     # the host a shorthand resolves against and the set of hosts
     # permitted at all.
     apply_github_host(github_host)
+    apply_gerrit_host(gerrit_host)
 
     # Parse owner login from input (handles a bare login plus every
     # GitHub owner URL form, including /orgs/owner/repositories).

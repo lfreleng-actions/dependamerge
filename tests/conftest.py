@@ -86,7 +86,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from dependamerge.merge_manager import AsyncMergeManager
-from dependamerge.url_parser import set_github_host
+from dependamerge.url_parser import set_gerrit_host, set_github_host
 
 _RUN_INTEGRATION_ENV = "DEPENDAMERGE_RUN_INTEGRATION"
 
@@ -138,9 +138,9 @@ def pytest_collection_modifyitems(
 
 @pytest.fixture(autouse=True)
 def _reset_github_host_override(monkeypatch):
-    """Detach every test from ambient GitHub host configuration.
+    """Detach every test from ambient host configuration.
 
-    The resolved host comes from a process-wide override *and* three
+    The resolved host comes from a process-wide override *and* several
     environment variables.  Clearing only the override leaves the rest:
     a developer who legitimately has ``GH_HOST`` set for their
     Enterprise installation would run the otherwise-dotcom suite
@@ -149,16 +149,27 @@ def _reset_github_host_override(monkeypatch):
     The same hazard as the ambient git configuration in
     ``tests/test_local_repo.py``, and worth the same treatment.  Tests
     that want a host set do so explicitly, after this has run.
+
+    Gerrit declarations are cleared alongside, and for a sharper
+    reason: they decide *routing*, so one left set would send a target
+    to the wrong platform's parser entirely rather than merely to the
+    wrong host.  ``GERRIT_HOST`` is deliberately absent --- this tool
+    does not read it as a declaration, and clearing a variable it never
+    consults would hide that from anyone reading this list.
     """
     for name in (
         "DEPENDAMERGE_GITHUB_HOST",
         "DEPENDAMERGE_GITHUB_HOSTS",
         "GH_HOST",
+        "DEPENDAMERGE_GERRIT_HOST",
+        "DEPENDAMERGE_GERRIT_HOSTS",
     ):
         monkeypatch.delenv(name, raising=False)
     set_github_host(None)
+    set_gerrit_host(None)
     yield
     set_github_host(None)
+    set_gerrit_host(None)
 
 
 def make_merge_manager(**overrides: Any) -> tuple[AsyncMergeManager, AsyncMock]:

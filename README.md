@@ -619,6 +619,42 @@ configuration, because `/pull/` identifies one structurally. Acting on
 it still needs the host declared, so the client refuses an Enterprise
 pull request URL until you declare that host.
 
+### Gerrit Hosts
+
+Gerrit hosts need no configuration. The tool recognises a Gerrit target
+by the shape of its path — `/c/<project>/+/<number>` for a change,
+`/q/topic:<name>` for a topic — so an ordinary Gerrit URL works as it
+always has.
+
+Declare a host when you want the path shape to stop deciding:
+
+```bash
+dependamerge merge https://review.corp.example.com/c/project/+/123 \
+  --gerrit-host review.corp.example.com
+
+# Or for the shell session, comma-separated
+export DEPENDAMERGE_GERRIT_HOSTS=review.corp.example.com
+```
+
+`DEPENDAMERGE_GERRIT_HOST` names a single host, and `--gerrit-host`
+adds one more. The sources combine rather than override each other,
+since Gerrit has no default host for one of them to replace.
+
+A declaration works in both directions. It routes that host to Gerrit
+whatever its URLs look like. It also stops a host you declared as GitHub
+from reaching the Gerrit client, which used to happen whenever a URL on
+it carried a Gerrit-shaped path, and produced a Gerrit credential error
+for a host you had named as GitHub.
+
+Declaring the same host both ways reports the contradiction rather than
+picking one. Each declaration says where your credentials may go, so
+resolving a conflict by precedence would ignore one of them where it
+matters most.
+
+This tool reads none of the `GERRIT_*` variables as a declaration.
+`GERRIT_HOST` already chooses which server a GitHub2Gerrit change goes
+to, and reusing it here would give an existing setting a second meaning.
+
 ### Closing Pull Requests
 
 Close pull requests across an entire GitHub organization:

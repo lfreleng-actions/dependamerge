@@ -47,7 +47,7 @@ from ._close import (
     _run_interactive_close,
     _validate_close_authorization,
 )
-from ._github_host import apply_github_host
+from ._github_host import apply_gerrit_host, apply_github_host
 from ._pr_display import _display_pr_info
 
 
@@ -72,6 +72,15 @@ def close(
             "GitHub host to address, e.g. a GitHub Enterprise Server "
             "install. Takes priority over DEPENDAMERGE_GITHUB_HOST and "
             "GH_HOST, and declares the host as permitted."
+        ),
+    ),
+    gerrit_host: str | None = typer.Option(
+        None,
+        "--gerrit-host",
+        help=(
+            "Gerrit host to address. Declaring it routes that host to "
+            "Gerrit whatever a URL path looks like, and stops a host "
+            "declared as GitHub being treated as Gerrit."
         ),
     ),
     override: str | None = typer.Option(
@@ -118,6 +127,7 @@ def close(
     # the host a shorthand resolves against and the set of hosts
     # permitted at all.
     apply_github_host(github_host)
+    apply_gerrit_host(gerrit_host)
 
     progress_tracker = None
 

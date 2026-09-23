@@ -27,6 +27,7 @@ from ..url_parser import (
     default_github_host,
     derive_api_urls,
     has_stray_git_suffix,
+    is_shorthand,
     is_supported_github_host,
     normalize_target,
     redact_target,
@@ -34,7 +35,7 @@ from ..url_parser import (
     reject_path_parameters,
     reject_port_bearing_host,
     require_owner_from_path,
-    require_repo,
+    require_repo_from_path,
     unsupported_host_message,
 )
 from .actions import _GitHubActionMixin
@@ -120,6 +121,7 @@ class GitHubClient(_GitHubQueryMixin, _GitHubActionMixin, _GitHubStatusMixin):
         """
         # SECURITY: Use urlparse for host extraction, not substring checks.
         # See CodeQL rule py/incomplete-url-substring-sanitization.
+        from_url = not is_shorthand(url)
         parsed = urlparse(normalize_target(url, default_host=self.host))
         # Same reasoning as the repository and owner parsers: a port
         # cannot survive into the API base URL, so accepting one would
@@ -199,6 +201,6 @@ class GitHubClient(_GitHubQueryMixin, _GitHubActionMixin, _GitHubStatusMixin):
             # merge client setup without passing through ``url_parser``
             # at all, so a gate added only there leaves this route open.
             require_owner_from_path(match.group("owner"), host),
-            require_repo(match.group("repo")),
+            require_repo_from_path(match.group("repo"), from_url=from_url),
             int(match.group("number")),
         )

@@ -14,6 +14,7 @@ from __future__ import annotations
 import re
 from urllib.parse import unquote, urlparse
 
+from .hosts import reject_path_parameters
 from .models import ChangeSource, ParsedGerritTopicUrl, UrlParseError
 from .redaction import redact_target
 from .shorthand import looks_like_host, normalize_target
@@ -108,6 +109,14 @@ def parse_gerrit_topic_url(url: str) -> ParsedGerritTopicUrl:
         raise UrlParseError("URL must include a hostname")
 
     host = parsed.hostname.lower()
+
+    # The same guard every GitHub parser applies, for the same reason:
+    # ``urlparse`` splits a ``;suffix`` off into ``params``, so
+    # ``/q/topic:release;other`` read as the topic ``release`` --- a
+    # different search, returned without complaint.  This parser is
+    # public, so it has to guard itself rather than rely on the merge
+    # cascade trying ``parse_change_url`` first.
+    reject_path_parameters(parsed, original_url)
 
     # The legacy UI keeps the query in the fragment (/#/q/...); the
     # PolyGerrit UI keeps it in the path (/q/...).

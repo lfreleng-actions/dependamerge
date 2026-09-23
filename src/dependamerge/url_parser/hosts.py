@@ -11,6 +11,10 @@ single place encoding the dotcom-versus-GHE base-URL rule.
 
 from __future__ import annotations
 
+from urllib.parse import ParseResult, urlsplit
+
+from .models import UrlParseError
+from .redaction import redact_target
 from .shorthand import iter_enterprise_hosts
 
 # aislop-ignore-file ai-slop/hardcoded-url -- This module parses and builds
@@ -86,6 +90,52 @@ def is_supported_github_host(host: str) -> bool:
         _host_matches(host, declared, allow_subdomains=False)
         for declared in iter_enterprise_hosts()
     )
+
+
+def reject_path_parameters(parsed: ParseResult, target: str) -> None:
+    """Refuse a target whose final path segment carries a ``;suffix``.
+
+    ``urlparse`` splits one off into ``params`` before any parser sees
+    the path, so ``acme/widget;other`` arrived as the repository
+    ``widget`` and ``/pull/7;other`` as pull request 7 --- a different
+    target, addressed confidently, rather than a refusal.
+
+    Refused rather than rejoined: a path parameter is not part of a
+    name, and a URL carrying one does not mean what it appears to.
+
+    Worded without naming a platform.  ``parse_change_url`` calls this
+    before it has decided whether the target is GitHub or Gerrit, so a
+    GitHub-specific message would misidentify a Gerrit change.
+
+    Takes a ``ParseResult`` specifically.  ``urlsplit`` does not split
+    parameters out at all, so a ``SplitResult`` would carry the suffix
+    in its path and this check would silently never fire.
+
+    Called *after* the host-policy checks in every parser that has
+    them, so a mistyped host is never reported as a malformed path ---
+    the ordering ``TestTheHostIsStillCheckedFirst`` pins for the owner
+    gate.  ``parse_change_url`` has none: it recognises a ``/pull/`` path
+    on any host, so there a ``;suffix`` is a shape fault like
+    ``/pull/abc`` or a stray ``.git``, and is reported as one.  Declaring
+    the host could not repair it.
+    """
+    # ``params`` is empty for a *bare* trailing semicolon, which
+    # ``urlparse`` still strips from the path --- so ``widget;`` slipped
+    # through a check that only asked whether a parameter had content.
+    # ``urlsplit`` does not split parameters at all, which makes its
+    # path the honest record of what the operator typed.
+    #
+    # Only the final segment, as the parsers see it with trailing
+    # slashes stripped: that is the one ``urlparse`` splits.  A ``;``
+    # earlier in the path is left to the name gates --- GitHub's refuse
+    # it, while Gerrit permits it in a project name, so
+    # ``/c/team;tools/+/123`` is a real change and must still parse.
+    final_segment = urlsplit(target).path.rstrip("/").rsplit("/", 1)[-1]
+    if parsed.params or ";" in final_segment:
+        raise UrlParseError(
+            f"Not a valid target URL: {redact_target(target)}. The ';' and "
+            "everything after it is a path parameter, not part of the name."
+        )
 
 
 def reject_port_bearing_host(netloc: str, scope: str) -> None:

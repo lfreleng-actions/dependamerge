@@ -30,8 +30,10 @@ from ..url_parser import (
     is_supported_github_host,
     normalize_target,
     redact_target,
+    reject_path_parameters,
     reject_port_bearing_host,
     require_owner_from_path,
+    require_repo,
     unsupported_host_message,
 )
 from .actions import _GitHubActionMixin
@@ -158,6 +160,13 @@ class GitHubClient(_GitHubQueryMixin, _GitHubActionMixin, _GitHubStatusMixin):
                 "address the wrong server."
             )
 
+        # After the host gates above, and before the shape is matched:
+        # the ordering ``reject_path_parameters`` documents, so a
+        # mistyped host is never reported as a malformed path.  Placing
+        # it earlier made this parser disagree with ``parse_repo_url``
+        # about the same undeclared host.
+        reject_path_parameters(parsed, url)
+
         # The same strict shape gates every host.  Splitting the path
         # and indexing backwards from ``pull`` let a short path wrap
         # around: ``/pull/7`` put ``pull`` at index 0, so the negative
@@ -177,10 +186,13 @@ class GitHubClient(_GitHubQueryMixin, _GitHubActionMixin, _GitHubStatusMixin):
         if match is None:
             raise UrlParseError(f"Invalid GitHub PR URL: {redact_target(url)}")
         return (
-            # The same gate the owner-wide and repository parsers apply,
-            # so a pull request URL cannot be the one shape that sends
-            # an impossible login to the API.
+            # The same gates the owner-wide and repository parsers
+            # apply, so a pull request URL cannot be the one shape that
+            # sends an impossible login or repository to the API.  Both
+            # are needed: this parser is reached by ``close`` and by the
+            # merge client setup without passing through ``url_parser``
+            # at all, so a gate added only there leaves this route open.
             require_owner_from_path(match.group("owner"), host),
-            match.group("repo"),
+            require_repo(match.group("repo")),
             int(match.group("number")),
         )

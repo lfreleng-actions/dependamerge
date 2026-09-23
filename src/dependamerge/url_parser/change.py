@@ -20,9 +20,9 @@ import re
 from urllib.parse import urlparse
 
 from .git_suffix import has_stray_git_suffix
-from .hosts import _host_matches
+from .hosts import _host_matches, reject_path_parameters
 from .models import ChangeSource, ParsedUrl, UrlParseError
-from .owner import require_owner_from_path
+from .names import require_owner_from_path, require_repo
 from .redaction import redact_target
 from .shorthand import normalize_target
 
@@ -65,6 +65,8 @@ def parse_change_url(url: str) -> ParsedUrl:
 
     host = parsed.hostname.lower()
     path = parsed.path.rstrip("/")
+
+    reject_path_parameters(parsed, url)
 
     if has_stray_git_suffix(path):
         # A change is never a clone URL, so normalisation preserved the
@@ -148,7 +150,7 @@ def _parse_github_url(host: str, path: str, original_url: str) -> ParsedUrl:
         )
 
     owner = require_owner_from_path(match.group(1), host)
-    repo = match.group(2)
+    repo = require_repo(match.group(2))
     pr_number = int(match.group(3))
 
     return ParsedUrl(

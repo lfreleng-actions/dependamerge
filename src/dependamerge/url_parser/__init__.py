@@ -38,6 +38,17 @@ from .change import (
     detect_source,
     parse_change_url,
 )
+from .gerrit_hosts import (
+    gerrit_host_override,
+    gerrit_hosts,
+    iter_gerrit_hosts,
+    set_gerrit_host,
+)
+from .gerrit_routing import (
+    is_declared_gerrit_host,
+    reject_conflicting_host_declaration,
+    reject_gerrit_on_github_host,
+)
 from .git_suffix import has_stray_git_suffix
 from .hosts import (
     _host_matches,
@@ -52,6 +63,7 @@ from .hosts import (
 )
 from .models import (
     ChangeSource,
+    HostDeclarationError,
     ParsedGerritTopicUrl,
     ParsedOrgUrl,
     ParsedRepoUrl,
@@ -81,11 +93,12 @@ from .shorthand import (
     set_github_host,
     strip_git_suffix,
 )
-from .topic import parse_gerrit_topic_url
+from .topic import looks_like_topic_search, parse_gerrit_topic_url
 
 __all__ = [
     "DEFAULT_GITHUB_HOST",
     "ChangeSource",
+    "HostDeclarationError",
     "ParsedGerritTopicUrl",
     "ParsedOrgUrl",
     "ParsedRepoUrl",
@@ -104,6 +117,7 @@ __all__ = [
     "looks_like_owner",
     "normalize_target",
     "parse_change_url",
+    "looks_like_topic_search",
     "parse_gerrit_topic_url",
     "parse_org_url",
     "parse_owner_arg",
@@ -115,6 +129,13 @@ __all__ = [
     "require_owner",
     "require_owner_from_path",
     "require_repo",
+    "gerrit_host_override",
+    "gerrit_hosts",
+    "iter_gerrit_hosts",
+    "set_gerrit_host",
+    "is_declared_gerrit_host",
+    "reject_conflicting_host_declaration",
+    "reject_gerrit_on_github_host",
     "set_github_host",
     "has_stray_git_suffix",
     "redact_target",

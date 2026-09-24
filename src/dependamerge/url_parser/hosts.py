@@ -114,10 +114,12 @@ def reject_path_parameters(parsed: ParseResult, target: str) -> None:
     Called *after* the host-policy checks in every parser that has
     them, so a mistyped host is never reported as a malformed path ---
     the ordering ``TestTheHostIsStillCheckedFirst`` pins for the owner
-    gate.  ``parse_change_url`` has none: it recognises a ``/pull/`` path
-    on any host, so there a ``;suffix`` is a shape fault like
-    ``/pull/abc`` or a stray ``.git``, and is reported as one.  Declaring
-    the host could not repair it.
+    gate.  ``parse_change_url`` applies it once a platform is chosen,
+    after the declaration checks that choice depends on.  Its GitHub
+    branch has no host gate --- it recognises ``/pull/`` on any host ---
+    so there a ``;suffix`` is a shape fault like ``/pull/abc`` or a
+    stray ``.git``, and is reported as one.  Declaring the host could
+    not repair it.
     """
     # ``params`` is empty for a *bare* trailing semicolon, which
     # ``urlparse`` still strips from the path --- so ``widget;`` slipped

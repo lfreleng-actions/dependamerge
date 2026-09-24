@@ -29,12 +29,19 @@ from pathlib import Path
 
 from .git_ops import GitError, run_git
 from .gitreview import GitReviewInfo, parse_gitreview
+from .local_remote import (
+    _gerrit_identity_from_remote,
+    _looks_like_gerrit_remote,
+    _remote_web_url,
+)
+
+# ``host_suggests_gerrit`` is public and was importable from here before
+# the remote-string helpers moved to ``local_remote``.  Re-exported with
+# an explicit alias so the split stays a refactor rather than a breaking
+# change for anything outside this repository.
+from .local_remote import host_suggests_gerrit as host_suggests_gerrit
 from .url_parser import (
     ChangeSource,
-    UrlParseError,
-    is_supported_github_host,
-    normalize_target,
-    redact_target,
 )
 
 log = logging.getLogger("dependamerge.local_repo")
@@ -159,29 +166,6 @@ def remote_url(
     return fallback
 
 
-def host_suggests_gerrit(host: str) -> bool:
-    """Report whether a hostname reads like a Gerrit server.
-
-    A weak, last-resort hint used only after ``.gitreview`` and the SSH
-    port have had their say.  Matching is on whole dot-separated labels
-    so that ``gerrit.example.org`` and ``review.gerrit.example.org``
-    qualify while ``notgerrit.example.org`` does not.
-
-    NOT a security check.  It decides which parser to try on the
-    operator's own checkout; it never authorises sending anything
-    anywhere.  Host authorisation lives in
-    :func:`~dependamerge.url_parser.hosts.is_supported_github_host`.
-
-    Args:
-        host: The hostname from a git remote.
-
-    Returns:
-        True when the name suggests Gerrit.
-    """
-    labels = (host or "").strip().lower().split(".")
-    return any(label == "gerrit" or label.startswith("gerrit-") for label in labels)
-
-
 def _read_gitreview(root: Path) -> GitReviewInfo | None:
     """Parse ``.gitreview`` from the working tree, if it has one.
 
@@ -195,160 +179,6 @@ def _read_gitreview(root: Path) -> GitReviewInfo | None:
         log.debug("could not read %s: %s", path, exc)
         return None
     return parse_gitreview(text)
-
-
-def _looks_like_gerrit_remote(url: str) -> bool:
-    """Report whether a remote URL is a Gerrit one."""
-    raw = url.strip()
-    # The port is definitive: Gerrit's SSH daemon owns 29418.  It has to
-    # come from the *authority*, though.  An scp-style remote puts the
-    # path after the colon, so a substring test would read
-    # ``git@github.com:29418/widget.git`` --- an owner named 29418 ---
-    # as a Gerrit server.
-    scheme_match = re.match(r"\A[A-Za-z][A-Za-z0-9+.-]*://([^/]+)", raw)
-    if scheme_match:
-        authority = scheme_match.group(1).rsplit("@", 1)[-1]
-        _, _, port = authority.rpartition(":")
-        if port == _GERRIT_SSH_PORT:
-            return True
-
-    normalized = _remote_web_url(raw)
-    if normalized is None:
-        return False
-    host = normalized.split("://", 1)[-1].split("/", 1)[0]
-    # An explicit declaration outranks a guess about the name.
-    # Enterprise hostnames are arbitrary, so an operator may well have
-    # declared one carrying a ``gerrit`` label, and treating it as
-    # Gerrit anyway would make that declaration unusable.  The stronger
-    # Gerrit evidence still wins: the SSH port above, and ``.gitreview``
-    # which the caller consults first.
-    try:
-        if is_supported_github_host(host):
-            return False
-    except UrlParseError as exc:
-        # A malformed *GitHub* host setting says nothing about whether
-        # this remote is Gerrit.  Raising here would abort inference
-        # for a Gerrit checkout over configuration it never consults,
-        # and this runs before the merge command's error guard, so it
-        # would surface as a traceback.  A GitHub target still reports
-        # the same setting through the parsers.
-        log.debug("ignoring unusable GitHub host configuration: %s", exc)
-    return host_suggests_gerrit(host)
-
-
-def _names_a_server(url: str) -> bool:
-    """Report whether a git remote addresses a server at all.
-
-    A remote is a URL, an scp-style address, or a filesystem path.  It
-    is never *shorthand*: that is a convenience for what a human types,
-    and applying it here is actively dangerous --- a relative remote
-    like ``mirror/widget.git`` would expand to a real, unrelated GitHub
-    repository and an omitted-target merge would act on it.
-
-    Args:
-        url: The remote URL as git reports it.
-
-    Returns:
-        True when the remote names a host rather than a local path.
-    """
-    raw = url.strip()
-    if _SCHEME_RE.match(raw):
-        return True
-    scp = _SCP_REMOTE_RE.match(raw)
-    if scp is None:
-        return False
-    # Userinfo settles it.  ``git@ghe:acme/widget.git`` addresses a
-    # server whose DNS name has a single label, which an internal
-    # Enterprise installation may well have, and no filesystem path
-    # carries a ``user@`` prefix.
-    if scp.group("user"):
-        return True
-    # ``C:/repos/widget.git`` is a Windows drive, not a host, and the
-    # scp pattern cannot tell them apart on its own.  Without userinfo
-    # a real remote host is dotted, or is localhost.
-    authority = scp.group("host").lower()
-    return "." in authority or authority == "localhost"
-
-
-def _safe_for_log(url: str) -> str:
-    """Redact any credentials from a remote before it reaches a log.
-
-    Delegates to :func:`~dependamerge.url_parser.redact_target` rather
-    than keeping a second implementation.  This module had its own,
-    which then needed the *same* correction independently: both
-    anchored on ``scheme://`` and so left ``//user:pw@host`` untouched.
-    Two copies of one rule means fixing it twice and discovering that
-    fact the hard way.
-
-    ``git_ops.redact_text`` is not the shared one to use here: it only
-    recognises http(s), and a remote this module *declines* may carry
-    any scheme.
-
-    Args:
-        url: The remote URL as git reports it.
-
-    Returns:
-        The URL with credentials removed from every position.
-    """
-    return redact_target(url)
-
-
-def _remote_web_url(url: str) -> str | None:
-    """Normalise a git remote into a URL safe to show and to parse.
-
-    Credentials reach a remote in two ways.  ``normalize_target``
-    removes URL userinfo, but a query string can carry one too ---
-    a remote ending ``/owner/repo.git?token=SECRET`` --- and this URL
-    is printed back to the operator when a target is inferred.  A git
-    remote never needs a query or a fragment, so both are dropped.
-
-    Args:
-        url: The remote URL as git reports it.
-
-    Returns:
-        A web URL with no credentials in any position, or None when
-        the remote is not one a target can be derived from.  A local
-        ``file://`` mirror is a perfectly valid remote that names no
-        server to merge against, so it is an ordinary "cannot infer"
-        answer rather than an error.
-    """
-    raw = url.strip()
-    if not _names_a_server(raw):
-        # A filesystem path, relative or absolute.  Nothing to target,
-        # and emphatically not something to run through shorthand
-        # expansion.
-        log.debug("remote %s is a local path, not a server", _safe_for_log(raw))
-        return None
-    try:
-        normalized = normalize_target(raw)
-    except UrlParseError as exc:
-        log.debug("remote %s is not a usable target: %s", _safe_for_log(raw), exc)
-        return None
-    stripped = normalized.split("?", 1)[0].split("#", 1)[0]
-    if not stripped.startswith(("http://", "https://")):
-        log.debug("remote %s does not name a server", _safe_for_log(raw))
-        return None
-    return stripped
-
-
-def _gerrit_identity_from_remote(url: str) -> tuple[str, str]:
-    """Extract ``(host, project)`` from a Gerrit remote URL.
-
-    Gerrit remotes name the project in their path, so a checkout with
-    no ``.gitreview`` still identifies itself.
-
-    Args:
-        url: The remote URL.
-
-    Returns:
-        The host and project, either of which may be empty.
-    """
-    normalized = _remote_web_url(url)
-    if normalized is None:
-        return ("", "")
-    remainder = normalized.split("://", 1)[-1]
-    host, _, path = remainder.partition("/")
-    return (host, path.strip("/"))
 
 
 def detect_local_target(cwd: Path | None = None) -> LocalTarget | None:

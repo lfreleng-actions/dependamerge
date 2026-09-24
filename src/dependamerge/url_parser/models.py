@@ -31,6 +31,21 @@ class UrlParseError(ValueError):
     """Raised when a URL cannot be parsed as a valid change URL."""
 
 
+class HostDeclarationError(UrlParseError):
+    """Raised when a target is refused over how its host was declared.
+
+    Distinguished from every other parse failure because it is
+    *authoritative*: it describes the host rather than the shape of the
+    URL, so no later parser in the CLI's cascade can improve on it.
+
+    Without the distinction the cascade buried it.  ``_parse_merge_target``
+    tries the change parser, then the topic parser, then owner-wide,
+    then repository --- so a Gerrit topic URL on a host declared as
+    GitHub was refused for the right reason, and the operator was then
+    shown the *repository* parser's complaint about the name ``topic:``.
+    """
+
+
 @dataclass(frozen=True)
 class ParsedUrl:
     """

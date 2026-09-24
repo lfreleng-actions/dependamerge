@@ -35,3 +35,54 @@ jobs:
       # only required for workflows in private repositories
       actions: read  # Read workflow metadata (private repos only).
       contents: read  # Check out the repository to analyze.
+
+  # The shared reusable workflow above scans Python only. This job covers the
+  # repository's own GitHub Actions workflows, which default setup scanned
+  # before the move to advanced setup and nothing has scanned since.
+  actions:
+    name: 'CodeQL Scan: ${{ matrix.language }}'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      security-events: write  # Upload CodeQL results to code scanning.
+      contents: read  # Check out the repository to analyze.
+    strategy:
+      fail-fast: false
+      matrix:
+        # A one-entry matrix, so the uploaded category names the language
+        # exactly as the Python scan's does.
+        include:
+          - language: actions
+            build-mode: none
+    steps:
+      # Egress allow-list loaded out-of-band, as in the shared workflow.
+      # yamllint disable-line rule:line-length
+      - uses: lfreleng-actions/harden-runner-block-action@805eedb0508c07714b61887a2b87a5c4bbeff22a  # v0.12.1
+        with:
+          # yamllint disable-line rule:line-length
+          config: 'lfreleng-actions//.github/harden-runner/lfreleng-actions/allow_list.txt@f0f76ac22f342c9a788ebcabe584e68a79cc2e83'  # v0.16.0
+
+      - name: 'Harden runner (block)'
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c  # v2.21.0
+        with:
+          egress-policy: 'block'
+          allowed-endpoints: >
+            ${{ env.CONNECTION_ALLOW_LIST }}
+
+      - name: 'Checkout repository'
+        # yamllint disable-line rule:line-length
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: 'Initialize CodeQL'
+        # yamllint disable-line rule:line-length
+        uses: github/codeql-action/init@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28  # v4.37.8
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+
+      - name: 'Perform CodeQL Analysis: ${{ matrix.language }}'
+        # yamllint disable-line rule:line-length
+        uses: github/codeql-action/analyze@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28  # v4.37.8

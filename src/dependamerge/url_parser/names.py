@@ -40,6 +40,7 @@ __all__ = [
     "require_owner",
     "require_owner_from_path",
     "require_repo",
+    "require_repo_from_path",
 ]
 
 #: Longest a GitHub login can be.  Enterprise directories are not bound
@@ -268,6 +269,32 @@ def _acceptable_repo(name: str) -> bool:
     return bool(_REPO_RE.match(name))
 
 
+def require_repo_from_path(segment: str, *, from_url: bool) -> str:
+    """Gate a repository segment taken from a target's path.
+
+    Decoded first when the target is a URL, as an owner is.  GitHub
+    resolves an encoded repository segment ---
+    ``github.com/pypa/get%2Dpip`` answers 200, as does
+    ``repos/pypa/get%2Dpip`` --- so gating the raw segment refused URLs
+    that address real repositories (#522).  The *decoded* value is
+    gated, so ``a%2Fb`` and ``%2E%2E`` are still refused, and it is the
+    decoded value that is returned.
+
+    Taken literally when the target is bare shorthand.  Shorthand is
+    typed rather than copied from a browser, so it is not percent-
+    encoded: ``acme/my%5Frepo`` names a repository with a literal ``%``,
+    which the gate then refuses, rather than being quietly read as
+    ``my_repo``.
+
+    Args:
+        segment: The repository segment, as it appears in the path.
+        from_url: Whether the target was a URL or remote rather than
+            shorthand, per
+            :func:`~dependamerge.url_parser.shorthand.is_shorthand`.
+    """
+    return require_repo(unquote(segment) if from_url else segment)
+
+
 def require_repo(name: str) -> str:
     """Return *name*, or refuse it as a repository name.
 
@@ -283,15 +310,9 @@ def require_repo(name: str) -> str:
     otherwise accepted as a repository: on a declared Enterprise host
     ``/q/topic:`` parsed as the repository ``q/topic:``.
 
-    The segment is **not** percent-decoded first, which is where this
-    parts company with :func:`require_owner_from_path`.  Decoding an
-    owner earns its keep: an Enterprise login can be arbitrary, and
-    ``lfreleng%2Dactions`` addresses a real dotcom account that gating
-    the raw segment would refuse.  A repository name has no such case
-    --- its whole character set survives a URL untouched --- so no
-    legitimate URL ever encodes one, and decoding would only turn a
-    literal ``%`` the shell passed into a *different*, valid
-    repository.  Refusing it names the fault instead.
+    *name* is gated as given.  A segment taken from a target's path goes
+    through :func:`require_repo_from_path`, which decides whether it is
+    percent-encoded first.
 
     Surrounding whitespace is refused rather than trimmed, as for an
     owner --- accepting the stripped form and returning the original

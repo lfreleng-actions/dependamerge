@@ -28,9 +28,9 @@ from .gerrit_routing import (
 from .git_suffix import has_stray_git_suffix
 from .hosts import _host_matches, reject_path_parameters, reject_port_bearing_host
 from .models import ChangeSource, ParsedUrl, UrlParseError
-from .names import require_owner_from_path, require_repo
+from .names import require_owner_from_path, require_repo_from_path
 from .redaction import redact_target
-from .shorthand import normalize_target
+from .shorthand import is_shorthand, normalize_target
 
 # aislop-ignore-file ai-slop/hardcoded-url -- This module parses and builds
 # GitHub/Gerrit URLs, so URL literals here are the subject matter, not
@@ -55,6 +55,7 @@ def parse_change_url(url: str) -> ParsedUrl:
     url = url.strip()
     if not url:
         raise UrlParseError("URL cannot be empty")
+    from_url = not is_shorthand(url)
 
     # Expand shorthand ("owner", "owner/repo"), git remote forms, and a
     # missing scheme into an absolute URL.  Centralised so every parser
@@ -125,7 +126,7 @@ def parse_change_url(url: str) -> ParsedUrl:
     # Detect platform based on URL characteristics
     if _is_github_url(host, path):
         reject_path_parameters(parsed, url)
-        return _parse_github_url(host, path, url)
+        return _parse_github_url(host, path, url, from_url=from_url)
     elif _is_gerrit_url(host, path):
         reject_gerrit_on_github_host(host, url)
         _refuse_malformed_gerrit_target(parsed, url)
@@ -228,7 +229,9 @@ def _is_gerrit_url(host: str, path: str) -> bool:
     return False
 
 
-def _parse_github_url(host: str, path: str, original_url: str) -> ParsedUrl:
+def _parse_github_url(
+    host: str, path: str, original_url: str, *, from_url: bool
+) -> ParsedUrl:
     """
     Parse a GitHub pull request URL.
 
@@ -243,7 +246,7 @@ def _parse_github_url(host: str, path: str, original_url: str) -> ParsedUrl:
         )
 
     owner = require_owner_from_path(match.group(1), host)
-    repo = require_repo(match.group(2))
+    repo = require_repo_from_path(match.group(2), from_url=from_url)
     pr_number = int(match.group(3))
 
     return ParsedUrl(

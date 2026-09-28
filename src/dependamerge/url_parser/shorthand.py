@@ -45,9 +45,11 @@ __all__ = [
     "default_github_host",
     "enterprise_hosts",
     "github_host_override",
+    "is_shorthand",
     "iter_enterprise_hosts",
     "looks_like_host",
     "looks_like_owner",
+    "names_a_host",
     "normalize_target",
     "set_github_host",
     "strip_git_suffix",
@@ -67,6 +69,11 @@ _SCP_REMOTE_RE = re.compile(
 
 # A path that is purely a number, i.e. indistinguishable from a port.
 _NUMERIC_PATH_RE = re.compile(r"\A\d+(?:/|\Z)")
+
+#: Any ``scheme://`` prefix, web or not, which settles that a target
+#: names a host.  Whether that scheme is *supported* is a separate
+#: question, answered by the two sets below.
+_SCHEME_RE = re.compile(r"\A[A-Za-z][A-Za-z0-9+.-]*://")
 
 #: Schemes that already name a web URL, kept as given.
 _WEB_SCHEMES = frozenset({"http", "https"})
@@ -135,6 +142,51 @@ def looks_like_host(segment: str) -> bool:
     if _PORT_SUFFIX_RE.search(segment):
         return True
     return "." in segment
+
+
+def names_a_host(value: str) -> bool:
+    """Report whether a target names a server of its own.
+
+    Decides whether a target is a URL or bare shorthand, which matters
+    beyond routing: a URL's path is percent-encoded and shorthand is
+    not, so only the former may be decoded.
+
+    A scheme settles it.  Without one, the first path segment does:
+    ``gerrit.example.org/q/topic:x`` is a scheme-less URL, whereas
+    ``q/topic:x`` is owner shorthand that would resolve against the
+    GitHub default host.
+
+    Args:
+        value: The target as the operator typed it.
+
+    Returns:
+        True when the target carries its own host.
+    """
+    raw = value.strip()
+    if _SCHEME_RE.match(raw):
+        return True
+    # ``//host/path`` names an authority without a scheme, and
+    # ``normalize_target`` recognises it as a web URL, so refusing it
+    # here made this parser disagree with every other one about the
+    # same input.
+    if raw.startswith("//"):
+        return True
+    return looks_like_host(raw.split("/", 1)[0])
+
+
+def is_shorthand(value: str) -> bool:
+    """Whether *value* is bare shorthand rather than a URL or a remote.
+
+    The question that decides whether a path segment may be
+    percent-decoded: a URL's path is encoded, and a remote is read from
+    git, but shorthand is typed.  Not the same as :func:`names_a_host`,
+    which also rejects an scp remote: a remote is no *web* target for a
+    topic search, yet ``git@ghe:acme/my%5Frepo.git`` names host ``ghe``
+    all the same, which is how :func:`normalize_target` reads it.
+    """
+    raw = value.strip()
+    scp = _SCP_REMOTE_RE.match(raw)
+    return not (names_a_host(raw) or (scp is not None and _is_scp_remote(scp)))
 
 
 def looks_like_owner(segment: str) -> bool:

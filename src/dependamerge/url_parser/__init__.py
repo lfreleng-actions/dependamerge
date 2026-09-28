@@ -74,6 +74,7 @@ from .names import (
     require_owner,
     require_owner_from_path,
     require_repo,
+    require_repo_from_path,
 )
 from .redaction import redact_target
 from .repos import (
@@ -87,6 +88,7 @@ from .shorthand import (
     default_github_host,
     enterprise_hosts,
     github_host_override,
+    is_shorthand,
     looks_like_host,
     looks_like_owner,
     normalize_target,
@@ -115,6 +117,7 @@ __all__ = [
     "is_supported_github_host",
     "looks_like_host",
     "looks_like_owner",
+    "is_shorthand",
     "normalize_target",
     "parse_change_url",
     "looks_like_topic_search",
@@ -129,6 +132,7 @@ __all__ = [
     "require_owner",
     "require_owner_from_path",
     "require_repo",
+    "require_repo_from_path",
     "gerrit_host_override",
     "gerrit_hosts",
     "iter_gerrit_hosts",

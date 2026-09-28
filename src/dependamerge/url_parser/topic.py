@@ -21,36 +21,7 @@ from .gerrit_routing import (
 from .hosts import reject_path_parameters, reject_port_bearing_host
 from .models import ChangeSource, ParsedGerritTopicUrl, UrlParseError
 from .redaction import redact_target
-from .shorthand import looks_like_host, normalize_target
-
-_SCHEME_RE = re.compile(r"\A[A-Za-z][A-Za-z0-9+.-]*://")
-
-
-def _names_a_host(value: str) -> bool:
-    """Report whether a target names a server of its own.
-
-    A scheme settles it.  Without one, the first path segment does:
-    ``gerrit.example.org/q/topic:x`` is a scheme-less URL, whereas
-    ``q/topic:x`` is owner shorthand that would resolve against the
-    GitHub default host.
-
-    Args:
-        value: The target as the operator typed it.
-
-    Returns:
-        True when the target carries its own host.
-    """
-    raw = value.strip()
-    if _SCHEME_RE.match(raw):
-        return True
-    # ``//host/path`` names an authority without a scheme, and
-    # ``normalize_target`` recognises it as a web URL, so refusing it
-    # here made this parser disagree with every other one about the
-    # same input.
-    if raw.startswith("//"):
-        return True
-    return looks_like_host(raw.split("/", 1)[0])
-
+from .shorthand import names_a_host, normalize_target
 
 # aislop-ignore-file ai-slop/hardcoded-url -- This module parses and builds
 # GitHub/Gerrit URLs, so URL literals here are the subject matter, not
@@ -109,7 +80,7 @@ def looks_like_topic_search(url: str) -> bool:
     Best-effort: a target too malformed to parse is simply not one.
     """
     raw = url.strip()
-    if not _names_a_host(raw):
+    if not names_a_host(raw):
         return False
     try:
         parsed = urlparse(normalize_target(raw))
@@ -158,7 +129,7 @@ def parse_gerrit_topic_url(url: str) -> ParsedGerritTopicUrl:
     # expanded to ``https://github.com/q/topic:x``, whose path this
     # parser then accepted, so ``merge`` dispatched a Gerrit topic run
     # against github.com.  A Gerrit search has to name its own host.
-    if not _names_a_host(original_url):
+    if not names_a_host(original_url):
         raise UrlParseError(
             f"Not a Gerrit search URL (no host): {redact_target(original_url)}. "
             "A topic search must name the Gerrit server, as in "

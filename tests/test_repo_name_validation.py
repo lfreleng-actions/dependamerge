@@ -175,17 +175,59 @@ class TestEveryUrlFormReachesTheGate:
         with pytest.raises(UrlParseError, match="valid GitHub repository name"):
             parse_repo_url("https://github.com/acme/a%2Fb")
 
-    def test_a_percent_is_never_decoded(self) -> None:
-        """Unlike an owner, a repository segment is taken literally.
+    def test_shorthand_is_taken_literally(self) -> None:
+        """Typed, not copied from a browser, so not percent-encoded.
 
-        Decoding an owner earns its keep --- ``lfreleng%2Dactions``
-        addresses a real dotcom account.  A repository name's whole
-        character set survives a URL untouched, so no legitimate URL
-        encodes one, and decoding would turn a literal ``%`` the shell
-        passed into a *different*, valid repository.
+        Decoding it would read a literal ``%`` as a *different*, valid
+        repository rather than refusing the name as given.
         """
         with pytest.raises(UrlParseError, match="valid GitHub repository name"):
             parse_repo_url("acme/my%5Frepo")
+
+    @pytest.mark.parametrize(
+        ("target", "repo"),
+        [
+            ("https://github.com/acme/my%5Frepo", "my_repo"),
+            # GitHub answers 200 for this exact URL (#522).
+            ("github.com/pypa/get%2Dpip", "get-pip"),
+            ("git@github.com:acme/my%5Frepo.git", "my_repo"),
+            # A single-label host, as an internal Enterprise install may
+            # have; normalisation reads it as host ``ghe`` (#523 review).
+            ("git@ghe:acme/my%5Frepo.git", "my_repo"),
+        ],
+    )
+    def test_a_url_is_decoded(
+        self, target: str, repo: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A URL's path is percent-encoded, and GitHub resolves it so.
+
+        #519 took the segment literally on the premise that no
+        legitimate URL encodes a repository name, and refused
+        ``github.com/pypa/get%2Dpip``, which GitHub serves.
+        """
+        monkeypatch.setenv("DEPENDAMERGE_GITHUB_HOSTS", "ghe")
+
+        assert parse_repo_url(target).repo == repo
+
+    def test_every_url_parser_decodes_alike(self) -> None:
+        from dependamerge.github_client import GitHubClient
+
+        url = "https://github.com/acme/my%5Frepo/pull/7"
+
+        assert parse_change_url(url).project == "acme/my_repo"
+        assert GitHubClient(token="t").parse_pr_url(url) == ("acme", "my_repo", 7)
+
+    @pytest.mark.parametrize(
+        ("encoded", "match"),
+        [
+            ("%2E%2E", "valid GitHub repository name"),
+            ("neovim%2Ewiki", "names a wiki"),
+            ("has%3Acolon", "valid GitHub repository name"),
+        ],
+    )
+    def test_the_decoded_value_is_what_is_gated(self, encoded: str, match: str) -> None:
+        with pytest.raises(UrlParseError, match=match):
+            parse_repo_url(f"https://github.com/acme/{encoded}")
 
     @pytest.mark.parametrize("suffix", [";other", ";"])
     @pytest.mark.parametrize(
@@ -587,7 +629,11 @@ class TestARefusedSegmentIsNotEchoedWhole:
         assert "team;" in message
 
     def test_an_encoded_repository_does_not_leak(self) -> None:
-        """A repository segment is not decoded, so the encoded form matters."""
+        """Decoded to ``wid;jsessionid=…``, refused, and cut at the ``;``.
+
+        A URL's repository segment is decoded before it is gated, so the
+        delimiter the encoding hid is what stops the echo.
+        """
         with pytest.raises(UrlParseError) as caught:
             parse_repo_url(f"https://github.com/acme/wid%3Bjsessionid={self.SECRET}")
 

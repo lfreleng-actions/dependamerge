@@ -21,9 +21,9 @@ from .hosts import (
     unsupported_host_message,
 )
 from .models import ChangeSource, ParsedOrgUrl, ParsedRepoUrl, UrlParseError
-from .names import require_owner, require_owner_from_path, require_repo
+from .names import require_owner, require_owner_from_path, require_repo_from_path
 from .redaction import redact_target
-from .shorthand import default_github_host, normalize_target
+from .shorthand import default_github_host, is_shorthand, normalize_target
 
 # aislop-ignore-file ai-slop/hardcoded-url -- This module parses and builds
 # GitHub/Gerrit URLs, so URL literals here are the subject matter, not
@@ -53,6 +53,7 @@ def parse_repo_url(url: str) -> ParsedRepoUrl:
     url = url.strip()
     if not url:
         raise UrlParseError("URL cannot be empty")
+    from_url = not is_shorthand(url)
 
     # Expand shorthand ("owner", "owner/repo"), git remote forms, and a
     # missing scheme into an absolute URL.  Centralised so every parser
@@ -131,7 +132,7 @@ def parse_repo_url(url: str) -> ParsedRepoUrl:
         )
 
     owner = require_owner_from_path(parts[0], host)
-    repo = require_repo(parts[1])
+    repo = require_repo_from_path(parts[1], from_url=from_url)
 
     return ParsedRepoUrl(
         source=ChangeSource.GITHUB,

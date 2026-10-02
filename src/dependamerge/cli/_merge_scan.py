@@ -26,7 +26,11 @@ from ..models import ComparisonResult, PullRequestInfo
 from ..progress_tracker import MergeProgressTracker
 from ._app import MAX_RETRIES, console
 from ._context import _MergeContext
-from ._merge_report import _print_failed_pr_details, _print_final_merge_summary
+from ._merge_report import (
+    _exit_if_any_failed,
+    _print_failed_pr_details,
+    _print_final_merge_summary,
+)
 from ._sha import _generate_continue_sha
 from ._similarity import _format_condensed_similarity
 
@@ -290,3 +294,4 @@ def _execute_confirmed_merge(
             ctx.progress_tracker.stop()
 
     _print_final_merge_summary(real_results)
+    _exit_if_any_failed(real_results)

@@ -48,7 +48,7 @@ class ExitCode(IntEnum):
     """Pull request is in invalid state for processing."""
 
     MERGE_ERROR = 7
-    """Pull request merge operation failed."""
+    """A pull request or Gerrit change was left unmerged (failed or blocked)."""
 
     VALIDATION_ERROR = 8
     """Input validation failed."""
@@ -70,7 +70,7 @@ ERROR_MESSAGES = {
     ),
     ExitCode.PR_STATE_ERROR: ("❌ Pull request cannot be processed in current state"),
     ExitCode.MERGE_ERROR: (
-        "❌ Pull request merge failed; check branch protection rules"
+        "❌ Merge or submission failed; check the summary for each reason"
     ),
     ExitCode.VALIDATION_ERROR: ("❌ Input validation failed; check parameter values"),
     ExitCode.GENERAL_ERROR: "❌ Operation failed; check logs for details",

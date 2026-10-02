@@ -9,6 +9,9 @@ failure reasons into readable guidance, and lists the PRs that could not
 be merged.
 """
 
+import typer
+
+from ..error_codes import ExitCode
 from ..error_text import summarise_error
 from ..merge_manager import (
     MergeResult,
@@ -31,6 +34,34 @@ def _prs(count: int) -> str:
     reader to distrust the number beside it.
     """
     return f"{count} PR" if count == 1 else f"{count} PRs"
+
+
+#: Real-run outcomes a human has to act on.  ``FAILED`` could not merge;
+#: ``BLOCKED`` will not merge on its own (conflicts, a recreate that
+#: never landed).  The rest are not failures: ``UNSETTLED`` merges on a
+#: re-run, ``AUTO_MERGE_PENDING`` completes server-side, and ``SKIPPED``
+#: and ``CLOSED`` leave nothing to follow up.
+_NEEDS_ATTENTION = frozenset({"failed", "blocked"})
+
+
+def _exit_if_any_failed(real_results: list[MergeResult]) -> None:
+    """Exit with ``MERGE_ERROR`` when a real run left PRs needing a human.
+
+    Called after the final summary of a run that actually merged, never
+    after a preview or dry run, whose outcomes are predictions.  Without
+    it a run that merged nothing it attempted still exited 0, so a
+    script or scheduled workflow could not tell success from failure.
+
+    Raises:
+        typer.Exit: With :attr:`ExitCode.MERGE_ERROR` when any result
+            is failed or blocked.
+    """
+    count = sum(1 for r in real_results if r.status.value in _NEEDS_ATTENTION)
+    if count == 0:
+        return
+    code = int(ExitCode.MERGE_ERROR)
+    console.print(f"\n❌ {_prs(count)} failed or blocked; exit code {code}")
+    raise typer.Exit(code=code)
 
 
 def _print_final_merge_summary(real_results: list[MergeResult]) -> None:

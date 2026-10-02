@@ -175,6 +175,11 @@ or user account in one command.
 - **Archived and Fork Exclusion**: Skips archived repositories, and
   **excludes fork repositories by default** (owner-wide merges target
   the owner's own repositories, not mirrored forks)
+- **Repository Scoping**: `--include-repos` limits a run to the named
+  repositories, and `--exclude-repos` keeps the named ones out. A name
+  matching no in-scope repository stops the run before anything merges,
+  so a typo can neither shrink a run unnoticed nor leave an excluded
+  repository exposed
 - **Striped Sequencing**: Schedules merges so that **at most one PR per
   repository runs at a time** while distinct repositories run
   concurrently. This spreads ("stripes") work across repositories and
@@ -981,6 +986,24 @@ dependamerge merge https://github.com/owner/repo/pull/123 \
   approve, arm auto-merge, report each PR as pending, and return at once
   without blocking (GitHub completes the merges after the tool exits).
   Applies to owner-wide runs; single-PR and single-repo modes ignore it.
+- `--include-repos NAMES`: Act on these repositories alone. Comma-separated
+  and/or repeatable; each entry is `name` or `owner/name` and matches
+  case-insensitively.
+- `--exclude-repos NAMES`: Act on every repository except these. Same
+  format as `--include-repos`, and mutually exclusive with it.
+
+  Both refuse a name matching no non-archived, non-fork repository of
+  the owner, exiting with code 2 before anything merges. Both apply to
+  owner-wide runs alone; any other target refuses them.
+
+  ```bash
+  # Merge automation PRs in two repositories of an organisation
+  dependamerge merge lfreleng-actions --include-repos dependamerge,.github
+
+  # Merge everywhere except the test fixtures
+  dependamerge merge lfreleng-actions \
+    --exclude-repos test-tags-calver --exclude-repos test-tags-semantic
+  ```
 
 **Gerrit Environment Variables:**
 

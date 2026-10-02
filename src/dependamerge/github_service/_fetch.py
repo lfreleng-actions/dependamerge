@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ..github_async import (
     RateLimitError,
@@ -15,6 +15,9 @@ from ..github_async import (
 )
 from ..models import PullRequestInfo
 from ._base import _GitHubServiceBase
+
+if TYPE_CHECKING:
+    from ..repo_selection import RepoSelection
 
 
 class _FetchMixin(_GitHubServiceBase):
@@ -110,6 +113,7 @@ class _FetchMixin(_GitHubServiceBase):
         owner: str,
         *,
         only_automation: bool = True,
+        selection: RepoSelection | None = None,
     ) -> tuple[list[PullRequestInfo], list[str]]:
         """Fetch open PRs across every in-scope repository of an owner.
 
@@ -127,6 +131,10 @@ class _FetchMixin(_GitHubServiceBase):
         Args:
             owner: The organization or user login.
             only_automation: If True, only return PRs from automation tools.
+            selection: Repositories named by ``--include-repos`` or
+                ``--exclude-repos``.  A repository it does not admit is
+                never scanned; the selection records every enumerated
+                name so the caller can refuse names that matched nothing.
 
         Returns:
             A ``(prs, errors)`` tuple: the collected PRs across all
@@ -184,8 +192,18 @@ class _FetchMixin(_GitHubServiceBase):
         )
 
         async def producer() -> None:
+            admitted = 0
             async for repo in self._iter_owner_repositories(owner):
+                if selection is not None and not selection.admits(
+                    repo.get("nameWithOwner", "")
+                ):
+                    continue
+                admitted += 1
                 await queue.put(repo)
+            if selection is not None and self._progress:
+                # The enumerator publishes the owner's whole repository
+                # count; a narrowed run would otherwise never reach it.
+                self._progress.update_total_repositories(admitted)
             # One sentinel per worker so each terminates once the backlog
             # drains.
             for _ in range(worker_count):

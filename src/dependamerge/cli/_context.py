@@ -19,6 +19,7 @@ import dependamerge.cli as _pkg
 
 from ..models import ComparisonResult, PullRequestInfo
 from ..progress_tracker import MergeProgressTracker
+from ..repo_selection import RepoSelection
 from ._app import DEFAULT_MAX_WAIT
 
 
@@ -60,6 +61,9 @@ class _MergeContext:
     # Applies to owner/user-wide runs; ignored for single-PR and
     # single-repository merges.
     max_wait: float = DEFAULT_MAX_WAIT
+    # Owner-wide only: the repositories --include-repos or --exclude-repos
+    # name.  ``None`` acts on every in-scope repository of the owner.
+    repo_selection: RepoSelection | None = None
 
     # Derived / mutable state
     github_client: _pkg.GitHubClient | None = None

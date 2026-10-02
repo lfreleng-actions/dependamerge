@@ -31,7 +31,12 @@ from ._merge_dispatch import (
     _validate_max_wait,
 )
 from ._merge_inputs import _validate_merge_inputs
-from ._merge_target import _parse_merge_target, _resolve_target_url, _target_host
+from ._merge_target import (
+    _parse_merge_target,
+    _resolve_repo_selection,
+    _resolve_target_url,
+    _target_host,
+)
 from ._org_merge import _handle_org_merge
 from ._repo_merge import _handle_repo_merge
 
@@ -206,6 +211,28 @@ def merge(
             "set (prompting for confirmation unless --no-confirm)"
         ),
     ),
+    include_repos: list[str] | None = typer.Option(
+        None,
+        "--include-repos",
+        help=(
+            "Owner-wide runs only: act on just these repositories. "
+            "Comma-separated and/or repeatable, each 'name' or "
+            "'owner/name'. A name matching no non-archived, non-fork "
+            "repository stops the run before anything merges. Mutually "
+            "exclusive with --exclude-repos"
+        ),
+    ),
+    exclude_repos: list[str] | None = typer.Option(
+        None,
+        "--exclude-repos",
+        help=(
+            "Owner-wide runs only: act on every repository except these. "
+            "Comma-separated and/or repeatable, each 'name' or "
+            "'owner/name'. A name matching no non-archived, non-fork "
+            "repository stops the run before anything merges. Mutually "
+            "exclusive with --include-repos"
+        ),
+    ),
     topic: str | None = typer.Option(
         None,
         "--topic",
@@ -260,7 +287,8 @@ def merge(
     For GitHub owner (organization or user) URLs, this command will:
 
     1. Enumerate every non-archived, non-fork repository owned by the
-       organization or user (forks are excluded)
+       organization or user (forks are excluded), narrowed by
+       --include-repos or --exclude-repos when given
 
     2. Fetch their open automation PRs (unless --include-human-prs)
 
@@ -330,6 +358,7 @@ def merge(
 
     pr_url = _resolve_target_url(pr_url)
     target = _parse_merge_target(pr_url)
+    repo_selection = _resolve_repo_selection(target, include_repos, exclude_repos)
 
     ctx = _MergeContext(
         pr_url=pr_url,
@@ -355,6 +384,7 @@ def merge(
         rebase_local=rebase_local,
         dry_run=dry_run,
         host=_target_host(target),
+        repo_selection=repo_selection,
     )
 
     gerrit_target = _resolve_gerrit_target(target, topic)

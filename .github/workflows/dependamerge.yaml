@@ -1,0 +1,332 @@
+---
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+
+# Reusable workflow: run dependamerge on a schedule and report to Slack.
+#
+# A caller pins this file to a release's commit SHA, and Dependabot's
+# github-actions ecosystem keeps that pin current:
+#
+#   uses: lfreleng-actions/dependamerge/.github/workflows/
+#     dependamerge.yaml@<commit-sha>  # vX.Y.Z
+#
+# (one line in the caller).
+# The composite action is referenced as '$/', which resolves against
+# this repository at the commit the caller pinned, so the workflow,
+# the action and the tool always ship together as one release.
+#
+# Each run posts a digest to Slack: what merged and what needs a human.
+# A run that produces no digest because it failed outright (a bad
+# token or configuration, say) posts a failure notice instead, on
+# scheduled runs; manual runs are watched interactively.
+name: 'Dependamerge 🤖'
+
+# yamllint disable-line rule:truthy
+on:
+  workflow_call:
+    inputs:
+      # Merge options. Each defaults to empty, meaning "not set", so a
+      # value in 'config' applies; see the composite action's inputs.
+      config:
+        description: 'JSON object of merge options, keyed by input name'
+        type: string
+        default: ''
+      target:
+        description: 'Owner, owner/repo, or PR URL (here or in config)'
+        type: string
+        default: ''
+      include_repos:
+        description: 'Owner-wide: act on these repositories alone'
+        type: string
+        default: ''
+      exclude_repos:
+        description: 'Owner-wide: act on every repository except these'
+        type: string
+        default: ''
+      dry_run:
+        # Boolean for callers' convenience, so it cannot say "unset":
+        # true forces a dry run, false leaves config to decide.
+        description: 'Assess every PR and merge nothing (overrides config)'
+        type: boolean
+        default: false
+      merge_method:
+        description: 'merge, squash or rebase'
+        type: string
+        default: ''
+      force:
+        description: 'none, code-owners, protection-rules or all'
+        type: string
+        default: ''
+      max_wait:
+        description: 'Owner-wide wall-clock ceiling in seconds'
+        type: string
+        default: ''
+      fix_out_of_date:
+        description: "'false' leaves behind PRs as they are"
+        type: string
+        default: ''
+      dismiss_copilot:
+        description: "'true' dismisses unresolved Copilot review comments"
+        type: string
+        default: ''
+      # Reporting and job settings.
+      slack_channel:
+        description: 'Slack channel ID; empty disables Slack'
+        type: string
+        default: ''
+      slack_when:
+        description: >-
+          When to post the digest: always, activity (any PR processed),
+          attention (any PR failed or blocked) or never
+        type: string
+        default: 'activity'
+      fail_on_merge_errors:
+        description: >-
+          Fail the run when PRs are left failed or blocked (the digest
+          reports them either way)
+        type: boolean
+        default: false
+      environment:
+        # Required, with no default: GitHub silently creates a missing
+        # environment with no protection, so a default name would look
+        # like a gate without being one. The caller must name an
+        # environment it has configured to protect the merge token.
+        description: >-
+          Environment in the caller that gates the secrets; configure its
+          protection (e.g. deployment branches: default branch only) first
+        type: string
+        required: true
+      timeout_minutes:
+        description: 'Job timeout in minutes'
+        type: number
+        default: 60
+      egress_allow_config:
+        description: 'harden-runner-block-action allow-list coordinate'
+        type: string
+        # yamllint disable-line rule:line-length
+        default: 'lfreleng-actions//.github/harden-runner/lfreleng-actions/allow_list.txt@f0f76ac22f342c9a788ebcabe584e68a79cc2e83'  # v0.16.0
+    secrets:
+      token:
+        description: 'GitHub token able to approve and merge in the target'
+        required: true
+      slack_bot_token:
+        description: 'Slack bot token; posting is skipped without it'
+        required: false
+    outputs:
+      exit_code:
+        description: "dependamerge's exit code (7: PRs left for a human)"
+        value: ${{ jobs.merge.outputs.exit_code }}
+      merged:
+        description: 'Pull requests merged'
+        value: ${{ jobs.merge.outputs.merged }}
+      failed:
+        description: 'Pull requests that failed to merge'
+        value: ${{ jobs.merge.outputs.failed }}
+      blocked:
+        description: 'Pull requests that will not merge on their own'
+        value: ${{ jobs.merge.outputs.blocked }}
+
+permissions: {}
+
+jobs:
+  merge:
+    name: 'Merge automation PRs'
+    runs-on: 'ubuntu-latest'
+    timeout-minutes: ${{ inputs.timeout_minutes }}
+    # Secrets reach this job through the caller, gated by the protection
+    # rules of the environment it names (zizmor: secrets-outside-env).
+    environment: ${{ inputs.environment }}
+    permissions:
+      contents: read  # Fetch this repository's action at the pinned commit.
+    # One run per calling workflow at a time: two runs merging the same
+    # PRs would race each other's rebases.
+    concurrency:
+      group: "dependamerge-${{ github.repository }}-${{ github.workflow }}"
+      cancel-in-progress: false
+    outputs:
+      exit_code: ${{ steps.dependamerge.outputs.exit_code }}
+      merged: ${{ steps.dependamerge.outputs.merged }}
+      failed: ${{ steps.dependamerge.outputs.failed }}
+      blocked: ${{ steps.dependamerge.outputs.blocked }}
+      digest_posted: ${{ steps.post.outcome == 'success' }}
+    steps:
+      # yamllint disable-line rule:line-length
+      - uses: lfreleng-actions/harden-runner-block-action@805eedb0508c07714b61887a2b87a5c4bbeff22a  # v0.12.1
+        with:
+          config: ${{ inputs.egress_allow_config }}
+
+      - name: 'Harden runner (block)'
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
+        with:
+          egress-policy: 'block'
+          allowed-endpoints: >
+            ${{ env.CONNECTION_ALLOW_LIST }}
+
+      - name: 'Run dependamerge'
+        id: dependamerge
+        uses: $/
+        with:
+          token: ${{ secrets.token }}
+          config: ${{ inputs.config }}
+          target: ${{ inputs.target }}
+          include_repos: ${{ inputs.include_repos }}
+          exclude_repos: ${{ inputs.exclude_repos }}
+          dry_run: ${{ inputs.dry_run && 'true' || '' }}
+          merge_method: ${{ inputs.merge_method }}
+          force: ${{ inputs.force }}
+          max_wait: ${{ inputs.max_wait }}
+          fix_out_of_date: ${{ inputs.fix_out_of_date }}
+          dismiss_copilot: ${{ inputs.dismiss_copilot }}
+          slack_channel: ${{ inputs.slack_channel }}
+          # The digest reports failed PRs; the last step below decides
+          # whether they also fail the run.
+          fail_on_merge_errors: 'false'
+          # '$/' gives the action no ref of its own, so name the commit
+          # the caller pinned for it to report the right release.
+          source_sha: ${{ job.workflow_sha }}
+          source_repository: ${{ job.workflow_repository }}
+
+      - name: 'Decide whether to post'
+        id: decide
+        if: always() && steps.dependamerge.outputs.slack_payload != ''
+        shell: bash
+        env:
+          SLACK_WHEN: ${{ inputs.slack_when }}
+          SLACK_TOKEN_SET: ${{ secrets.slack_bot_token != '' }}
+          TOTAL: ${{ steps.dependamerge.outputs.total }}
+          FAILED: ${{ steps.dependamerge.outputs.failed }}
+          BLOCKED: ${{ steps.dependamerge.outputs.blocked }}
+        run: |
+          # Decide whether to post
+          set -euo pipefail
+          case "${SLACK_WHEN}" in
+            always) post=true ;;
+            activity)
+              post=false
+              [ "${TOTAL:-0}" -gt 0 ] && post=true
+              ;;
+            attention)
+              post=false
+              [ "$(( ${FAILED:-0} + ${BLOCKED:-0} ))" -gt 0 ] && post=true
+              ;;
+            never) post=false ;;
+            *)
+              echo "::error::slack_when must be always, activity," \
+                "attention or never, not '${SLACK_WHEN}'"
+              exit 1
+              ;;
+          esac
+          if [ "${post}" = true ] && [ "${SLACK_TOKEN_SET}" != 'true' ]; then
+            # Disable the integration gracefully rather than failing a
+            # run that already did its work.
+            msg="⚠️ Slack integration not available; requires a bot token"
+            echo "::warning::${msg}"
+            echo "${msg}" >> "$GITHUB_STEP_SUMMARY"
+            post=false
+          fi
+          echo "post=${post}" >> "$GITHUB_OUTPUT"
+
+      - name: 'Post Slack digest'
+        id: post
+        if: always() && steps.decide.outputs.post == 'true'
+        # yamllint disable-line rule:line-length
+        uses: slackapi/slack-github-action@dcb1066f776dd043e64d0e8ba94ca15cc7e1875d  # v4.0.0
+        with:
+          method: 'chat.postMessage'
+          token: ${{ secrets.slack_bot_token }}
+          payload: ${{ steps.dependamerge.outputs.slack_payload }}
+
+      - name: 'Apply exit code'
+        if: always() && steps.dependamerge.outputs.exit_code == '7'
+        shell: bash
+        env:
+          FAIL_ON_MERGE_ERRORS: ${{ inputs.fail_on_merge_errors }}
+        run: |
+          # Apply exit code
+          msg="dependamerge left pull requests failed or blocked"
+          if [ "${FAIL_ON_MERGE_ERRORS}" = 'true' ]; then
+            echo "::error::${msg}; see the step summary"
+            exit 7
+          fi
+          echo "::warning::${msg}; see the step summary"
+
+  notify-failure:
+    name: 'Notify Slack of failure'
+    needs: ['merge']
+    # Only when the run broke without a digest saying so, and only on a
+    # schedule: manual runs are watched as they happen.
+    if: >-
+      ${{ always()
+      && github.event_name == 'schedule'
+      && inputs.slack_channel != ''
+      && contains(fromJSON('["failure", "cancelled"]'), needs.merge.result)
+      && needs.merge.outputs.digest_posted != 'true' }}
+    runs-on: 'ubuntu-latest'
+    timeout-minutes: 5
+    environment: ${{ inputs.environment }}
+    permissions: {}
+    steps:
+      # yamllint disable-line rule:line-length
+      - uses: lfreleng-actions/harden-runner-block-action@805eedb0508c07714b61887a2b87a5c4bbeff22a  # v0.12.1
+        with:
+          config: ${{ inputs.egress_allow_config }}
+
+      - name: 'Harden runner (block)'
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
+        with:
+          egress-policy: 'block'
+          allowed-endpoints: >
+            ${{ env.CONNECTION_ALLOW_LIST }}
+
+      - name: 'Check Slack configuration'
+        id: slack-config
+        shell: bash
+        env:
+          SLACK_TOKEN_SET: ${{ secrets.slack_bot_token != '' }}
+          SLACK_CHANNEL: ${{ inputs.slack_channel }}
+        run: |
+          # Check Slack configuration
+          # The channel is interpolated into the notice's JSON below, so
+          # anything but a plain Slack ID is refused rather than sent.
+          problem=''
+          if [ "${SLACK_TOKEN_SET}" != 'true' ]; then
+            problem='requires a bot token'
+          elif [[ ! "${SLACK_CHANNEL}" =~ ^[A-Za-z0-9]+$ ]]; then
+            problem='slack_channel is not a Slack channel ID'
+          fi
+          if [ -z "${problem}" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            msg="⚠️ Slack integration not available; ${problem}"
+            echo "::warning::${msg}"
+            echo "${msg}" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: 'Send failure notice'
+        if: steps.slack-config.outputs.configured == 'true'
+        # yamllint disable-line rule:line-length
+        uses: slackapi/slack-github-action@dcb1066f776dd043e64d0e8ba94ca15cc7e1875d  # v4.0.0
+        with:
+          method: 'chat.postMessage'
+          token: ${{ secrets.slack_bot_token }}
+          # Every interpolated value is a repository name, a run id or
+          # an enumerated job result, none of which can break the JSON.
+          # yamllint disable rule:line-length
+          payload: |
+            {
+              "channel": "${{ inputs.slack_channel }}",
+              "text": "❌ Dependamerge failed in ${{ github.repository }} (${{ needs.merge.result }}): ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "❌ *Dependamerge failed* in `${{ github.repository }}` before posting its digest (job ${{ needs.merge.result }}). Pull requests may be left unmerged until it runs successfully.\n• <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|Failed run (logs)>"
+                  }
+                }
+              ]
+            }
+          # yamllint enable rule:line-length

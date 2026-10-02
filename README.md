@@ -428,6 +428,73 @@ Pin the action to a release's **commit** SHA; Dependabot keeps such pins
 current. The action reports the release that SHA belongs to as its version, and
 an untagged commit as `0.0.0+g<short-sha>`.
 
+## Reusable Workflow
+
+`.github/workflows/dependamerge.yaml` wraps the action for scheduled use: it
+runs dependamerge, posts a Slack digest of what merged and what needs a human,
+and posts a failure notice when a scheduled run breaks before its digest. A
+thin caller is all a repository needs:
+
+<!-- markdownlint-disable MD013 -->
+
+```yaml
+name: 'Dependamerge 🤖'
+
+on:
+  schedule:
+    - cron: '0 8 * * *'
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  dependamerge:
+    permissions:
+      contents: read
+    # yamllint disable-line rule:line-length
+    uses: lfreleng-actions/dependamerge/.github/workflows/dependamerge.yaml@<commit-sha>  # vX.Y.Z
+    with:
+      config: ${{ vars.DEPENDAMERGE_CONFIG }}
+      slack_channel: ${{ vars.SLACK_CHANNEL_ID }}
+      environment: dependamerge
+    secrets:
+      token: ${{ secrets.DEPENDAMERGE_TOKEN }}
+      slack_bot_token: ${{ secrets.SLACK_BOT_TOKEN }}
+```
+
+<!-- markdownlint-enable MD013 -->
+
+You must set `environment`; it has no default. It names the environment in the
+calling repository whose protection gates the merge token, and GitHub creates
+a missing environment without protection and without warning. Create it first
+and protect it, for example with a deployment branch policy limited to the
+default branch, so workflows on other branches cannot reach the token.
+
+The workflow takes the action's merge options as inputs, `config` included,
+with these additions:
+
+<!-- markdownlint-disable MD013 -->
+
+| Input                  | Default      | Description                                                                         |
+| ---------------------- | ------------ | ----------------------------------------------------------------------------------- |
+| `dry_run`              | `false`      | Boolean: `true` forces a dry run; `false` leaves `config` to decide                 |
+| `slack_channel`        |              | Slack channel ID; empty disables Slack                                              |
+| `slack_when`           | `activity`   | Post the digest `always`, on `activity` (any PR processed), on `attention` or never |
+| `fail_on_merge_errors` | `false`      | Fail the run when PRs end failed or blocked; the digest reports them either way     |
+| `environment`          | (required)   | Protected environment in the caller that gates the secrets                          |
+| `timeout_minutes`      | `60`         | Job timeout                                                                         |
+
+<!-- markdownlint-enable MD013 -->
+
+Its secrets are `token`, able to approve and merge across the target, and
+`slack_bot_token`. Without a Slack token the run still merges and reports to
+its step summary, with a warning. The workflow fetches its action through
+`$/`, so the commit you pin decides the workflow, the action and the tool
+together, and Dependabot's `github-actions` ecosystem moves all three at once.
+
+One run per calling workflow proceeds at a time; a run that starts while
+another is still merging waits for it.
+
 ## Authentication
 
 Dependamerge supports both GitHub and Gerrit platforms, each with different

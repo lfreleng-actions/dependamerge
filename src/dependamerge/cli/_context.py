@@ -64,6 +64,9 @@ class _MergeContext:
     # Owner-wide only: the repositories --include-repos or --exclude-repos
     # name.  ``None`` acts on every in-scope repository of the owner.
     repo_selection: RepoSelection | None = None
+    # What the target names: ``owner``, ``repository`` or ``pull_request``.
+    # Recorded for the results document, which a CI step renders.
+    scope: str = ""
 
     # Derived / mutable state
     github_client: _pkg.GitHubClient | None = None
@@ -87,3 +90,6 @@ class _MergeContext:
     all_similar_prs: list[tuple[PullRequestInfo, ComparisonResult]] = field(
         default_factory=list
     )
+    # Owner-wide only: one message per repository that could not be
+    # scanned, kept for the results document.
+    scan_errors: list[str] = field(default_factory=list)

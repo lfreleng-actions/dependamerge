@@ -370,6 +370,7 @@ when a later step reports those PRs instead.
 | `fix_out_of_date`      | `true`                | Bring behind PRs up to date before merging                                  |
 | `dismiss_copilot`      | `false`               | Dismiss unresolved GitHub Copilot review comments                           |
 | `fail_on_merge_errors` | `true`                | Fail the step when any PR ends failed or blocked                            |
+| `slack_channel`        |                       | Slack channel ID; when set, `slack_payload` carries a digest of the run     |
 
 | Output                                                                                | Description                            |
 | ------------------------------------------------------------------------------------- | -------------------------------------- |
@@ -377,11 +378,33 @@ when a later step reports those PRs instead.
 | `exit_code`                                                                           | dependamerge's exit code               |
 | `total`                                                                               | Pull requests assessed or merged       |
 | `merged`, `auto_merge_pending`, `failed`, `blocked`, `unsettled`, `skipped`, `closed` | Pull requests ending with that outcome |
+| `slack_payload`                                                                       | Slack `chat.postMessage` JSON          |
 
 <!-- markdownlint-enable MD013 -->
 
 The count outputs stay empty when the run stops before reporting results, for
 instance on an unknown `exclude_repos` name.
+
+The Slack digest lists failed, blocked and skipped PRs with their reasons, then
+the merges, and counts the outcomes that resolve on their own. It stays within
+Slack's message limits for a run of any size, and counts the PRs it leaves out.
+The action builds the payload but does not post it, so the Slack token never
+reaches the step holding the GitHub token; post it from your own step:
+
+<!-- markdownlint-disable MD013 -->
+
+```yaml
+      - name: Post digest
+        if: always() && steps.dependamerge.outputs.slack_payload != ''
+        # yamllint disable-line rule:line-length
+        uses: slackapi/slack-github-action@dcb1066f776dd043e64d0e8ba94ca15cc7e1875d  # v4.0.0
+        with:
+          method: chat.postMessage
+          token: ${{ secrets.SLACK_BOT_TOKEN }}
+          payload: ${{ steps.dependamerge.outputs.slack_payload }}
+```
+
+<!-- markdownlint-enable MD013 -->
 
 Pin the action to a release's **commit** SHA; Dependabot keeps such pins
 current. The action reports the release that SHA belongs to as its version, and

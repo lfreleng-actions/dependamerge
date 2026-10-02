@@ -83,6 +83,8 @@ jobs:
           target: '${{ matrix.target }}'
           include_repos: '${{ matrix.include_repos }}'
           dry_run: 'true'
+          # Exercises the digest without posting it.
+          slack_channel: 'C0000000000'
 
       - name: 'Validate action outputs'
         shell: bash
@@ -91,6 +93,7 @@ jobs:
           EXIT_CODE: '${{ steps.dependamerge.outputs.exit_code }}'
           TOTAL: '${{ steps.dependamerge.outputs.total }}'
           MERGED: '${{ steps.dependamerge.outputs.merged }}'
+          SLACK_PAYLOAD: '${{ steps.dependamerge.outputs.slack_payload }}'
         run: |
           # Validate action outputs
           set -euo pipefail
@@ -107,6 +110,12 @@ jobs:
           if compgen -G "${leftover}" >/dev/null; then
             fail 'results file left behind'
           fi
+          # The digest is a Slack payload for the requested channel.
+          channel="$(jq -r '.channel' <<< "${SLACK_PAYLOAD}")" \
+            || fail 'slack_payload is not JSON'
+          [ "${channel}" = 'C0000000000' ] || fail 'wrong Slack channel'
+          jq -e '.blocks | length > 0 and length <= 50' \
+            <<< "${SLACK_PAYLOAD}" >/dev/null || fail 'bad Slack blocks'
 
   refuses-unknown-repository:
     name: 'Bad options stop the run'

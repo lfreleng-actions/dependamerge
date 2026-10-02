@@ -19,6 +19,7 @@ import typer
 import dependamerge.cli as _pkg
 
 from ..bot_identity import is_automation_author
+from ..error_codes import exit_for_configuration_error
 from ..merge_manager import (
     MergeResult,
 )
@@ -62,6 +63,8 @@ def _init_org_merge_client(
     ctx.repo_name = ""
 
     console.print(f"🔍 Owner mode: scanning {parsed_org.owner} for automation PRs...")
+    if ctx.repo_selection is not None:
+        console.print(f"   {ctx.repo_selection.describe()}", markup=False)
 
     # NOTE: the token permission check is deferred until *after*
     # enumeration (see below).  ``_check_merge_permissions`` probes a
@@ -108,6 +111,7 @@ def _fetch_owner_prs(
             return await svc.fetch_owner_open_prs(
                 parsed_org.owner,
                 only_automation=only_automation,
+                selection=ctx.repo_selection,
             )
         finally:
             await svc.close()
@@ -130,6 +134,29 @@ def _fetch_owner_prs(
             console.print(f"   - {err}")
 
     return owner_prs, scan_errors
+
+
+def _require_selection_matched(parsed_org: ParsedOrgUrl, ctx: _MergeContext) -> None:
+    """Stop the run when a named repository matched nothing.
+
+    Checked once enumeration has finished and before anything merges, or
+    is reported as having nothing to merge: an unmatched inclusion is
+    usually a typo, and an unmatched exclusion may leave the repository
+    it meant to protect in scope (see :mod:`dependamerge.repo_selection`).
+    """
+    selection = ctx.repo_selection
+    if selection is None:
+        return
+    unmatched = selection.unmatched()
+    if not unmatched:
+        return
+    exit_for_configuration_error(
+        message=(
+            f"❌ {selection.flag}: no non-archived, non-fork repository of "
+            f"{parsed_org.owner} matches: {', '.join(unmatched)}"
+        ),
+        details="Correct or remove the name(s); nothing was merged.",
+    )
 
 
 def _partition_owner_prs(
@@ -300,6 +327,7 @@ def _handle_org_merge(
     owner_prs, _scan_errors = _fetch_owner_prs(
         parsed_org, ctx, only_automation=only_automation
     )
+    _require_selection_matched(parsed_org, ctx)
 
     if not owner_prs:
         label = "automation " if only_automation else ""

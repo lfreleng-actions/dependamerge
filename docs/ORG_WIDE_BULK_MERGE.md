@@ -156,6 +156,15 @@ Per repository, in-scope filtering:
   this. A future `--include-forks` flag could relax it.
 - Repositories with no open automation PRs naturally drop out — the
   scheduler acts on the repos that yield PRs.
+- `--include-repos` narrows the run to the repositories it names, and
+  `--exclude-repos` removes the ones it names; the two are mutually
+  exclusive. Selection happens in the enumeration producer, so an
+  unselected repository is never scanned. The selection records every
+  name the enumerator yields, and once enumeration finishes the handler
+  refuses (exit code 2) any name that matched nothing, before any
+  permission probe or merge. For an exclusion list this fails closed: a
+  misspelt name would otherwise leave exposed the repository the list
+  exists to protect.
 - No upfront write/merge permission probe (too expensive org-wide).
   Missing permissions surface through the existing per-PR merge-failure
   handling, as repo mode behaves today.

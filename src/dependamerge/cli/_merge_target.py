@@ -22,7 +22,9 @@ from urllib.parse import urlparse
 
 import typer
 
+from ..error_codes import exit_for_configuration_error
 from ..local_repo import LocalTarget, detect_local_target
+from ..repo_selection import RepoSelection, parse_repo_selection
 from ..url_parser import (
     HostDeclarationError,
     ParsedGerritTopicUrl,
@@ -78,6 +80,46 @@ def _target_host(target: _MergeTarget) -> str:
         if shape is not None:
             return shape.host
     return ""
+
+
+def _resolve_repo_selection(
+    target: _MergeTarget,
+    include_repos: list[str] | None,
+    exclude_repos: list[str] | None,
+) -> RepoSelection | None:
+    """Parse ``--include-repos`` / ``--exclude-repos`` for this target.
+
+    Only an owner-wide run enumerates repositories, so the options are
+    refused for any other target rather than silently ignored: an
+    operator who named repositories expects them to limit the run.
+
+    Args:
+        target: The parsed target.
+        include_repos: ``--include-repos`` values, or ``None``.
+        exclude_repos: ``--exclude-repos`` values, or ``None``.
+
+    Returns:
+        The selection, or ``None`` when neither option was given.
+    """
+    # A direct Python call to ``merge`` (as some tests make) passes Typer's
+    # unresolved ``OptionInfo`` default, which must read as "not given".
+    if not isinstance(include_repos, list):
+        include_repos = None
+    if not isinstance(exclude_repos, list):
+        exclude_repos = None
+    if include_repos is None and exclude_repos is None:
+        return None
+    if target.org is None:
+        exit_for_configuration_error(
+            message=(
+                "❌ --include-repos and --exclude-repos apply only to an "
+                "owner-wide run (an organisation or user URL)"
+            ),
+        )
+    try:
+        return parse_repo_selection(target.org.owner, include_repos, exclude_repos)
+    except ValueError as exc:
+        exit_for_configuration_error(message=f"❌ {exc}")
 
 
 def _resolve_target_url(pr_url: str) -> str:

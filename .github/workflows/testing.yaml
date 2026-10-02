@@ -15,7 +15,7 @@ on:
     branches: ['main']
     paths:
       - 'action.yaml'
-      - 'scripts/action_version.py'
+      - 'scripts/action_*.py'
       - 'src/**'
       - 'pyproject.toml'
       - 'uv.lock'
@@ -25,7 +25,7 @@ on:
     branches: ['main']
     paths:
       - 'action.yaml'
-      - 'scripts/action_version.py'
+      - 'scripts/action_*.py'
       - 'src/**'
       - 'pyproject.toml'
       - 'uv.lock'
@@ -52,9 +52,16 @@ jobs:
           - name: 'repository'
             target: '${{ github.repository }}'
             include_repos: ''
+            config: ''
           - name: 'owner-wide, limited to this repository'
             target: '${{ github.repository_owner }}'
             include_repos: '${{ github.event.repository.name }}'
+            config: ''
+          - name: 'owner-wide, scoped by JSON config'
+            target: ''
+            include_repos: ''
+            # yamllint disable-line rule:line-length
+            config: '{"target": "${{ github.repository_owner }}", "include_repos": ["${{ github.event.repository.name }}"], "max_wait": 0}'
     steps:
       # yamllint disable-line rule:line-length
       - uses: lfreleng-actions/harden-runner-block-action@805eedb0508c07714b61887a2b87a5c4bbeff22a  # v0.12.1
@@ -82,6 +89,7 @@ jobs:
         with:
           target: '${{ matrix.target }}'
           include_repos: '${{ matrix.include_repos }}'
+          config: '${{ matrix.config }}'
           dry_run: 'true'
           # Exercises the digest without posting it.
           slack_channel: 'C0000000000'
@@ -293,6 +301,28 @@ jobs:
           EXIT_CODE: '${{ steps.foreign-target.outputs.exit_code }}'
         run: |
           # Expect the target on another host to stop the run
+          set -euo pipefail
+          echo "outcome=${OUTCOME} exit_code=${EXIT_CODE}"
+          fail() { echo "::error::$1"; exit 1; }
+          [ "${OUTCOME}" = 'failure' ] || fail 'the step did not fail'
+          [ -z "${EXIT_CODE}" ] || fail 'dependamerge ran'
+
+      - name: 'Run local action with a misspelt config key'
+        id: misspelt
+        continue-on-error: true
+        uses: $/
+        with:
+          # yamllint disable-line rule:line-length
+          config: '{"target": "${{ github.repository_owner }}", "exlude_repos": ["x"]}'
+          dry_run: 'true'
+
+      - name: 'Expect the options to be refused before dependamerge runs'
+        shell: bash
+        env:
+          OUTCOME: '${{ steps.misspelt.outcome }}'
+          EXIT_CODE: '${{ steps.misspelt.outputs.exit_code }}'
+        run: |
+          # Expect the options to be refused before dependamerge runs
           set -euo pipefail
           echo "outcome=${OUTCOME} exit_code=${EXIT_CODE}"
           fail() { echo "::error::$1"; exit 1; }

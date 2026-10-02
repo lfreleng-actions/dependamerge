@@ -11,6 +11,7 @@ be merged.
 
 import typer
 
+from ..ci_report import build_document, in_github_actions, write_results_file
 from ..error_codes import ExitCode
 from ..error_text import summarise_error
 from ..merge_manager import (
@@ -24,7 +25,9 @@ from ..rule_violations import (
     status_check_violation_verb,
     violation_verb,
 )
+from ..url_parser import redact_target
 from ._app import console
+from ._context import _MergeContext
 
 
 def _prs(count: int) -> str:
@@ -247,3 +250,83 @@ def _display_merge_results(
             console.print("   ⏱️ Unsettled PRs will merge on a re-run")
 
     _print_failed_pr_details(merge_results)
+
+
+def _publish_results(
+    ctx: _MergeContext,
+    results: list[MergeResult],
+    *,
+    preview: bool,
+) -> None:
+    """Write the results document when running under GitHub Actions.
+
+    Outside Actions this does nothing, so an operator at a terminal sees
+    no change.  A file that cannot be written is reported and skipped:
+    losing the step summary must not fail a run that merged correctly.
+    """
+    if not in_github_actions():
+        return
+    document = build_document(
+        results,
+        explain=_format_failure_reason,
+        # The target lands in a file, a step summary and possibly Slack,
+        # so it gets the same credential redaction as any displayed
+        # target: no userinfo, query, fragment or path parameters.
+        target=redact_target(ctx.pr_url),
+        scope=ctx.scope,
+        preview=preview,
+        dry_run=ctx.dry_run,
+        selection=ctx.repo_selection.describe() if ctx.repo_selection else None,
+        scan_errors=ctx.scan_errors,
+    )
+    try:
+        path = write_results_file(document)
+    except OSError as exc:
+        console.print(f"⚠️ Could not write the results file: {exc}", markup=False)
+        return
+    console.print(f"📄 Results file: {path}", markup=False)
+
+
+def _conclude_run(
+    ctx: _MergeContext,
+    results: list[MergeResult],
+    *,
+    preview: bool,
+    attempted: list[MergeResult] | None = None,
+) -> None:
+    """Publish a finished run's results, then apply its exit code.
+
+    Every route that reports final results ends here, including an
+    owner or repository with nothing to merge, so a scheduled run always
+    leaves a results document behind.  Publishing comes first because
+    the exit for a failed run would otherwise skip it.
+
+    Args:
+        ctx: The run's shared state.
+        results: One result per PR evaluated or merged; empty when there
+            was nothing to do.
+        preview: The results are predictions (preview or dry run), which
+            never fail the run.
+        attempted: The PRs the run actually tried to merge, when that is
+            narrower than ``results``.  A confirmed run records the PRs
+            its preview rejected but never attempted them, so its exit
+            code comes from this list alone, as it always has.
+    """
+    _publish_results(ctx, results, preview=preview)
+    if not preview:
+        _exit_if_any_failed(results if attempted is None else attempted)
+
+
+def _confirmed_run_results(
+    preview_results: list[MergeResult],
+    real_results: list[MergeResult],
+) -> list[MergeResult]:
+    """The full record of a confirmed run: what it merged, and what it never tried.
+
+    A confirmed pass re-runs only the PRs the preview judged mergeable,
+    so its own results omit every PR the preview rejected.  Those still
+    need a human, and a record built from the real pass alone would
+    report a clean run that left them behind.
+    """
+    rejected = [r for r in preview_results if r.status.value != "merged"]
+    return [*real_results, *rejected]

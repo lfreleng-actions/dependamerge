@@ -359,6 +359,7 @@ when a later step reports those PRs instead.
 
 | Input                  | Default               | Description                                                                 |
 | ---------------------- | --------------------- | --------------------------------------------------------------------------- |
+| `config`               |                       | JSON object of the options below, keyed by input name                       |
 | `target`               | (required)            | Owner, `owner/repo`, or pull request URL                                    |
 | `token`                | `${{ github.token }}` | Token able to approve and merge; read access suffices for a dry run         |
 | `dry_run`              | `false`               | Assess every PR, merge nothing                                              |
@@ -381,6 +382,23 @@ when a later step reports those PRs instead.
 | `slack_payload`                                                                       | Slack `chat.postMessage` JSON          |
 
 <!-- markdownlint-enable MD013 -->
+
+`config` holds a run's options as one JSON document, so a scheduled caller can
+keep its scope in a repository or organisation variable and change it without
+editing the workflow. Any of `target`, `include_repos`, `exclude_repos`,
+`merge_method`, `force`, `max_wait`, `fix_out_of_date`, `dismiss_copilot` and
+`dry_run` may appear; repository lists may be arrays. An input given
+explicitly wins over the config, and the config over the default. The action
+checks every value before dependamerge runs, and an unknown key stops the run:
+a misspelt `exlude_repos` must not widen it to every repository.
+
+```json
+{
+  "target": "my-org",
+  "exclude_repos": ["test-fixture-one", "test-fixture-two"],
+  "max_wait": 900
+}
+```
 
 The count outputs stay empty when the run stops before reporting results, for
 instance on an unknown `exclude_repos` name.

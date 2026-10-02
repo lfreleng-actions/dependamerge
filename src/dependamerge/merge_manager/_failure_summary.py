@@ -15,6 +15,7 @@ import re
 
 from ..models import PullRequestInfo
 from ._base import _MergeManagerBase
+from ._types import _github_error_detail
 
 #: The HTTP status in an httpx error message, e.g. ``Client error '405
 #: Method Not Allowed' for url '…'``.
@@ -141,19 +142,16 @@ class _FailureSummaryFromExceptionMixin(_MergeManagerBase):
         # actionable cause, so surface it ahead of any generic
         # state-based inference.  We trim the PR-state context we
         # appended after it so the reason stays concise.
-        marker = "GitHub: "
-        if marker in error_msg:
-            detail = error_msg.split(marker, 1)[1]
-            detail = detail.split(" (PR state:", 1)[0].strip()
-            if detail:
-                # GitHub's own words, which are the best text available
-                # either way --- but only a verdict on the pull request
-                # when the status positively says one was reached.  A
-                # body with no recognisable status (a wrapped or
-                # transport exception that still quoted GitHub) says
-                # nothing about mergeability, and must not be
-                # withdrawable on a later clean reading.
-                return detail[:300], _is_state_verdict(error_msg)
+        detail = _github_error_detail(error_msg)
+        if detail:
+            # GitHub's own words, which are the best text available
+            # either way --- but only a verdict on the pull request
+            # when the status positively says one was reached.  A
+            # body with no recognisable status (a wrapped or
+            # transport exception that still quoted GitHub) says
+            # nothing about mergeability, and must not be
+            # withdrawable on a later clean reading.
+            return detail[:300], _is_state_verdict(error_msg)
         # Workflow-scope failures surface in several phrasings: the
         # PermissionError messages we raise ("Missing 'workflow' scope",
         # "Missing workflow permissions") and GitHub's own response body

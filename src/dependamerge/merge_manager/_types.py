@@ -181,3 +181,19 @@ def _merge_already_in_progress(error_msg: str) -> bool:
     return "merge already in progress" in lowered or (
         "already in progress" in lowered and "merge" in lowered
     )
+
+
+def _github_error_detail(error_msg: str) -> str:
+    """GitHub's own reason from an enhanced merge error, or ``""``.
+
+    The merge layer (``github_async.merge_pull_request``) embeds the
+    response body after a ``GitHub: `` marker, then appends the PR state
+    it fetched, from `` (PR state:`` onwards.  Only the text between
+    them is GitHub's answer: the prefix carries the repository name and
+    the suffix this tool's own reading of the PR, neither of which says
+    why GitHub refused.
+    """
+    _, marker, detail = error_msg.partition("GitHub: ")
+    if not marker:
+        return ""
+    return detail.split(" (PR state:", 1)[0].strip()

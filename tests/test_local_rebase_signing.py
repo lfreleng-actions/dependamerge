@@ -975,3 +975,133 @@ class TestLocalRebaseFailClosed:
         # base repo for a fork PR. The caller falls through to
         # auto-merge, which is always safe.
         assert result is False
+
+
+# ---------------------------------------------------------------------------
+# 6. Under GitHub Actions the local git path is refused, not attempted
+# ---------------------------------------------------------------------------
+
+
+class TestStep5UnderGitHubActions:
+    """A runner has no signing identity, so local git rebase is refused.
+
+    The gate and the ``@dependabot rebase`` macro are unaffected:
+    dependabot re-signs its own rebase.  Only the local clone, rebase
+    and force-push is withheld, and REST ``update-branch`` stays off
+    too, since it would break the same signatures.  The PR is reported
+    failed with a reason a human can act on.
+    """
+
+    @staticmethod
+    def _client(mgr_client: AsyncMock, *, macro_fails: bool = False) -> None:
+        client = mgr_client
+        client.update_branch = AsyncMock()
+        client.enable_auto_merge = AsyncMock(return_value=True)
+        client.post_issue_comment = (
+            AsyncMock(side_effect=RuntimeError("403")) if macro_fails else AsyncMock()
+        )
+        client.get = AsyncMock(
+            return_value={
+                "mergeable": True,
+                "mergeable_state": "behind",
+                "state": "open",
+            }
+        )
+        client.analyze_block_reason = AsyncMock(return_value=None)
+        client.get_required_status_checks = AsyncMock(return_value=[])
+        client.requires_commit_signatures = AsyncMock(return_value=True)
+        client.check_pr_commit_signatures = AsyncMock(return_value=(True, []))
+        client.requires_strict_status_checks = AsyncMock(return_value=True)
+
+    @staticmethod
+    async def _merge(mgr: AsyncMergeManager, pr: PullRequestInfo) -> tuple[Any, Any]:
+        with (
+            patch(
+                "dependamerge.rebase.local_rebase.local_rebase_pr",
+                new_callable=AsyncMock,
+                return_value=True,
+            ) as mock_local_rebase,
+            patch.object(
+                mgr,
+                "_detect_github2gerrit",
+                new_callable=AsyncMock,
+                return_value=GitHub2GerritDetectionResult(),
+            ),
+            patch.object(
+                mgr,
+                "_get_merge_method_for_repo",
+                new_callable=AsyncMock,
+                return_value="merge",
+            ),
+            patch.object(
+                mgr,
+                "_trigger_stale_precommit_ci",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch.object(
+                mgr,
+                "_check_merge_requirements",
+                new_callable=AsyncMock,
+                return_value=(True, ""),
+            ),
+            patch.object(mgr, "_approve_pr", new_callable=AsyncMock, return_value=True),
+            patch.object(
+                mgr,
+                "_merge_pr_with_retry",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
+        ):
+            result = await mgr._merge_single_pr(pr)
+        return result, mock_local_rebase
+
+    @pytest.mark.asyncio
+    async def test_pre_commit_ci_pr_is_failed_not_rebased(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("GITHUB_ACTIONS", "true")
+        mgr, client = _make_mgr(merge_timeout=0.1, fix_out_of_date=True)
+        self._client(client)
+        pr = _make_pr(author="pre-commit-ci[bot]", mergeable_state="behind")
+
+        result, mock_local_rebase = await self._merge(mgr, pr)
+
+        mock_local_rebase.assert_not_awaited()
+        client.update_branch.assert_not_awaited()
+        assert result.status == MergeStatus.FAILED
+        assert result.error == rebase_module.LOCAL_REBASE_UNAVAILABLE
+
+    @pytest.mark.asyncio
+    async def test_dependabot_macro_still_used(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("GITHUB_ACTIONS", "true")
+        mgr, client = _make_mgr(merge_timeout=0.1, fix_out_of_date=True)
+        self._client(client)
+        pr = _make_pr(author="dependabot[bot]", mergeable_state="behind")
+
+        result, mock_local_rebase = await self._merge(mgr, pr)
+
+        assert ("owner", "repo", 42, "@dependabot rebase") in [
+            c.args for c in client.post_issue_comment.await_args_list
+        ]
+        mock_local_rebase.assert_not_awaited()
+        client.update_branch.assert_not_awaited()
+        assert result.status == MergeStatus.AUTO_MERGE_PENDING
+
+    @pytest.mark.asyncio
+    async def test_failed_macro_does_not_fall_back_to_local_git(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("GITHUB_ACTIONS", "true")
+        mgr, client = _make_mgr(merge_timeout=0.1, fix_out_of_date=True)
+        self._client(client, macro_fails=True)
+        pr = _make_pr(author="dependabot[bot]", mergeable_state="behind")
+
+        result, mock_local_rebase = await self._merge(mgr, pr)
+
+        mock_local_rebase.assert_not_awaited()
+        client.update_branch.assert_not_awaited()
+        assert result.status == MergeStatus.FAILED
+        assert result.error == rebase_module.LOCAL_REBASE_UNAVAILABLE

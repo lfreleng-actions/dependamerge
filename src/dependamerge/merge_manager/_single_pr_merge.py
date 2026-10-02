@@ -34,10 +34,11 @@ from __future__ import annotations
 
 from ._single_pr_context import _MergeFlow
 from ._single_pr_outcome import _SinglePrOutcomeMixin
+from ._stale_head import _StaleHeadRecoveryMixin
 from ._types import MergeResult, MergeStatus
 
 
-class _SinglePrMergeMixin(_SinglePrOutcomeMixin):
+class _SinglePrMergeMixin(_SinglePrOutcomeMixin, _StaleHeadRecoveryMixin):
     """The Step 6 dispatch and the auto-merge deferral that precedes it."""
 
     async def _perform_merge(self, flow: _MergeFlow) -> MergeResult | None:
@@ -60,7 +61,17 @@ class _SinglePrMergeMixin(_SinglePrOutcomeMixin):
             merged, early = await self._attempt_direct_merge(flow)
             if early is not None:
                 return early
+            if self._refusal_is_final(flow, merged):
+                # The refusal is final: neither recovery below may
+                # replace the manual-rebase answer, even when an earlier
+                # attempt left a workflow 405 or a dirty snapshot behind.
+                return await self._handle_failed_merge(flow)
             merged = await self._retry_after_review_or_workflows(flow, merged)
+            if self._refusal_is_final(flow, merged):
+                # Approval recovery retries the merge itself, so it can
+                # record the refusal too; the conflict routing below must
+                # not replace it either.
+                return await self._handle_failed_merge(flow)
             # Both recovery paths above dispatch under the repo lock and
             # decline to merge a PR a sibling turned ``dirty`` while they
             # waited for it.  ``_is_pr_dirty_now`` updated the snapshot
@@ -79,6 +90,10 @@ class _SinglePrMergeMixin(_SinglePrOutcomeMixin):
         else:
             return await self._handle_failed_merge(flow)
         return None
+
+    def _refusal_is_final(self, flow: _MergeFlow, merged: bool | None) -> bool:
+        """Whether an unmerged PR has been refused a rebase this run."""
+        return not merged and flow.pr_key in self._local_rebase_refused
 
     async def _auto_merge_will_handle(self, flow: _MergeFlow) -> bool:
         """Whether to leave this PR for GitHub's auto-merge to complete."""
@@ -167,6 +182,11 @@ class _SinglePrMergeMixin(_SinglePrOutcomeMixin):
             return False, await self._handle_merge_conflict(
                 pr_info, flow.repo_owner, flow.repo_name, flow.result
             )
+        # A recorded refusal is the answer: the PR needs a manual signed
+        # rebase, so no later reading (a dirty refresh included) may turn
+        # it into a conflict report or another recovery.
+        if not merged and flow.pr_key in self._local_rebase_refused:
+            return False, None
         # A PR can also turn ``dirty`` *during* our own merge window (a
         # sibling merged between the pre-dispatch check and the merge
         # call).  The post-failure refresh — off the lock, with its
@@ -236,6 +256,10 @@ class _SinglePrMergeMixin(_SinglePrOutcomeMixin):
                 pr_info, flow.repo_owner, flow.repo_name
             ):
                 merged = True
+            elif self._refusal_is_final(flow, merged):
+                # The retry recorded a refusal: waiting on workflows
+                # cannot make a rebase that may not run here unnecessary.
+                return False
 
         # A 405 "Required workflows … are not satisfied" rejection means
         # ruleset-required workflows are still *executing* on the head
@@ -259,4 +283,14 @@ class _SinglePrMergeMixin(_SinglePrOutcomeMixin):
                 merged = await self._wait_for_required_workflows_and_retry(
                     pr_info, flow.repo_owner, flow.repo_name
                 )
+                # The retry hands any new rejection back unhandled.  A
+                # base that moved during the wait leaves the head stale,
+                # which gets the merge loop's recovery: a dependabot
+                # macro, or a refusal reported as needing a manual rebase.
+                # Where that settles nothing, the merge gets the loop's
+                # bounded retries too, under the dispatch lock.
+                if not merged and await self._recover_stale_head_rejection(
+                    pr_info, flow.repo_owner, flow.repo_name
+                ):
+                    merged, _dirty = await self._merge_under_dispatch_lock(flow)
         return merged

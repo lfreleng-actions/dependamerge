@@ -211,22 +211,7 @@ class _LifecycleMixin(_MergeManagerBase):
         self._org_approval_locks: dict[str, asyncio.Lock] = {}
         self._org_approval_locks_lock = asyncio.Lock()
 
-        # Track last merge exception per PR for better error reporting
-        self._last_merge_exception: dict[str, Exception] = {}
-        # The head SHA each stored exception was raised against.  A
-        # rejection is evidence about the commit that was rejected, so
-        # a force-push in between invalidates it; see
-        # ``_wait_for_required_workflows_and_retry``.
-        self._last_merge_exception_head: dict[str, str] = {}
-        # Whether the *last* thing to happen on a merge attempt was the
-        # API answering rather than an exception being raised.  The
-        # stored exception alone cannot say: nothing clears it when a
-        # later attempt gets a reply, so a 502 followed by a
-        # ``merged: false`` leaves the 502 behind it.  Readers asking
-        # "why did this fail" need the last event; readers asking "did
-        # GitHub ever say this" --- the approval and workflow recoveries
-        # --- deliberately do not, and go on reading the exception.
-        self._last_merge_was_answered: dict[str, bool] = {}
+        self._init_failure_tracking()
 
         # Track PRs that were just approved (for post-approval merge retry)
         self._recently_approved: set[str] = set()
@@ -290,6 +275,33 @@ class _LifecycleMixin(_MergeManagerBase):
                 default_post_approval_delay,
             )
             self._post_approval_delay = default_post_approval_delay
+
+    def _init_failure_tracking(self) -> None:
+        """Create the per-PR state that explains why a merge failed."""
+        # Track last merge exception per PR for better error reporting
+        self._last_merge_exception: dict[str, Exception] = {}
+        # The head SHA each stored exception was raised against.  A
+        # rejection is evidence about the commit that was rejected, so
+        # a force-push in between invalidates it; see
+        # ``_wait_for_required_workflows_and_retry``.
+        self._last_merge_exception_head: dict[str, str] = {}
+        # Whether the *last* thing to happen on a merge attempt was the
+        # API answering rather than an exception being raised.  The
+        # stored exception alone cannot say: nothing clears it when a
+        # later attempt gets a reply, so a 502 followed by a
+        # ``merged: false`` leaves the 502 behind it.  Readers asking
+        # "why did this fail" need the last event; readers asking "did
+        # GitHub ever say this" --- the approval and workflow recoveries
+        # --- deliberately do not, and go on reading the exception.
+        self._last_merge_was_answered: dict[str, bool] = {}
+        # PRs whose reactive rebase was refused under GitHub Actions
+        # because it needed the local signed path; their failure is
+        # reported as needing a manual rebase rather than "behind".
+        self._local_rebase_refused: set[str] = set()
+        # PRs whose dependabot rebase reactive recovery requested (or
+        # found under way).  Once the rebase lands, a refresh no longer
+        # says "behind", so the pending classifier reads this instead.
+        self._rebase_requested: set[str] = set()
 
     def __repr__(self) -> str:
         """Safe repr that never exposes the token value."""

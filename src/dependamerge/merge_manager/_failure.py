@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import asyncio
 
+from .. import rebase
 from ..bot_identity import is_dependabot
+from ..ci_report import in_github_actions
 from ..models import PullRequestInfo
 from ._failure_summary import _FailureSummaryFromExceptionMixin, _is_state_verdict
 from ._types import MergeResult, MergeStatus
@@ -51,7 +53,17 @@ class _FailureReportingMixin(_FailureSummaryFromExceptionMixin):
         unmarked keeps the message that explains what to fix.
         """
         stuck_reported = False
-        if not is_dependabot(pr_info.author) and not self.preview_mode:
+        # A manual-rebase refusal is the whole story: a stuck check on a
+        # PR nobody may rebase here is not the cause to report.
+        policy_refusal = (
+            f"{pr_info.repository_full_name}#{pr_info.number}"
+            in self._local_rebase_refused
+        )
+        if (
+            not is_dependabot(pr_info.author)
+            and not self.preview_mode
+            and not policy_refusal
+        ):
             try:
                 detection = await self._detect_stuck_required_check(pr_info)
             except Exception as exc:
@@ -165,6 +177,11 @@ class _FailureReportingMixin(_FailureSummaryFromExceptionMixin):
         """
         # Check if we have a stored exception for this PR
         pr_key = f"{pr_info.repository_full_name}#{pr_info.number}"
+        if pr_key in self._local_rebase_refused:
+            # This tool's own policy, not GitHub's verdict on the PR's
+            # state: it must not be withdrawn or replaced by a later
+            # reading, so it is not marked as a refusal.
+            return rebase.LOCAL_REBASE_UNAVAILABLE, False
         last_exception = self._last_merge_exception.get(pr_key)
         if last_exception is not None and self._last_merge_was_answered.get(pr_key):
             last_exception = None
@@ -345,7 +362,15 @@ class _FailureReportingMixin(_FailureSummaryFromExceptionMixin):
                 if self._dependabot_is_rebasing(
                     pr_info.body
                 ) or await self._request_dependabot_rebase(pr_info, owner, repo):
+                    self._rebase_requested.add(f"{owner}/{repo}#{pr_info.number}")
                     await self._enable_auto_merge_with_approval(pr_info, owner, repo)
+                else:
+                    # No macro landed.  Under Actions there is no local
+                    # fallback either, so record why when the base needs
+                    # a signed rebase, as Step 5 does.
+                    await self._refuse_unsigned_rebase(pr_info, owner, repo)
+                return False
+            if await self._refuse_unsigned_rebase(pr_info, owner, repo):
                 return False
             try:
                 self.log.info(
@@ -363,3 +388,47 @@ class _FailureReportingMixin(_FailureSummaryFromExceptionMixin):
 
         # For other failure types, don't retry
         return False
+
+    async def _refuse_unsigned_rebase(
+        self, pr_info: PullRequestInfo, owner: str, repo: str
+    ) -> bool:
+        """Under Actions, refuse a rebase that needs the local signed path.
+
+        The same refusal Step 5 makes: REST ``update-branch`` would break
+        the signatures the base requires, and a runner cannot sign a
+        local rebase.  The PR is recorded, so its failure is reported as
+        needing a manual rebase.
+
+        Returns:
+            True when the rebase was refused.
+        """
+        if not in_github_actions():
+            return False
+        if not await self._rebase_needs_local_path(pr_info, owner, repo):
+            return False
+        self.log.info(
+            f"PR {owner}/{repo}#{pr_info.number} is behind and needs "
+            "a signed rebase; not rebasing under GitHub Actions"
+        )
+        self._local_rebase_refused.add(f"{owner}/{repo}#{pr_info.number}")
+        return True
+
+    async def _rebase_needs_local_path(
+        self, pr_info: PullRequestInfo, owner: str, repo: str
+    ) -> bool:
+        """Whether bringing this PR up to date needs the local signed path.
+
+        Asks the same gate as Step 5, so the proactive and reactive
+        rebases agree on when REST ``update-branch`` would break a
+        signature the base branch requires.
+        """
+        use_local, _reason = await rebase.should_use_local_rebase(
+            github_client=self._github_client,
+            pr_info=pr_info,
+            base=rebase.BaseRef(
+                owner=owner, repo=repo, branch=pr_info.base_branch or "main"
+            ),
+            rebase_local=self.rebase_local,
+            log=self.log,
+        )
+        return use_local

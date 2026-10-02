@@ -71,6 +71,19 @@ class _SinglePrOutcomeMixin(_SinglePrRecreateMixin):
         # kind of reason a later reading may withdraw.
         failure_reason, refused = await self._get_failure_summary(flow.pr_info)
 
+        if flow.pr_key in self._local_rebase_refused:
+            # Left untouched for a manual rebase: recreating it would
+            # replace the very PR a human was told to rebase.
+            await self._report_merge_failure(
+                flow.pr_info,
+                flow.repo_owner,
+                flow.repo_name,
+                flow.result,
+                failure_reason,
+                refused,
+            )
+            return None
+
         recreate = await self._maybe_recreate_dependabot_pr(flow, failure_reason)
         if recreate.outcome is RecreateOutcome.READY and recreate.pr_info is not None:
             await self._merge_recreated_pr(flow, recreate.pr_info)
@@ -215,12 +228,23 @@ class _SinglePrOutcomeMixin(_SinglePrRecreateMixin):
         ``_handle_merge_failure`` requested a dependabot rebase and armed
         auto-merge, so GitHub completes the merge server-side once the
         rebase lands and required checks pass.
+
+        A requested rebase counts whatever the snapshot now says: once
+        it lands, a refresh (a repo-scoped run's, say) reads ``blocked``
+        on pending checks, and treating that as a failure would send a
+        PR auto-merge is about to finish into recreation.
         """
         pr_info = flow.pr_info
         result = flow.result
         if not (
-            pr_info.mergeable_state == "behind"
+            (
+                pr_info.mergeable_state == "behind"
+                or flow.pr_key in self._rebase_requested
+            )
             and flow.pr_key in self._auto_merge_enabled
+            # A refused rebase never lands, so auto-merge cannot finish
+            # the job; report the refusal instead of a pending merge.
+            and flow.pr_key not in self._local_rebase_refused
         ):
             return None
         result.status = MergeStatus.AUTO_MERGE_PENDING

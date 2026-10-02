@@ -12,7 +12,7 @@ from enum import Enum
 
 from ..github_async import PermissionError as GitHubPermissionError
 from ..models import PullRequestInfo
-from ._base import _MergeManagerBase
+from ._stale_head import _says_head_is_stale, _StaleHeadRecoveryMixin
 from ._types import _merge_already_in_progress
 
 
@@ -30,7 +30,7 @@ class _RetryDecision(Enum):
     BACKOFF = "backoff"
 
 
-class _MergeRetryMixin(_MergeManagerBase):
+class _MergeRetryMixin(_StaleHeadRecoveryMixin):
     """Retrying a merge through its transient failure modes."""
 
     async def _merge_pr_with_retry(
@@ -227,6 +227,14 @@ class _MergeRetryMixin(_MergeManagerBase):
         pr_key = f"{owner}/{repo}#{pr_info.number}"
         if "base branch was modified" in error_msg.lower():
             return await self._retry_after_base_branch_moved(pr_key, attempt)
+        if self._stale_head_recovery_applies(error_msg):
+            # A dependabot rebase under way with auto-merge armed, or a
+            # refusal: retrying cannot help.  Anything inconclusive (a
+            # macro not posted, auto-merge not armed) gets the bounded
+            # back-off, rather than a running rebase reported as failed.
+            if await self._recover_stale_head(pr_info, owner, repo):
+                return _RetryDecision.STOP
+            return _RetryDecision.BACKOFF
         if "behind" in error_msg.lower() and self.fix_out_of_date:
             # Allow retry for behind PRs
             return _RetryDecision.BACKOFF
@@ -325,19 +333,17 @@ class _MergeRetryMixin(_MergeManagerBase):
             return _RetryDecision.STOP
 
         # Don't retry certain error types that are unlikely to be transient
-        # Exception: Allow retry for 405 errors on "behind" PRs if fix_out_of_date is enabled
-        if ("405" in error_msg and "behind" not in error_msg.lower()) or (
+        # Exception: Allow retry for 405 errors on "behind" PRs if fix_out_of_date is enabled.
+        # GitHub's own stale-head wording counts too: it never says "behind".
+        behind = "behind" in error_msg.lower() or _says_head_is_stale(error_msg)
+        if ("405" in error_msg and not behind) or (
             "422" in error_msg and "not mergeable" in error_msg.lower()
         ):
             self.log.info(
                 f"Not retrying PR {owner}/{repo}#{pr_info.number} due to permanent error condition"
             )
             return _RetryDecision.STOP
-        elif (
-            "405" in error_msg
-            and "behind" in error_msg.lower()
-            and not self.fix_out_of_date
-        ):
+        elif "405" in error_msg and behind and not self.fix_out_of_date:
             self.log.info(
                 f"Not retrying PR {owner}/{repo}#{pr_info.number} - behind base branch but --no-fix is set"
             )

@@ -28,6 +28,9 @@ permissions: {}
 jobs:
   openssf-scorecard:
     name: "OpenSSF Scorecard"
+    # The callee runs under branch_protection_rule, a low-trust trigger,
+    # so cap its cache access at read (actionlint: cache-call-unrestricted).
+    cache-mode: read
     # yamllint disable-line rule:line-length
     uses: lfit/releng-reusable-workflows/.github/workflows/reuse-openssf-scorecard.yaml@87eacd1f8322263ebbc1411ce2ea82bab10ed091 # v0.10.3
     permissions:

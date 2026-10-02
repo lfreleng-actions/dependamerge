@@ -25,10 +25,14 @@ import tempfile
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .._version import __version__
-from ..merge_manager import MergeResult
+
+if TYPE_CHECKING:
+    # Annotation only: importing the merge manager at run time would
+    # cycle through it, since its rebase step reads in_github_actions.
+    from ..merge_manager import MergeResult
 
 SCHEMA_VERSION = 1
 

@@ -996,6 +996,16 @@ dependamerge merge https://github.com/owner/repo/pull/123 \
   merge)
 - `--no-fix`: Disable automatic fixing of out-of-date branches
   (default: automatic fixing enabled)
+- `--rebase-local/--no-rebase-local`: When a behind PR's base branch requires
+  signed commits and its head carries a valid signature, or the PR comes from
+  `pre-commit-ci[bot]`, bring it up to date without breaking signatures
+  (default: enabled). Dependabot PRs get the `@dependabot rebase` macro, so
+  dependabot re-signs its own rebase; others get a local `git` clone, rebase
+  and force-push signed with your own git configuration. `--no-rebase-local`
+  uses the REST `update-branch` endpoint for every PR instead, which leaves
+  unsigned commits. Under GitHub Actions dependamerge refuses the local `git`
+  step, since a runner has no signing identity: the macro still runs, and a PR
+  that needs the local step fails with a reason asking for a manual rebase
 - `--no-fix-semantic-title`: Disable repair of automation PRs whose title
   differs from their single commit's subject. Dependabot shortens the commit
   subject by dropping the `from <old> to <new>` fragment while the title keeps

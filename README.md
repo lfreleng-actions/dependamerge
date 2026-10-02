@@ -437,6 +437,102 @@ Pin the action to a release's **commit** SHA; Dependabot keeps such pins
 current. The action reports the release that SHA belongs to as its version, and
 an untagged commit as `0.0.0+g<short-sha>`.
 
+## Reusable Workflow
+
+`.github/workflows/dependamerge.yaml` wraps the action for scheduled use: it
+runs dependamerge, posts a Slack digest of what merged and what needs a human,
+and posts a failure notice when a scheduled run breaks before its digest. It
+needs github.com: it relies on the `$/` self-repository reference and the
+`job.workflow_*` context, which GitHub Enterprise Server lacks; there, use the
+[composite action](#github-action) directly. A thin caller is all a
+repository needs:
+
+<!-- markdownlint-disable MD013 -->
+
+```yaml
+name: 'Dependamerge 🤖'
+
+on:
+  schedule:
+    - cron: '0 8 * * *'
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  dependamerge:
+    permissions:
+      contents: read
+    # yamllint disable-line rule:line-length
+    uses: lfreleng-actions/dependamerge/.github/workflows/dependamerge.yaml@<commit-sha>  # vX.Y.Z
+    with:
+      config: ${{ vars.DEPENDAMERGE_CONFIG }}
+      slack_channel: ${{ vars.SLACK_CHANNEL_ID }}
+      environment: dependamerge
+    secrets:
+      # Map both secrets explicitly ('secrets: inherit' would pass every
+      # secret, which zizmor's secrets-inherit audit flags). Per GitHub's
+      # documentation, the job prefers the environment's own
+      # DEPENDAMERGE_TOKEN to the value mapped here.
+      DEPENDAMERGE_TOKEN: ${{ secrets.DEPENDAMERGE_TOKEN }}
+      SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+```
+
+<!-- markdownlint-enable MD013 -->
+
+You must set `environment`; it has no default. It names the environment in the
+calling repository that gates the job, and GitHub creates a missing
+environment without protection and without warning. Create it first, protect
+it (for example with a deployment branch policy limited to the default
+branch), and store the merge token there as an environment secret named
+`DEPENDAMERGE_TOKEN`. GitHub documents that a reusable-workflow job naming an
+environment uses that environment's secret in preference to one the caller
+passes, so a workflow the environment does not admit cannot reach the token.
+Map both secrets explicitly, as above. If the run cannot reach the token, it
+stops at its first step and names the missing secret. Storing
+`DEPENDAMERGE_TOKEN` as a repository or organisation secret instead also works,
+but any workflow in the repository can read such a secret.
+
+The workflow takes the action's merge options as inputs, `config` included,
+with these additions:
+
+<!-- markdownlint-disable MD013 -->
+
+| Input                  | Default      | Description                                                                         |
+| ---------------------- | ------------ | ----------------------------------------------------------------------------------- |
+| `dry_run`              | `false`      | Boolean: `true` forces a dry run; `false` leaves `config` to decide                 |
+| `slack_channel`        |              | Slack channel ID; empty disables Slack                                              |
+| `slack_when`           | `activity`   | Post the digest `always`, on `activity` (any PR processed), on `attention` or never |
+| `fail_on_merge_errors` | `false`      | Fail the run when PRs end failed or blocked; the digest reports them either way     |
+| `environment`          | (required)   | Protected environment in the caller that gates the job and holds the merge token    |
+| `timeout_minutes`      | `60`         | Job timeout                                                                         |
+| `egress_allow_config`  | org list     | Merge job's harden-runner egress allow-list coordinate, pinned; leave unchanged     |
+
+<!-- markdownlint-enable MD013 -->
+
+Its secrets are `DEPENDAMERGE_TOKEN`, able to approve and merge across the
+target, and `SLACK_BOT_TOKEN`. Without a Slack token the run still merges and
+reports to its step summary, with a warning. A scheduled run that fails before
+posting its digest (a bad merge token or configuration, or an environment gate
+that rejected or never approved the job) posts a failure notice instead. The
+notice job runs outside the environment, so the gate that stopped the run
+cannot stop the notice too. It reads the `SLACK_BOT_TOKEN` the caller passes:
+store that token where the caller can map it (a repository or organisation
+secret) as well as in any environment. It holds no merge token, and keeps the
+pinned default allow-list, which admits Slack, so a broken
+`egress_allow_config` cannot silence it. A digest Slack itself refuses (a
+revoked token, a channel the bot cannot post to) fails the run but sends no
+notice, since Slack would refuse the notice the same way; watch for the failed
+run. A digest that fails for any other reason, such as a connection a custom
+`egress_allow_config` blocks, still gets the notice. Outputs `merged`, `failed`,
+`blocked`, `exit_code` and `digest_posted` describe the run; in a dry run the
+counts are predictions. The workflow fetches its action through `$/`, so the
+commit you pin decides the workflow, the action and the tool together, and
+Dependabot's `github-actions` ecosystem moves all three at once.
+
+One run per calling workflow proceeds at a time; a run that starts while
+another is still merging waits for it.
+
 ## Authentication
 
 Dependamerge supports both GitHub and Gerrit platforms, each with different

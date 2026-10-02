@@ -20,6 +20,7 @@ on:
       - 'pyproject.toml'
       - 'uv.lock'
       - '.github/workflows/testing.yaml'
+      - '.github/workflows/dependamerge.yaml'
   pull_request:
     types: [opened, reopened, synchronize]
     branches: ['main']
@@ -30,6 +31,7 @@ on:
       - 'pyproject.toml'
       - 'uv.lock'
       - '.github/workflows/testing.yaml'
+      - '.github/workflows/dependamerge.yaml'
 
 concurrency:
   group: "${{ github.workflow }}-${{ github.ref }}"
@@ -351,3 +353,44 @@ jobs:
           fail() { echo "::error::$1"; exit 1; }
           [ "${OUTCOME}" = 'failure' ] || fail 'the step did not fail'
           [ -z "${EXIT_CODE}" ] || fail 'dependamerge ran'
+
+  reusable-workflow:
+    name: 'Reusable workflow (dry run)'
+    permissions:
+      contents: read  # The reusable workflow fetches the action.
+    uses: $/.github/workflows/dependamerge.yaml
+    with:
+      target: '${{ github.repository }}'
+      dry_run: true
+      # This repository's environment for live dry-run tests.
+      environment: 'integration'
+      timeout_minutes: 15
+      # A channel but no Slack token: the action builds the digest, and
+      # the workflow takes its missing-token path rather than posting.
+      slack_channel: 'C0000000000'
+      slack_when: 'always'
+    secrets:
+      DEPENDAMERGE_TOKEN: '${{ secrets.GITHUB_TOKEN }}'
+
+  reusable-workflow-outputs:
+    name: 'Reusable workflow outputs'
+    needs: ['reusable-workflow']
+    runs-on: 'ubuntu-latest'
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: 'Expect a clean dry run'
+        shell: bash
+        env:
+          EXIT_CODE: '${{ needs.reusable-workflow.outputs.exit_code }}'
+          MERGED: '${{ needs.reusable-workflow.outputs.merged }}'
+          POSTED: '${{ needs.reusable-workflow.outputs.digest_posted }}'
+        run: |
+          # Expect a clean dry run
+          set -euo pipefail
+          echo "exit_code=${EXIT_CODE} merged=${MERGED} posted=${POSTED}"
+          fail() { echo "::error::$1"; exit 1; }
+          [ "${EXIT_CODE}" = '0' ] || fail "exit code ${EXIT_CODE}"
+          [[ "${MERGED}" =~ ^[0-9]+$ ]] || fail 'no counts'
+          # Without a Slack token nothing is posted, and the run succeeds.
+          [ "${POSTED}" = 'false' ] || fail 'a digest was posted'

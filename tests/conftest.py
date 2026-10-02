@@ -172,6 +172,20 @@ def _reset_github_host_override(monkeypatch):
     set_gerrit_host(None)
 
 
+@pytest.fixture(autouse=True)
+def _detach_from_github_actions(monkeypatch):
+    """Run every test as if outside GitHub Actions.
+
+    Under Actions a merge run writes a results file and appends its path
+    to ``GITHUB_OUTPUT``.  The suite itself runs under Actions in CI, so
+    without this every CLI test there would write into the CI job's own
+    step outputs, and behave differently from the same test run locally.
+    Tests of that behaviour set the variables explicitly.
+    """
+    for name in ("GITHUB_ACTIONS", "GITHUB_OUTPUT", "GITHUB_STEP_SUMMARY"):
+        monkeypatch.delenv(name, raising=False)
+
+
 def make_merge_manager(**overrides: Any) -> tuple[AsyncMergeManager, AsyncMock]:
     """Build an ``AsyncMergeManager`` with a pre-injected ``AsyncMock`` client.
 

@@ -395,6 +395,7 @@ def merge(
     if target.org is not None:
         org = target.org
         ctx.pr_url = org.original_url
+        ctx.scope = "owner"
         _run_guarded(
             ctx,
             "\u274c Error during owner-wide merge operation",
@@ -405,6 +406,7 @@ def merge(
     if target.repo is not None:
         repo = target.repo
         ctx.pr_url = repo.original_url
+        ctx.scope = "repository"
         _run_guarded(
             ctx,
             "\u274c Error during repository merge operation",
@@ -414,6 +416,7 @@ def merge(
 
     assert target.url is not None
     ctx.pr_url = target.url.original_url
+    ctx.scope = "pull_request"
     _run_guarded(
         ctx,
         "\u274c Error during merge operation",

@@ -27,7 +27,8 @@ from ..progress_tracker import MergeProgressTracker
 from ._app import console
 from ._context import _MergeContext
 from ._merge_report import (
-    _exit_if_any_failed,
+    _conclude_run,
+    _confirmed_run_results,
     _print_failed_pr_details,
     _print_final_merge_summary,
 )
@@ -52,6 +53,7 @@ def _handle_repo_preview_confirmation(
 
     if merged_count == 0:
         console.print("\n\U0001f4a1 No PRs are mergeable at this time.")
+        _conclude_run(ctx, merge_results, preview=True)
         return
 
     # Generate a confirmation token from the repo context
@@ -70,12 +72,16 @@ def _handle_repo_preview_confirmation(
 
         if user_input == confirm_hash:
             _execute_repo_confirmed_merge(ctx, merge_results, all_prs_to_merge)
-        elif user_input == "":
+            return
+        if user_input == "":
             console.print("❌ Merge cancelled by user.")
         else:
             console.print("❌ Invalid input. Merge cancelled.")
     except (KeyboardInterrupt, EOFError, typer.Abort):
         console.print("\n❌ Merge cancelled by user.")
+    # Not confirmed (an unattended step reaches here on EOF): the preview
+    # is this run's result.
+    _conclude_run(ctx, merge_results, preview=True)
 
 
 def _execute_repo_confirmed_merge(
@@ -116,4 +122,9 @@ def _execute_repo_confirmed_merge(
             ctx.progress_tracker.stop()
 
     _print_final_merge_summary(real_results)
-    _exit_if_any_failed(real_results)
+    _conclude_run(
+        ctx,
+        _confirmed_run_results(preview_results, real_results),
+        preview=False,
+        attempted=real_results,
+    )

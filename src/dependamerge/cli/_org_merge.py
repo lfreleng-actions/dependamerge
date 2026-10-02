@@ -33,8 +33,8 @@ from ._context import _MergeContext
 from ._merge_order import _owner_merge_order, _print_prs_grouped_by_repo
 from ._merge_permissions import _maybe_check_merge_permissions
 from ._merge_report import (
+    _conclude_run,
     _display_merge_results,
-    _exit_if_any_failed,
 )
 from ._org_confirm import _handle_org_preview_confirmation
 
@@ -325,14 +325,18 @@ def _handle_org_merge(
     _init_org_merge_client(parsed_org, ctx)
 
     only_automation = not ctx.include_human_prs
-    owner_prs, _scan_errors = _fetch_owner_prs(
+    owner_prs, ctx.scan_errors = _fetch_owner_prs(
         parsed_org, ctx, only_automation=only_automation
     )
     _require_selection_matched(parsed_org, ctx)
 
+    # Without --no-confirm the first pass is a preview (evaluation) run.
+    preview_run = ctx.dry_run or not ctx.no_confirm
+
     if not owner_prs:
         label = "automation " if only_automation else ""
         console.print(f"❌ No open {label}PRs found in {parsed_org.owner}")
+        _conclude_run(ctx, [], preview=preview_run)
         return
 
     # Order for striped merging: repositories with the most PRs first,
@@ -346,6 +350,9 @@ def _handle_org_merge(
         ctx, parsed_org, owner_prs, automation_prs, human_prs
     )
     if selected is None:
+        # Declined, cancelled or left with nothing to merge: still a
+        # finished run, so it leaves a record like any other.
+        _conclude_run(ctx, [], preview=preview_run)
         return
     owner_prs = selected
 
@@ -378,16 +385,15 @@ def _handle_org_merge(
     final_distinct_repos = {pr.repository_full_name for pr in owner_prs}
     ctx.merge_concurrency = min(10, len(final_distinct_repos)) or 1
 
-    # Without --no-confirm this first pass is a preview (evaluation)
-    # run — label the tracker accordingly so its counters ("Mergeable")
-    # don't claim merges that never happened.
-    preview_run = ctx.dry_run or not ctx.no_confirm
+    # Label the tracker by pass type so its counters ("Mergeable") don't
+    # claim merges that never happened.
     merge_results = _run_owner_merge_pass(
         ctx, parsed_org, all_prs_to_merge, preview_run=preview_run
     )
 
     if not merge_results:
         console.print("❌ No PRs were processed")
+        _conclude_run(ctx, [], preview=preview_run)
         return
 
     merged_count = sum(1 for r in merge_results if r.status.value == "merged")
@@ -395,6 +401,7 @@ def _handle_org_merge(
     # Dry run: report the preview and stop before any prompt or merge.
     if ctx.dry_run:
         _display_merge_results(merge_results, no_confirm=False)
+        _conclude_run(ctx, merge_results, preview=True)
         return
 
     if not ctx.no_confirm:
@@ -409,4 +416,4 @@ def _handle_org_merge(
         return
 
     _display_merge_results(merge_results, ctx.no_confirm)
-    _exit_if_any_failed(merge_results)
+    _conclude_run(ctx, merge_results, preview=False)

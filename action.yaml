@@ -1,0 +1,465 @@
+---
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+
+name: "🤖 Dependamerge"
+description: >-
+  Bulk approve and merge automation pull requests across a GitHub owner,
+  repository or similar-PR set
+
+inputs:
+  target:
+    description: >-
+      What to merge: an owner (organisation or user), owner/repo, or a
+      pull request URL
+    required: true
+  token:
+    # Write access is needed to approve and merge; a dry run needs read
+    # access alone. The value reaches dependamerge through the
+    # environment, never on its command line.
+    description: >-
+      GitHub token able to approve and merge in the target (read access
+      suffices for a dry run)
+    required: false
+    default: "${{ github.token }}"
+  dry_run:
+    description: "Preview only: assess every PR, merge nothing"
+    required: false
+    default: "false"
+  include_repos:
+    description: >-
+      Owner-wide only: act on these repositories alone (comma, space or
+      newline separated)
+    required: false
+    default: ""
+  exclude_repos:
+    description: >-
+      Owner-wide only: act on every repository except these (comma, space
+      or newline separated)
+    required: false
+    default: ""
+  merge_method:
+    description: "merge, squash or rebase"
+    required: false
+    default: "merge"
+  force:
+    description: "Override level: none, code-owners, protection-rules or all"
+    required: false
+    default: "code-owners"
+  max_wait:
+    description: >-
+      Owner-wide only: wall-clock ceiling in seconds for the whole run
+      (0 arms auto-merge and returns)
+    required: false
+    default: "900"
+  fix_out_of_date:
+    description: "Bring behind PRs up to date before merging"
+    required: false
+    default: "true"
+  dismiss_copilot:
+    description: "Dismiss unresolved GitHub Copilot review comments"
+    required: false
+    default: "false"
+  fail_on_merge_errors:
+    # A run with PRs left failed or blocked exits 7. Set false when a
+    # later step (a Slack digest, say) reports them instead.
+    description: "Fail the step when any PR is left failed or blocked"
+    required: false
+    default: "true"
+  source_sha:
+    # For a reusable workflow that checks this action out at its own
+    # commit: the runner then cannot report which release it is.
+    description: >-
+      Commit this action's source came from, for version reporting;
+      leave empty
+    required: false
+    default: ""
+  source_repository:
+    description: >-
+      Repository this action's source came from (owner/name), for version
+      reporting; leave empty
+    required: false
+    default: ""
+
+outputs:
+  version:
+    description: "The dependamerge version that ran"
+    value: ${{ steps.version.outputs.version }}
+  exit_code:
+    description: "dependamerge's exit code (7: PRs left failed or blocked)"
+    value: ${{ steps.run.outputs.exit_code }}
+  total:
+    description: "Pull requests assessed or merged"
+    value: ${{ steps.summary.outputs.total }}
+  merged:
+    description: "Pull requests merged (or, in a dry run, mergeable)"
+    value: ${{ steps.summary.outputs.merged }}
+  auto_merge_pending:
+    description: "Pull requests left with auto-merge armed"
+    value: ${{ steps.summary.outputs.auto_merge_pending }}
+  failed:
+    description: "Pull requests that failed to merge"
+    value: ${{ steps.summary.outputs.failed }}
+  blocked:
+    description: "Pull requests that will not merge on their own"
+    value: ${{ steps.summary.outputs.blocked }}
+  unsettled:
+    description: "Pull requests expected to merge on a re-run"
+    value: ${{ steps.summary.outputs.unsettled }}
+  skipped:
+    description: "Pull requests skipped"
+    value: ${{ steps.summary.outputs.skipped }}
+  closed:
+    description: "Pull requests closed without merging"
+    value: ${{ steps.summary.outputs.closed }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: "Set up uv"
+      # yamllint disable-line rule:line-length
+      uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+      # No step sees a token it does not use: tokens inherited from the
+      # caller's job are masked here, as on every step below. So are
+      # BASH_ENV, which bash sources before a step's first line, and
+      # SHELLOPTS, which could switch on xtrace and log the token.
+      env:
+        GITHUB_TOKEN: ""
+        GH_TOKEN: ""
+        BASH_ENV: ""
+        SHELLOPTS: ""
+      with:
+        # An exact uv, so the commit a caller pins decides the uv that
+        # runs too. Left unset, setup-uv reads a version from the
+        # caller's workspace or installs the latest release.
+        version: "0.12.21"
+        working-directory: ${{ github.action_path }}
+        # Only a download from github.com would use it; the default is
+        # the Astral mirror.
+        github-token: ""
+        # The project lives in the action's directory, not the caller's
+        # workspace, and a shared cache is a poisoning risk for a step
+        # holding a write token.
+        enable-cache: false
+        ignore-empty-workdir: true
+
+    - name: "Resolve dependamerge version"
+      id: version
+      shell: bash
+      env:
+        GITHUB_TOKEN: ""
+        GH_TOKEN: ""
+        BASH_ENV: ""
+        SHELLOPTS: ""
+        # Read through env: the documented way to see the composite
+        # action's own ref rather than the step's.
+        ACTION_REF: ${{ github.action_ref }}
+        ACTION_REPOSITORY: ${{ github.action_repository }}
+        INPUT_SOURCE_SHA: ${{ inputs.source_sha }}
+        INPUT_SOURCE_REPOSITORY: ${{ inputs.source_repository }}
+      run: |
+        # Resolve dependamerge version
+        set -euo pipefail
+        # The runner fetches an action without .git, so hatch-vcs cannot
+        # see a tag. Resolve the release from the commit a reusable
+        # workflow passes, or else the ref the action was fetched at.
+        resolver="$GITHUB_ACTION_PATH/scripts/action_version.py"
+        repository="${INPUT_SOURCE_REPOSITORY:-$ACTION_REPOSITORY}"
+        repository="${repository:-$GITHUB_REPOSITORY}"
+        sha="$INPUT_SOURCE_SHA"
+        if [ -z "$sha" ] && [ -z "$ACTION_REF" ] && \
+            [ "$repository" = "$GITHUB_REPOSITORY" ]; then
+          # A self-repository action ('$/') runs from the workflow's own
+          # commit, and the runner gives it no ref of its own.
+          sha="$GITHUB_SHA"
+        fi
+        # The workflow's own server first, then github.com: an Enterprise
+        # runner may fetch this action from github.com. Each value is
+        # joined to its option, so one that looks like an option (an
+        # input of '--help', say) stays data.
+        version="$(uv run --no-project --quiet "$resolver" \
+          --ref="$ACTION_REF" --sha="$sha" \
+          --repository-url="$GITHUB_SERVER_URL/$repository.git" \
+          --repository-url="https://github.com/$repository.git")"
+        echo "version=$version" >> "$GITHUB_OUTPUT"
+        echo "dependamerge version: $version"
+
+    - name: "Validate inputs"
+      shell: bash
+      env:
+        GITHUB_TOKEN: ""
+        GH_TOKEN: ""
+        BASH_ENV: ""
+        SHELLOPTS: ""
+        INPUT_DRY_RUN: ${{ inputs.dry_run }}
+        INPUT_FIX_OUT_OF_DATE: ${{ inputs.fix_out_of_date }}
+        INPUT_DISMISS_COPILOT: ${{ inputs.dismiss_copilot }}
+        INPUT_FAIL_ON_MERGE_ERRORS: ${{ inputs.fail_on_merge_errors }}
+        INPUT_MERGE_METHOD: ${{ inputs.merge_method }}
+        INPUT_MAX_WAIT: ${{ inputs.max_wait }}
+        INPUT_TARGET: ${{ inputs.target }}
+        INPUT_FORCE: ${{ inputs.force }}
+      run: |
+        # Validate inputs
+        # A boolean input is exactly true or false, and an enumerated one
+        # one of its values. Anything else stops the run: a typo such as
+        # 'ture' must not turn a dry run live, nor 'squahs' let the merge
+        # fall back to another method. Values are not echoed back: they
+        # could forge a workflow command.
+        status=0
+        check() {
+          case "$2" in
+            true|false) ;;
+            *) echo "::error::$1 must be true or false"; status=2 ;;
+          esac
+        }
+        check dry_run "$INPUT_DRY_RUN"
+        check fix_out_of_date "$INPUT_FIX_OUT_OF_DATE"
+        check dismiss_copilot "$INPUT_DISMISS_COPILOT"
+        check fail_on_merge_errors "$INPUT_FAIL_ON_MERGE_ERRORS"
+        # An empty target would make the CLI fall back to the checked-out
+        # repository; an option-shaped one such as '--include-human-prs'
+        # would switch on behaviour this action does not expose.
+        if [ -z "${INPUT_TARGET//[[:space:]]/}" ]; then
+          echo "::error::target is required"
+          status=2
+        fi
+        # A line break would let the target forge a workflow command when
+        # an error message quotes it.
+        if [[ "$INPUT_TARGET" == *$'\n'* || "$INPUT_TARGET" == *$'\r'* ]]; then
+          echo "::error::target must be a single line"
+          status=2
+        fi
+        case "$INPUT_FORCE" in
+          none|code-owners|protection-rules|all) ;;
+          *)
+            echo "::error::force must be none, code-owners," \
+              "protection-rules or all"
+            status=2
+            ;;
+        esac
+        # The CLI strips surrounding blanks, which could hide a leading '-'
+        # or '//' from the checks below, so they read the stripped value.
+        target="${INPUT_TARGET#"${INPUT_TARGET%%[![:space:]]*}"}"
+        case "$target" in
+          -*)
+            echo "::error::target must name an owner, repository or PR"
+            status=2
+            ;;
+        esac
+        # Linux and macOS runners only: the Windows path is untested.
+        if [ "$RUNNER_OS" = "Windows" ]; then
+          echo "::error::this action runs on Linux and macOS runners"
+          status=2
+        fi
+        # The token goes to the server running this workflow and nowhere
+        # else, so a target naming another host is refused. The test is
+        # the CLI's own: a target names a host when it starts with a
+        # scheme or '//', or when its first segment holds a dot or a
+        # colon, which no login or repository name has
+        # ('ghe.example.com/acme', 'git@host:acme/widget.git').
+        # Shorthand resolves to the pinned server.
+        lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+        server="$(lower "${GITHUB_SERVER_URL#*://}")"
+        scheme_re='^[A-Za-z][A-Za-z0-9+.-]*://'
+        named=''
+        if [[ "$target" =~ $scheme_re ]]; then
+          named="${target#*://}"
+        elif [[ "$target" == //* ]]; then
+          named="${target#//}"
+        elif [[ "${target%%/*}" == *[.:]* ]]; then
+          named="$target"
+        fi
+        if [ -n "$named" ]; then
+          # The authority ends at the first '/', '?' or '#': an '@' after
+          # it belongs to the path, query or fragment, not to userinfo.
+          named="${named%%[/?#]*}"
+          named="${named##*@}"
+          named="$(lower "${named%%:*}")"
+          if [ "$named" != "$server" ]; then
+            echo "::error::target must be on the GitHub server running" \
+              "this workflow"
+            status=2
+          fi
+        fi
+        case "$INPUT_MERGE_METHOD" in
+          merge|squash|rebase) ;;
+          *)
+            echo "::error::merge_method must be merge, squash or rebase"
+            status=2
+            ;;
+        esac
+        # Plain decimal seconds only: no sign, exponent, NaN or infinity,
+        # any of which could remove the run's wall-clock ceiling. At most
+        # nine whole digits (over 31 years): a longer value would parse
+        # as infinity in the CLI.
+        if [[ ! "$INPUT_MAX_WAIT" =~ ^[0-9]{1,9}(\.[0-9]{1,6})?$ ]]; then
+          echo "::error::max_wait must be 0 or a positive number of seconds"
+          status=2
+        fi
+        exit "$status"
+
+    - name: "Run dependamerge"
+      id: run
+      shell: bash
+      env:
+        GITHUB_TOKEN: ""
+        GH_TOKEN: ""
+        BASH_ENV: ""
+        SHELLOPTS: ""
+        # Not GITHUB_TOKEN: the run below holds it in an unexported
+        # variable and hands it to the dependamerge process alone.
+        MERGE_TOKEN: ${{ inputs.token }}
+        # hatch-vcs would otherwise read the version from git, which the
+        # action's copy lacks.
+        SETUPTOOLS_SCM_PRETEND_VERSION: ${{ steps.version.outputs.version }}
+        INPUT_TARGET: ${{ inputs.target }}
+        INPUT_DRY_RUN: ${{ inputs.dry_run }}
+        INPUT_INCLUDE_REPOS: ${{ inputs.include_repos }}
+        INPUT_EXCLUDE_REPOS: ${{ inputs.exclude_repos }}
+        INPUT_MERGE_METHOD: ${{ inputs.merge_method }}
+        INPUT_FORCE: ${{ inputs.force }}
+        INPUT_MAX_WAIT: ${{ inputs.max_wait }}
+        INPUT_FIX_OUT_OF_DATE: ${{ inputs.fix_out_of_date }}
+        INPUT_DISMISS_COPILOT: ${{ inputs.dismiss_copilot }}
+      run: |
+        # Run dependamerge
+        set -euo pipefail
+        # The merge token reaches the dependamerge process and nothing
+        # else: not uv, the build backend or any install hook. The
+        # variable holding it must not be exported: a 'token' the
+        # caller's job exported keeps that attribute when assigned, and
+        # allexport would export even a fresh one, so the attribute is
+        # dropped explicitly before any tool runs.
+        unset -v token
+        token="$MERGE_TOKEN"
+        declare +x token
+        unset MERGE_TOKEN GITHUB_TOKEN GH_TOKEN
+        # Build the environment outside the action's directory and from
+        # its lock file, so the run uses the release's tested set of
+        # dependencies.
+        export UV_PROJECT_ENVIRONMENT="$RUNNER_TEMP/dependamerge-venv"
+
+        # GitHub only. Gerrit credentials inherited from the caller's
+        # environment or ~/.netrc are withheld, so a Gerrit target fails
+        # for want of credentials instead of submitting changes.
+        unset GERRIT_USERNAME GERRIT_PASSWORD GERRIT_HTTP_USER \
+          GERRIT_HTTP_PASSWORD
+
+        # Non-interactive by construction. GitHub2Gerrit PRs are skipped
+        # (and reported) because no Gerrit credentials reach this step.
+        # Local rebase needs no flag: dependamerge refuses it under
+        # Actions by itself.
+        args=(merge --no-confirm --no-progress)
+        args+=(--skip-gerrit-changes --no-netrc)
+        # Address the server running this workflow, always: host settings
+        # inherited from the caller's environment must not redirect the
+        # token or permit some other host.
+        unset DEPENDAMERGE_GITHUB_HOST DEPENDAMERGE_GITHUB_HOSTS GH_HOST
+        # Gerrit routing declarations too: one naming this GitHub host
+        # would make every target ambiguous and refused.
+        unset DEPENDAMERGE_GERRIT_HOST DEPENDAMERGE_GERRIT_HOSTS
+        args+=(--github-host "${GITHUB_SERVER_URL#*://}")
+        args+=(--merge-method "$INPUT_MERGE_METHOD" --force "$INPUT_FORCE")
+        args+=(--max-wait "$INPUT_MAX_WAIT")
+        if [ "$INPUT_DRY_RUN" = "true" ]; then
+          args+=(--dry-run)
+        fi
+        if [ -n "$INPUT_INCLUDE_REPOS" ]; then
+          args+=(--include-repos "$INPUT_INCLUDE_REPOS")
+        fi
+        if [ -n "$INPUT_EXCLUDE_REPOS" ]; then
+          args+=(--exclude-repos "$INPUT_EXCLUDE_REPOS")
+        fi
+        if [ "$INPUT_FIX_OUT_OF_DATE" = "false" ]; then
+          args+=(--no-fix)
+        fi
+        if [ "$INPUT_DISMISS_COPILOT" = "true" ]; then
+          args+=(--dismiss-copilot)
+        fi
+
+        # Keep going on failure: the summary step still has to render
+        # the results, and the last step applies the exit code. The
+        # target follows '--', so it can only ever be read as a target.
+        args+=(-- "$INPUT_TARGET")
+        status=0
+        # The build backend comes from the lock too. uv does not lock
+        # [build-system] requires, so an isolated build would fetch the
+        # newest hatchling at every run; instead the 'build' group
+        # installs it from uv.lock, and dependamerge alone builds
+        # without isolation, against that locked backend. Non-editable,
+        # as the action never edits its copy: an editable build needs
+        # tooling that isolation would otherwise have fetched. Built and
+        # installed first, without the token; then the installed command
+        # runs directly, so uv never sees the token either.
+        uv_args=(--project "$GITHUB_ACTION_PATH" --locked --no-dev
+          --group build --no-editable --quiet)
+        uv sync "${uv_args[@]}" --no-install-project
+        uv sync "${uv_args[@]}" --no-build-isolation-package dependamerge
+        GITHUB_TOKEN="$token" "$UV_PROJECT_ENVIRONMENT/bin/dependamerge" \
+          "${args[@]}" || status=$?
+        echo "exit_code=$status" >> "$GITHUB_OUTPUT"
+
+    - name: "Summarise results"
+      id: summary
+      if: always()
+      shell: bash
+      env:
+        GITHUB_TOKEN: ""
+        GH_TOKEN: ""
+        BASH_ENV: ""
+        SHELLOPTS: ""
+        RESULTS_FILE: ${{ steps.run.outputs.results_file }}
+      run: |
+        # Summarise results
+        set -euo pipefail
+        if [ -z "$RESULTS_FILE" ]; then
+          echo "No results file: dependamerge stopped before reporting"
+          exit 0
+        fi
+        # Remove the results file however this step ends.
+        trap 'rm -f -- "$RESULTS_FILE"' EXIT
+        # The run step built this environment; calling its interpreter
+        # directly avoids a second resolution (and a rebuild).
+        # Validation refuses Windows runners, so the layout is Unix's.
+        python="$RUNNER_TEMP/dependamerge-venv/bin/python"
+        "$python" -m dependamerge.ci_report markdown "$RESULTS_FILE" \
+          >> "$GITHUB_STEP_SUMMARY"
+        "$python" -m dependamerge.ci_report outputs "$RESULTS_FILE" \
+          >> "$GITHUB_OUTPUT"
+
+    - name: "Apply exit code"
+      # Not when validation stopped the run: that step has already said
+      # why, and "did not run" here would only repeat it.
+      if: always() && steps.run.outcome != 'skipped'
+      shell: bash
+      env:
+        GITHUB_TOKEN: ""
+        GH_TOKEN: ""
+        BASH_ENV: ""
+        SHELLOPTS: ""
+        EXIT_CODE: ${{ steps.run.outputs.exit_code }}
+        FAIL_ON_MERGE_ERRORS: ${{ inputs.fail_on_merge_errors }}
+      run: |
+        # Apply exit code
+        case "$EXIT_CODE" in
+          0)
+            ;;
+          7)
+            msg="dependamerge left pull requests failed or blocked"
+            msg="${msg}; see the step summary"
+            if [ "$FAIL_ON_MERGE_ERRORS" = "true" ]; then
+              echo "::error::${msg}"
+              exit 7
+            fi
+            echo "::warning::${msg}"
+            ;;
+          "")
+            echo "::error::dependamerge did not run"
+            exit 1
+            ;;
+          *)
+            echo "::error::dependamerge exited with code ${EXIT_CODE}"
+            exit "$EXIT_CODE"
+            ;;
+        esac

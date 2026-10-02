@@ -103,6 +103,15 @@ dev = [
   "mypy>=1.19.1",
   "types-requests>=2.32.4.20260107",
 ]
+# The build backend, mirroring [build-system] requires (keep the two in
+# step; tests/test_build_lock.py checks). uv does not lock build-system
+# requirements, so the composite action installs this group from
+# uv.lock and builds without isolation: the pinned commit and its lock
+# then decide the build code too, not whichever release is newest.
+build = [
+  "hatchling>=1.24",
+  "hatch-vcs>=0.4",
+]
 
 [tool.pytest.ini_options]
 testpaths = [

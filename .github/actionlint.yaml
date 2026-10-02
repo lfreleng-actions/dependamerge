@@ -16,3 +16,9 @@ paths:
       # runs. The closing quote sits immediately after '$/', so a
       # malformed form such as '$//' is still reported.
       - 'specifying action "\$/" in invalid format because path is missing'
+
+  .github/workflows/dependamerge.yaml:
+    ignore:
+      # As for testing.yaml: the reusable workflow runs the action at
+      # the repository root through a bare '$/'.
+      - 'specifying action "\$/" in invalid format because path is missing'

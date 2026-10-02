@@ -8,11 +8,21 @@ description: >-
   repository or similar-PR set
 
 inputs:
+  # The merge options below default to empty, meaning "not set": an
+  # unset option takes its value from config, else from the default
+  # named in its description.
+  config:
+    description: >-
+      JSON object of merge options, keyed by input name (e.g. a repository
+      or organisation variable); explicit inputs override it
+    required: false
+    default: ""
   target:
     description: >-
       What to merge: an owner (organisation or user), owner/repo, or a
-      pull request URL
-    required: true
+      pull request URL. Required, here or in config
+    required: false
+    default: ""
   token:
     # Write access is needed to approve and merge; a dry run needs read
     # access alone. The value reaches dependamerge through the
@@ -23,9 +33,9 @@ inputs:
     required: false
     default: "${{ github.token }}"
   dry_run:
-    description: "Preview only: assess every PR, merge nothing"
+    description: "Preview only: assess every PR, merge nothing (default false)"
     required: false
-    default: "false"
+    default: ""
   include_repos:
     description: >-
       Owner-wide only: act on these repositories alone (comma, space or
@@ -39,27 +49,30 @@ inputs:
     required: false
     default: ""
   merge_method:
-    description: "merge, squash or rebase"
+    description: "merge, squash or rebase (default merge)"
     required: false
-    default: "merge"
+    default: ""
   force:
-    description: "Override level: none, code-owners, protection-rules or all"
+    description: >-
+      Override level: none, code-owners, protection-rules or all (default
+      code-owners)
     required: false
-    default: "code-owners"
+    default: ""
   max_wait:
     description: >-
       Owner-wide only: wall-clock ceiling in seconds for the whole run
-      (0 arms auto-merge and returns)
+      (0 arms auto-merge and returns; default 900)
     required: false
-    default: "900"
+    default: ""
   fix_out_of_date:
-    description: "Bring behind PRs up to date before merging"
+    description: "Bring behind PRs up to date before merging (default true)"
     required: false
-    default: "true"
+    default: ""
   dismiss_copilot:
-    description: "Dismiss unresolved GitHub Copilot review comments"
+    description: >-
+      Dismiss unresolved GitHub Copilot review comments (default false)
     required: false
-    default: "false"
+    default: ""
   fail_on_merge_errors:
     # A run with PRs left failed or blocked exits 7. Set false when a
     # later step (a Slack digest, say) reports them instead.
@@ -171,29 +184,39 @@ runs:
         echo "version=$version" >> "$GITHUB_OUTPUT"
         echo "dependamerge version: $version"
 
-    - name: "Validate inputs"
+    - name: "Resolve options"
+      id: options
       shell: bash
       env:
+        INPUT_CONFIG: ${{ inputs.config }}
+        INPUT_TARGET: ${{ inputs.target }}
         INPUT_DRY_RUN: ${{ inputs.dry_run }}
+        INPUT_INCLUDE_REPOS: ${{ inputs.include_repos }}
+        INPUT_EXCLUDE_REPOS: ${{ inputs.exclude_repos }}
+        INPUT_MERGE_METHOD: ${{ inputs.merge_method }}
+        INPUT_FORCE: ${{ inputs.force }}
+        INPUT_MAX_WAIT: ${{ inputs.max_wait }}
         INPUT_FIX_OUT_OF_DATE: ${{ inputs.fix_out_of_date }}
         INPUT_DISMISS_COPILOT: ${{ inputs.dismiss_copilot }}
         INPUT_FAIL_ON_MERGE_ERRORS: ${{ inputs.fail_on_merge_errors }}
       run: |
-        # Validate inputs
-        # A boolean input is exactly true or false. Anything else stops
-        # the run: a typo such as 'ture' must not turn a dry run live.
-        # The value is not echoed back: it could forge a workflow command.
+        # Resolve options
+        # Explicit inputs win over config, config over defaults; every
+        # value is validated and an unknown config key stops the run.
+        # A boolean is exactly true or false: a typo such as 'ture' must
+        # not turn a dry run live.
         status=0
-        check() {
-          case "$2" in
-            true|false) ;;
-            *) echo "::error::$1 must be true or false"; status=2 ;;
-          esac
-        }
-        check dry_run "$INPUT_DRY_RUN"
-        check fix_out_of_date "$INPUT_FIX_OUT_OF_DATE"
-        check dismiss_copilot "$INPUT_DISMISS_COPILOT"
-        check fail_on_merge_errors "$INPUT_FAIL_ON_MERGE_ERRORS"
+        uv run --no-project --quiet \
+          "$GITHUB_ACTION_PATH/scripts/action_config.py" || status=$?
+        # Not a merge option, so not in config; checked here alike, and
+        # not echoed back, since it could forge a workflow command.
+        case "$INPUT_FAIL_ON_MERGE_ERRORS" in
+          true|false) ;;
+          *)
+            echo "::error::fail_on_merge_errors must be true or false"
+            status=2
+            ;;
+        esac
         exit "$status"
 
     - name: "Run dependamerge"
@@ -204,15 +227,15 @@ runs:
         # hatch-vcs would otherwise read the version from git, which the
         # action's copy lacks.
         SETUPTOOLS_SCM_PRETEND_VERSION: ${{ steps.version.outputs.version }}
-        INPUT_TARGET: ${{ inputs.target }}
-        INPUT_DRY_RUN: ${{ inputs.dry_run }}
-        INPUT_INCLUDE_REPOS: ${{ inputs.include_repos }}
-        INPUT_EXCLUDE_REPOS: ${{ inputs.exclude_repos }}
-        INPUT_MERGE_METHOD: ${{ inputs.merge_method }}
-        INPUT_FORCE: ${{ inputs.force }}
-        INPUT_MAX_WAIT: ${{ inputs.max_wait }}
-        INPUT_FIX_OUT_OF_DATE: ${{ inputs.fix_out_of_date }}
-        INPUT_DISMISS_COPILOT: ${{ inputs.dismiss_copilot }}
+        OPT_TARGET: ${{ steps.options.outputs.target }}
+        OPT_DRY_RUN: ${{ steps.options.outputs.dry_run }}
+        OPT_INCLUDE_REPOS: ${{ steps.options.outputs.include_repos }}
+        OPT_EXCLUDE_REPOS: ${{ steps.options.outputs.exclude_repos }}
+        OPT_MERGE_METHOD: ${{ steps.options.outputs.merge_method }}
+        OPT_FORCE: ${{ steps.options.outputs.force }}
+        OPT_MAX_WAIT: ${{ steps.options.outputs.max_wait }}
+        OPT_FIX_OUT_OF_DATE: ${{ steps.options.outputs.fix_out_of_date }}
+        OPT_DISMISS_COPILOT: ${{ steps.options.outputs.dismiss_copilot }}
       run: |
         # Run dependamerge
         set -euo pipefail
@@ -225,23 +248,23 @@ runs:
         # (and reported) because no Gerrit credentials reach this step.
         # Local rebase needs no flag: dependamerge refuses it under
         # Actions by itself.
-        args=(merge "$INPUT_TARGET" --no-confirm --no-progress)
+        args=(merge "$OPT_TARGET" --no-confirm --no-progress)
         args+=(--skip-gerrit-changes)
-        args+=(--merge-method "$INPUT_MERGE_METHOD" --force "$INPUT_FORCE")
-        args+=(--max-wait "$INPUT_MAX_WAIT")
-        if [ "$INPUT_DRY_RUN" = "true" ]; then
+        args+=(--merge-method "$OPT_MERGE_METHOD" --force "$OPT_FORCE")
+        args+=(--max-wait "$OPT_MAX_WAIT")
+        if [ "$OPT_DRY_RUN" = "true" ]; then
           args+=(--dry-run)
         fi
-        if [ -n "$INPUT_INCLUDE_REPOS" ]; then
-          args+=(--include-repos "$INPUT_INCLUDE_REPOS")
+        if [ -n "$OPT_INCLUDE_REPOS" ]; then
+          args+=(--include-repos "$OPT_INCLUDE_REPOS")
         fi
-        if [ -n "$INPUT_EXCLUDE_REPOS" ]; then
-          args+=(--exclude-repos "$INPUT_EXCLUDE_REPOS")
+        if [ -n "$OPT_EXCLUDE_REPOS" ]; then
+          args+=(--exclude-repos "$OPT_EXCLUDE_REPOS")
         fi
-        if [ "$INPUT_FIX_OUT_OF_DATE" = "false" ]; then
+        if [ "$OPT_FIX_OUT_OF_DATE" = "false" ]; then
           args+=(--no-fix)
         fi
-        if [ "$INPUT_DISMISS_COPILOT" = "true" ]; then
+        if [ "$OPT_DISMISS_COPILOT" = "true" ]; then
           args+=(--dismiss-copilot)
         fi
 
@@ -284,9 +307,9 @@ runs:
         fi
 
     - name: "Apply exit code"
-      # Not when validation stopped the run: that step has already said
-      # why, and "did not run" here would only repeat it.
-      if: always() && steps.run.outcome != 'skipped'
+      # Not after an options error: that step already failed the run,
+      # and reporting "did not run" here would only repeat it.
+      if: always() && steps.options.outcome == 'success'
       shell: bash
       env:
         EXIT_CODE: ${{ steps.run.outputs.exit_code }}

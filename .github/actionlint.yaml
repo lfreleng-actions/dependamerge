@@ -1,0 +1,18 @@
+---
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+
+# Path-specific actionlint configuration, read by the kjanat/actionlint
+# fork pinned in .pre-commit-config.yaml.
+paths:
+  .github/workflows/testing.yaml:
+    ignore:
+      # GitHub's self-repository 'uses: $/...' syntax (July 2026) is what
+      # zizmor's self-repository audit asks for in place of './'. The
+      # fork understands '$/{path}' but rejects a bare '$/', because
+      # actions/runner's TryParseSelfRepository helper refuses an empty
+      # path. GitHub's workflow parser accepts it: an action at the
+      # repository root has no {path}, and a bare '$/' resolves and
+      # runs. The closing quote sits immediately after '$/', so a
+      # malformed form such as '$//' is still reported.
+      - 'specifying action "\$/" in invalid format because path is missing'

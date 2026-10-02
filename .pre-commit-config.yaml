@@ -104,9 +104,11 @@ repos:
 
   # Actively maintained fork of https://github.com/rhysd/actionlint
   # Unlike upstream, this fork understands GitHub's self-repository
-  # 'uses: $/{path}' syntax. Pinned to the commit v1.17.0 points at:
-  # the tag is annotated, so its own SHA names a tag object, not a
-  # commit.
+  # 'uses: $/{path}' syntax. A bare '$/' (the action at the repository
+  # root) is still rejected; .github/actionlint.yaml carries a
+  # path-scoped ignore for that case. Pinned to the commit v1.17.0
+  # points at: the tag is annotated, so its own SHA names a tag object,
+  # not a commit.
   - repo: https://github.com/kjanat/actionlint
     rev: 08bb2c4f0d039744455b87aef1c647fb8b66d37b  # frozen: v1.17.0
     hooks:

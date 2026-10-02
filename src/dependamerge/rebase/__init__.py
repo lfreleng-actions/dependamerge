@@ -82,7 +82,7 @@ from .decide import (
     authed_clone_url,
     should_use_local_rebase,
 )
-from .dispatch import perform_step5_rebase
+from .dispatch import LOCAL_REBASE_UNAVAILABLE, perform_step5_rebase
 from .local_rebase import local_rebase_pr
 from .paths import (
     _run_dependabot_macro_path,
@@ -98,6 +98,7 @@ from .polling import (
 
 __all__ = [
     "BaseRef",
+    "LOCAL_REBASE_UNAVAILABLE",
     "RebaseContext",
     "Step5Outcome",
     "_log_blocked_timeout",

@@ -22,17 +22,30 @@ The error handling system provides:
 
 Dependamerge uses semantic exit codes for different failure types:
 
-| Code | Name                | Description                         |
-| ---- | ------------------- | ----------------------------------- |
-| 0    | SUCCESS             | Operation completed                 |
-| 1    | GENERAL_ERROR       | General operational failure         |
-| 2    | CONFIGURATION_ERROR | Configuration validation failed     |
-| 3    | GITHUB_API_ERROR    | GitHub API access failed            |
-| 4    | NETWORK_ERROR       | Network connectivity issues         |
-| 5    | REPOSITORY_ERROR    | Git repository operation failed     |
-| 6    | PR_STATE_ERROR      | Pull request in invalid state       |
-| 7    | MERGE_ERROR         | Pull request merge operation failed |
-| 8    | VALIDATION_ERROR    | Input validation failed             |
+| Code | Name                | Description                                     |
+| ---- | ------------------- | ----------------------------------------------- |
+| 0    | SUCCESS             | Operation completed                             |
+| 1    | GENERAL_ERROR       | General operational failure                     |
+| 2    | CONFIGURATION_ERROR | Configuration validation failed                 |
+| 3    | GITHUB_API_ERROR    | GitHub API access failed                        |
+| 4    | NETWORK_ERROR       | Network connectivity issues                     |
+| 5    | REPOSITORY_ERROR    | Git repository operation failed                 |
+| 6    | PR_STATE_ERROR      | Pull request in invalid state                   |
+| 7    | MERGE_ERROR         | Pull requests or Gerrit changes left unmerged   |
+| 8    | VALIDATION_ERROR    | Input validation failed                         |
+
+### When a merge run exits 7
+
+A `merge` run that actually merges (`--no-confirm`, or a confirmed
+interactive run) exits `7` when any pull request or Gerrit change it
+attempted ends **failed** or **blocked**: those need a human. It prints
+the full summary first, so the exit code never replaces the detail.
+
+Other outcomes do not count as failures. An **unsettled** PR merges on
+a re-run, **auto-merge pending** completes on GitHub's side, and
+**skipped** or **closed** PRs leave nothing to follow up. A preview or
+`--dry-run` predicts outcomes rather than producing them, so it exits
+`0` whatever it predicts.
 
 ## Error Messages
 

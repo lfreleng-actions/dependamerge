@@ -942,7 +942,8 @@ dependamerge merge https://github.com/owner/repo/pull/123 \
 **General Options:**
 
 - `--no-confirm`: Skip confirmation prompt and merge without delay (default is
-  interactive mode)
+  interactive mode). A run that merges exits with code `7` when any PR ends
+  failed or blocked; see [exit codes](docs/error_handling.md#when-a-merge-run-exits-7)
 - `--dry-run`: Analyze and preview without making changes - never approve,
   merge, rebase, or close anything. Skips the write-permission pre-flight so it
   runs under a token without write access (e.g. in CI). Implies preview mode and

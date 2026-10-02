@@ -33,6 +33,7 @@ from ._merge_order import _repo_merge_order
 from ._merge_permissions import _maybe_check_merge_permissions
 from ._merge_report import (
     _display_merge_results,
+    _exit_if_any_failed,
 )
 from ._repo_confirm import _handle_repo_preview_confirmation
 
@@ -349,3 +350,4 @@ def _handle_repo_merge(
         return
 
     _display_merge_results(merge_results, ctx.no_confirm)
+    _exit_if_any_failed(merge_results)

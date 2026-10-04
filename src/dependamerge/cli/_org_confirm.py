@@ -30,6 +30,7 @@ from ..url_parser import (
 from ._app import console
 from ._context import _MergeContext
 from ._merge_report import (
+    _exit_if_any_failed,
     _print_failed_pr_details,
     _print_final_merge_summary,
 )
@@ -115,3 +116,4 @@ def _execute_org_confirmed_merge(
             ctx.progress_tracker.stop()
 
     _print_final_merge_summary(real_results)
+    _exit_if_any_failed(real_results)

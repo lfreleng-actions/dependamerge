@@ -18,6 +18,7 @@ from rich.console import Console
 # caller rather than only the module that bound the name.
 import dependamerge.cli as _pkg
 
+from ..error_codes import ExitCode
 from ..gerrit import (
     GerritAuthError,
     GerritChangeComparator,
@@ -167,6 +168,15 @@ def _run_gerrit_submission(
             progress_tracker.stop()
 
     _print_gerrit_final_summary(results, all_changes, console)
+
+    # As for a GitHub run: a change left unsubmitted needs a human, and
+    # an exit of 0 would tell a script or scheduled workflow otherwise.
+    failed = sum(1 for result in results if not result.success)
+    if failed:
+        code = int(ExitCode.MERGE_ERROR)
+        noun = "change" if failed == 1 else "changes"
+        console.print(f"\n❌ {failed} {noun} failed; exit code {code}")
+        raise typer.Exit(code=code)
 
 
 def _handle_gerrit_merge(

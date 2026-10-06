@@ -52,7 +52,7 @@ from ._merge_inputs import (
     _init_github_merge,
 )
 from ._merge_permissions import _maybe_check_merge_permissions
-from ._merge_report import _display_merge_results, _exit_if_any_failed
+from ._merge_report import _conclude_run, _display_merge_results
 from ._merge_scan import (
     _handle_preview_confirmation,
     _restart_merge_progress_tracker,
@@ -290,6 +290,7 @@ def _run_single_pr_merge(ctx: _MergeContext) -> None:
 
     if not merge_results:
         console.print("❌ No PRs were processed")
+        _conclude_run(ctx, [], preview=ctx.dry_run or not ctx.no_confirm)
         return
 
     merged_count = sum(1 for r in merge_results if r.status.value == "merged")
@@ -299,6 +300,7 @@ def _run_single_pr_merge(ctx: _MergeContext) -> None:
     # preview phrasing in the results summary.
     if ctx.dry_run:
         _display_merge_results(merge_results, no_confirm=False)
+        _conclude_run(ctx, merge_results, preview=True)
         return
 
     if not ctx.no_confirm:
@@ -312,4 +314,4 @@ def _run_single_pr_merge(ctx: _MergeContext) -> None:
         return
 
     _display_merge_results(merge_results, ctx.no_confirm)
-    _exit_if_any_failed(merge_results)
+    _conclude_run(ctx, merge_results, preview=False)

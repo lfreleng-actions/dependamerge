@@ -910,6 +910,41 @@ on each pull request, so it catches owner-resolution and command regressions
 before release. The integration suite self-skips when credentials or open
 automation PRs are absent, so it never fails on an empty target space.
 
+### Results Under GitHub Actions
+
+When `merge` runs as a GitHub Actions step (the runner sets
+`GITHUB_ACTIONS=true`), it also writes its results as JSON, with no flag
+needed. The file goes into `RUNNER_TEMP` under an unpredictable name,
+readable by its owner alone, and the step output `results_file` holds its
+path. Every GitHub run that reaches its results writes one, including a dry
+run and a run that found nothing to merge; a run that stops on an error
+first (a bad option, a token without the rights) does not.
+
+The document records the target, scope, any `--include-repos` or
+`--exclude-repos` selection, the count of each outcome, one entry per pull
+request (repository, number, title, URL, author, outcome and reason), and
+any repositories an owner-wide run could not scan. Render it as a step
+summary from a later step, mapping the output into the environment:
+
+```yaml
+      - name: Summarise
+        # Also after a failed merge (exit 7): dependamerge writes its
+        # results before exiting. Skipped when the run stopped earlier.
+        if: always() && steps.dependamerge.outputs.results_file != ''
+        env:
+          RESULTS_FILE: ${{ steps.dependamerge.outputs.results_file }}
+        run: |
+          python -m dependamerge.ci_report markdown "$RESULTS_FILE" \
+            >> "$GITHUB_STEP_SUMMARY"
+```
+
+The target in the document passes through the same redaction as any
+displayed target, so a credential in its userinfo, query or fragment never
+reaches the file or anything rendered from it.
+
+Outside GitHub Actions nothing changes. Gerrit runs do not write a results
+file.
+
 ### Custom Merge Options
 
 ```bash

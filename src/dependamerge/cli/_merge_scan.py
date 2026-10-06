@@ -27,7 +27,8 @@ from ..progress_tracker import MergeProgressTracker
 from ._app import MAX_RETRIES, console
 from ._context import _MergeContext
 from ._merge_report import (
-    _exit_if_any_failed,
+    _conclude_run,
+    _confirmed_run_results,
     _print_failed_pr_details,
     _print_final_merge_summary,
 )
@@ -242,6 +243,7 @@ def _handle_preview_confirmation(
 
     if merged_count == 0:
         console.print("\n\U0001f4a1 No PRs are mergeable at this time.")
+        _conclude_run(ctx, merge_results, preview=True)
         return
 
     commit_messages = ctx.github_client.get_pull_request_commits(
@@ -255,6 +257,7 @@ def _handle_preview_confirmation(
     try:
         if "pytest" in sys.modules or os.getenv("TESTING"):
             console.print("⚠️ Test mode detected - skipping interactive prompt")
+            _conclude_run(ctx, merge_results, preview=True)
             return
 
         user_input = input(
@@ -263,7 +266,8 @@ def _handle_preview_confirmation(
 
         if user_input == continue_sha_hash:
             _execute_confirmed_merge(ctx, merge_results, all_prs_to_merge)
-        elif user_input == "":
+            return
+        if user_input == "":
             console.print("❌ Merge cancelled by user.")
         else:
             console.print("❌ Invalid input. Merge cancelled.")
@@ -271,6 +275,9 @@ def _handle_preview_confirmation(
         console.print("\n❌ Merge cancelled by user.")
     except EOFError:
         console.print("\n❌ Merge cancelled.")
+    # Not confirmed (an unattended step reaches here on EOF): the preview
+    # is this run's result.
+    _conclude_run(ctx, merge_results, preview=True)
 
 
 def _execute_confirmed_merge(
@@ -294,4 +301,9 @@ def _execute_confirmed_merge(
             ctx.progress_tracker.stop()
 
     _print_final_merge_summary(real_results)
-    _exit_if_any_failed(real_results)
+    _conclude_run(
+        ctx,
+        _confirmed_run_results(preview_results, real_results),
+        preview=False,
+        attempted=real_results,
+    )

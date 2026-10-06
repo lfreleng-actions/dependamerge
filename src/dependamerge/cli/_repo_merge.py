@@ -32,8 +32,8 @@ from ._context import _MergeContext
 from ._merge_order import _repo_merge_order
 from ._merge_permissions import _maybe_check_merge_permissions
 from ._merge_report import (
+    _conclude_run,
     _display_merge_results,
-    _exit_if_any_failed,
 )
 from ._repo_confirm import _handle_repo_preview_confirmation
 
@@ -297,6 +297,7 @@ def _handle_repo_merge(
     if not repo_prs:
         label = "automation " if only_automation else ""
         console.print(f"❌ No open {label}PRs found in {parsed_repo.project}")
+        _conclude_run(ctx, [], preview=ctx.dry_run or not ctx.no_confirm)
         return
 
     # The GraphQL fetch returns PRs newest-first (CREATED_AT DESC), but
@@ -313,6 +314,9 @@ def _handle_repo_merge(
 
     selected = _confirm_repo_human_prs(ctx, repo_prs, automation_prs, human_prs)
     if selected is None:
+        # Declined, cancelled or left with nothing to merge: still a
+        # finished run, so it leaves a record like any other.
+        _conclude_run(ctx, [], preview=ctx.dry_run or not ctx.no_confirm)
         return
     repo_prs = selected
 
@@ -328,6 +332,7 @@ def _handle_repo_merge(
 
     if not merge_results:
         console.print("❌ No PRs were processed")
+        _conclude_run(ctx, [], preview=preview_run)
         return
 
     merged_count = sum(1 for r in merge_results if r.status.value == "merged")
@@ -335,6 +340,7 @@ def _handle_repo_merge(
     # Dry run: report the preview and stop before any prompt or merge.
     if ctx.dry_run:
         _display_merge_results(merge_results, no_confirm=False)
+        _conclude_run(ctx, merge_results, preview=True)
         return
 
     if not ctx.no_confirm:
@@ -350,4 +356,4 @@ def _handle_repo_merge(
         return
 
     _display_merge_results(merge_results, ctx.no_confirm)
-    _exit_if_any_failed(merge_results)
+    _conclude_run(ctx, merge_results, preview=False)

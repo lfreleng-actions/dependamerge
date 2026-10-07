@@ -7,6 +7,11 @@ The merge token is handed to the dependamerge process alone. Every
 other step, and any tool a step runs, must see no GitHub token: not the
 input, and not a GITHUB_TOKEN or GH_TOKEN the caller's job exports.
 Composite steps inherit the job's environment, so each step masks both.
+
+Which expressions a step may evaluate is an allowlist, not a search for
+token references: a blocklist misses whatever it did not foresee, such
+as ``toJSON(inputs)``, which serialises the token with every other
+input.
 """
 
 import json
@@ -14,6 +19,7 @@ import os
 import re
 import subprocess
 import sys
+from collections.abc import Collection
 from pathlib import Path
 from typing import Any
 
@@ -26,21 +32,34 @@ _TOKEN_VARIABLES = ("GITHUB_TOKEN", "GH_TOKEN")
 # Read by bash before a step's first line runs: BASH_ENV names a file it
 # sources, and SHELLOPTS can switch on xtrace, which would log the token.
 _SHELL_STARTUP_VARIABLES = ("BASH_ENV", "SHELLOPTS")
-# Every expression that yields a GitHub token: the token input, the
-# github context's token, or a token variable read back through env,
-# each in property or index form. Expressions are case-insensitive.
-_TOKEN_EXPRESSION = re.compile(
-    r"\b(?:inputs\s*(?:\.\s*token\b|\[\s*['\"]token['\"]\s*\])"
-    r"|github\s*(?:\.\s*token\b|\[\s*['\"]token['\"]\s*\])"
-    r"|env\s*(?:\.\s*(?:GITHUB_TOKEN|GH_TOKEN)\b"
-    r"|\[\s*['\"](?:GITHUB_TOKEN|GH_TOKEN)['\"]\s*\]))",
-    re.IGNORECASE,
+# The github context fields a step may read: none carries a credential.
+_GITHUB_FIELDS = frozenset(
+    {
+        "action_path",
+        "action_ref",
+        "action_repository",
+        "repository",
+        "run_id",
+        "server_url",
+    }
+)
+# A whole expression that is one plain property path; anything else (a
+# function call, an index, a bare context, another context) is refused.
+_PROPERTY_PATH = re.compile(
+    r"\A(?:inputs\.(?P<input>[a-z][a-z0-9_]*)"
+    r"|steps\.(?P<step>[a-z][a-z0-9_-]*)\.outputs\.(?P<output>[a-z][a-z0-9_]*)"
+    r"|github\.(?P<github>[a-z][a-z0-9_]*))\Z"
 )
 
 
 @pytest.fixture(scope="module")
-def steps() -> list[dict[str, Any]]:
-    action = yaml.safe_load(_ACTION.read_text(encoding="utf-8"))
+def action() -> dict[str, Any]:
+    loaded: dict[str, Any] = yaml.safe_load(_ACTION.read_text(encoding="utf-8"))
+    return loaded
+
+
+@pytest.fixture(scope="module")
+def steps(action) -> list[dict[str, Any]]:
     loaded: list[dict[str, Any]] = action["runs"]["steps"]
     return loaded
 
@@ -68,60 +87,114 @@ def _strings(node: Any) -> list[str]:
     return [node] if isinstance(node, str) else []
 
 
-def _token_expressions(step: dict[str, Any]) -> list[str]:
-    """Token-yielding expressions anywhere in the step: env, with, run."""
-    found: list[str] = []
-    for text in _strings(step):
-        for expression in re.findall(r"\$\{\{(.*?)\}\}", text, re.DOTALL):
-            found += _TOKEN_EXPRESSION.findall(expression)
+def _expressions(node: Any) -> list[str]:
+    """Every ``${{ }}`` expression in a parsed node: env, with and run."""
+    return [
+        expression.strip()
+        for text in _strings(node)
+        for expression in re.findall(r"\$\{\{(.*?)\}\}", text, re.DOTALL)
+    ]
+
+
+def _refusal(
+    expression: str, *, step: str, inputs: Collection[str], step_ids: Collection[str]
+) -> str | None:
+    """Why ``expression`` may not appear in ``step``, or None if it may."""
+    path = _PROPERTY_PATH.match(expression)
+    if path is None:
+        return "not a plain inputs, steps or github property"
+    if path["input"] is not None:
+        if path["input"] not in inputs:
+            return "names no declared input"
+        if path["input"] == "token" and step != "run":
+            return "the token input belongs to the run step alone"
+    elif path["step"] is not None:
+        if path["step"] not in step_ids:
+            return "names no step"
+    elif path["github"] not in _GITHUB_FIELDS:
+        return "is not an allowed github field"
+    return None
+
+
+def _refusals(action: dict[str, Any], steps: list[dict[str, Any]]) -> list[str]:
+    inputs = set(action["inputs"])
+    step_ids = {step["id"] for step in steps if "id" in step}
+    found = []
+    for step in steps:
+        for expression in _expressions(step):
+            reason = _refusal(
+                expression, step=_label(step), inputs=inputs, step_ids=step_ids
+            )
+            if reason:
+                found.append(f"{_label(step)}: {expression}: {reason}")
     return found
 
 
-def test_only_the_run_step_receives_a_token(steps) -> None:
-    # Blanking GITHUB_TOKEN and GH_TOKEN proves nothing if a step takes
-    # the token under another name (API_TOKEN: ${{ github.token }}) or
-    # through a 'with' input, so every expression in every step counts.
-    holders = {
-        _label(step): _token_expressions(step)
-        for step in steps
-        if _token_expressions(step)
-    }
-    assert holders == {"run": ["inputs.token"]}
+def test_every_step_expression_is_allowlisted(action, steps) -> None:
+    assert _refusals(action, steps) == []
+
+
+def test_the_run_step_alone_holds_the_token(steps) -> None:
+    holders = [_label(step) for step in steps if "inputs.token" in _expressions(step)]
+    assert holders == ["run"]
+
+
+def test_action_outputs_read_step_outputs_alone(action, steps) -> None:
+    # An output is handed to the caller, so one built from an input or
+    # a context could pass the token straight out of the action.
+    step_ids = {step["id"] for step in steps if "id" in step}
+    for name, output in action["outputs"].items():
+        (expression,) = _expressions(output["value"])
+        path = _PROPERTY_PATH.match(expression)
+        assert path is not None and path["step"] in step_ids, name
+
+
+_DECLARED = ("target", "token")
+_STEP_IDS = ("options",)
 
 
 @pytest.mark.parametrize(
     "expression",
     [
-        "${{ github.token }}",
-        "${{ GITHUB.TOKEN }}",
-        "${{ github['token'] }}",
-        "${{ inputs.token }}",
-        "${{ inputs['token'] }}",
-        "${{ env.GITHUB_TOKEN }}",
-        "${{ env['GITHUB_TOKEN'] }}",
-        "${{ env[ 'gh_token' ] }}",
-        "${{ format('{0}', github.token) }}",
-        # Both quote kinds in one value: a repr of the step would escape
-        # the single quotes and hide the index form.
-        "echo \"${{ github['token'] }}\"",
+        # Whole contexts, serialised or bare: each carries the token.
+        "toJSON(inputs)",
+        "toJSON(github)",
+        "inputs",
+        "github",
+        "join(inputs.*, ',')",
+        # The token itself, by any route.
+        "github.token",
+        "github['token']",
+        "inputs['token']",
+        "format('{0}', github.token)",
+        "INPUTS.TOKEN",
+        # Contexts no step needs.
+        "env.GITHUB_TOKEN",
+        "secrets.ANYTHING",
+        "github.event.pull_request.title",
+        # Paths that name nothing the action declares.
+        "inputs.undeclared",
+        "steps.nope.outputs.x",
+        # The token input outside the run step.
+        "inputs.token",
     ],
 )
-def test_a_token_under_another_name_is_found(expression) -> None:
-    step = {"name": "x", "env": {"API_TOKEN": expression}}
-    assert _token_expressions(step)
+def test_an_expression_outside_the_allowlist_is_refused(expression) -> None:
+    reason = _refusal(expression, step="other", inputs=_DECLARED, step_ids=_STEP_IDS)
+    assert reason is not None
 
 
 @pytest.mark.parametrize(
-    "expression",
+    ("expression", "step"),
     [
-        "${{ github.repository }}",
-        "${{ inputs.token_hint }}",
-        "${{ steps.token.outputs.x }}",
-        "${{ env['GITHUB_TOKEN_HINT'] }}",
+        ("inputs.target", "other"),
+        ("inputs.token", "run"),
+        ("steps.options.outputs.target", "other"),
+        ("github.repository", "other"),
     ],
 )
-def test_other_expressions_are_not_tokens(expression) -> None:
-    assert _token_expressions({"env": {"X": expression}}) == []
+def test_an_allowlisted_expression_is_accepted(expression, step) -> None:
+    assert _refusal(expression, step=step, inputs=_DECLARED, step_ids=_STEP_IDS) is None
 
 
 def test_the_run_step_never_exports_the_token(steps) -> None:

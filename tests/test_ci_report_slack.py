@@ -11,6 +11,7 @@ import pytest
 from dependamerge.ci_report import SCHEMA_VERSION
 from dependamerge.ci_report.__main__ import main
 from dependamerge.ci_report.slack import (
+    MAX_FALLBACK_CHARS,
     MAX_TEXT_CHARS,
     escape,
     fit_lines,
@@ -158,6 +159,30 @@ class TestRenderPayload:
         assert "conflict" in payload["text"]
         assert "1 failed" in payload["text"]
         assert "Excluding: beta" in payload["text"]
+        assert f"<{RUN_URL}|View workflow run>" in payload["text"]
+
+    @pytest.mark.xfail(
+        strict=True, reason="#555: the fallback reuses the fitted listings"
+    )
+    def test_the_fallback_lists_prs_the_blocks_shed(self):
+        # The blocks fit each listing to 3,000 units; the fallback has a
+        # 40,000-unit ceiling, so a PR shed from a block stays listed in
+        # the text screen readers read.
+        entries = [_entry(n, "failed", reason="r " * 40) for n in range(1, 101)]
+        payload = render_payload(_document(entries), channel="C1", run_url=RUN_URL)
+        blocks = "\n".join(_texts(payload))
+        assert "acme/widget#100>" not in blocks
+        assert "more" in blocks
+        assert "acme/widget#100>" in payload["text"]
+        assert "more" not in payload["text"]
+
+    def test_a_huge_fallback_stays_within_its_ceiling_and_keeps_the_run_link(
+        self,
+    ):
+        entries = [_entry(n, "failed", reason="r " * 200) for n in range(1, 801)]
+        payload = render_payload(_document(entries), channel="C1", run_url=RUN_URL)
+        assert text_length(payload["text"]) <= MAX_FALLBACK_CHARS
+        assert payload["text"].endswith("dependamerge 0.15.0")
         assert f"<{RUN_URL}|View workflow run>" in payload["text"]
 
     def test_dry_run_is_labelled(self):

@@ -200,6 +200,24 @@ class TestCLI:
         assert result.exit_code == 1
         assert "Invalid --max-wait" in result.stdout
 
+    @pytest.mark.parametrize("value", ["nan", "inf", "-inf"])
+    def test_merge_command_rejects_non_finite_max_wait(self, value):
+        """NaN and infinity would silently remove the wall-clock ceiling."""
+        result = self.runner.invoke(
+            app,
+            [
+                "merge",
+                "https://github.com/owner/repo/pull/22",
+                "--token",
+                "test_token",
+                "--max-wait",
+                value,
+            ],
+        )
+
+        assert result.exit_code == 1
+        assert "Invalid --max-wait" in result.stdout
+
     @patch("dependamerge.cli.GitHubClient")
     def test_merge_command_non_automation_pr(self, mock_client_class):
         mock_client = Mock()

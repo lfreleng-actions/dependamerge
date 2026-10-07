@@ -12,10 +12,17 @@ to take and then hands off to one of the helpers in
 from __future__ import annotations
 
 from ..bot_identity import is_dependabot
+from ..ci_report import in_github_actions
 from ..models import PullRequestInfo
 from .context import RebaseContext, Step5Outcome, _set_tracker_state
 from .decide import BaseRef, should_use_local_rebase
 from .paths import _run_dependabot_macro_path, _run_local_path, _run_rest_path
+
+#: Why a PR needing the local path is left for a human under Actions.
+LOCAL_REBASE_UNAVAILABLE = (
+    "Rebase needs a local signed git rebase, which dependamerge does not "
+    "run under GitHub Actions; rebase this pull request by hand"
+)
 
 
 async def perform_step5_rebase(
@@ -36,10 +43,16 @@ async def perform_step5_rebase(
     through Step 5 (so Step 5.5 doesn't double the configured
     ``merge_timeout``) and let auto-merge take over server-side.
 
+    Under GitHub Actions the local-git step itself is refused, since a
+    runner has no signing identity; the ``@dependabot rebase`` macro
+    still runs.
+
     Returns a :class:`Step5Outcome`.  ``failed=True`` indicates the
-    caller should set ``MergeStatus.FAILED`` and bail; the legacy
-    REST path is the only path that can produce this outcome (a
-    raised exception during ``update_branch`` or the polling loop).
+    caller should set ``MergeStatus.FAILED`` and bail.  Two routes
+    produce it: the legacy REST path (a raised exception during
+    ``update_branch`` or the polling loop), and the local path under
+    GitHub Actions, which refuses the rebase with
+    :data:`LOCAL_REBASE_UNAVAILABLE` rather than running it.
     """
     if ctx.preview_mode:
         # NOTE: In preview mode, we should NOT print here as it
@@ -82,6 +95,20 @@ async def perform_step5_rebase(
             )
             if handled:
                 return Step5Outcome()
+        if in_github_actions():
+            # The local path clones, rebases and force-pushes with the
+            # operator's own git identity and signing key.  A runner has
+            # neither, so the push would land unsigned commits on a
+            # branch that requires signatures --- the very damage this
+            # path exists to avoid --- and REST update-branch would do
+            # the same.  Leave the PR untouched and say why.
+            ctx.log.debug(
+                "Local rebase refused under GitHub Actions: %s [%s]",
+                pr_info.html_url,
+                local_reason,
+            )
+            _set_tracker_state(ctx, pr_info, None)
+            return Step5Outcome(failed=True, error_message=LOCAL_REBASE_UNAVAILABLE)
         await _run_local_path(
             ctx=ctx,
             pr_info=pr_info,

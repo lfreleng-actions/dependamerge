@@ -12,6 +12,7 @@ handlers' exceptions onto exit codes all live here, so the command
 itself stays close to a declaration of its options.
 """
 
+import math
 from collections.abc import Callable
 
 import typer
@@ -65,26 +66,31 @@ from ._pr_display import _print_debug_matching
 
 
 def _validate_max_wait(max_wait: float) -> None:
-    """Reject a negative ``--max-wait``.
+    """Reject a negative or non-finite ``--max-wait``.
 
     The documented contract is 0 = fire-and-forget and > 0 = wall-clock
     ceiling; a negative value has no defined meaning and would otherwise
     be silently coerced into a surprising "instant no-wait" run
-    (max_wait <= 0).  Fail fast so the flag's behaviour stays aligned
-    with its help text.  The isinstance guard tolerates direct Python
-    calls to ``merge`` (e.g. in tests), where Typer's ``OptionInfo``
-    default object is passed unresolved.
+    (max_wait <= 0), while NaN or infinity would leave the run with no
+    reachable ceiling at all.  Fail fast so the flag's behaviour stays
+    aligned with its help text.  The isinstance guard tolerates direct
+    Python calls to ``merge`` (e.g. in tests), where Typer's
+    ``OptionInfo`` default object is passed unresolved.
 
     Args:
         max_wait: The wall-clock ceiling supplied on the command line.
 
     Raises:
-        typer.Exit: The value is negative.
+        typer.Exit: The value is negative, NaN or infinite.
     """
-    if isinstance(max_wait, int | float) and max_wait < 0:
+    if isinstance(max_wait, int | float) and (
+        max_wait < 0 or not math.isfinite(max_wait)
+    ):
+        # NaN compares false with everything and inf is never reached,
+        # so either would silently remove the run's wall-clock ceiling.
         console.print(
             "❌ Invalid --max-wait: must be 0 (fire-and-forget) or a "
-            "positive number of seconds"
+            "positive, finite number of seconds"
         )
         raise typer.Exit(1)
 

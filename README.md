@@ -324,6 +324,74 @@ uv add --group dev pytest-cov
 uvx dependamerge==0.1.0 --help
 ```
 
+## GitHub Action
+
+The repository root holds a composite action that runs `dependamerge merge`
+from a workflow. It builds the tool from its own source at the commit you pin,
+using the release's lock file for its dependencies and its build backend
+alike, so the pin decides what runs.
+
+```yaml
+jobs:
+  dependamerge:
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      # yamllint disable-line rule:line-length
+      - uses: lfreleng-actions/dependamerge@<commit-sha>  # vX.Y.Z
+        with:
+          target: my-org
+          exclude_repos: test-fixture-one,test-fixture-two
+          token: ${{ secrets.DEPENDAMERGE_TOKEN }}
+```
+
+The action always runs non-interactively (`--no-confirm --no-progress`) on
+Linux and macOS runners; it refuses Windows runners. It acts on GitHub alone: it
+skips GitHub2Gerrit PRs and reports them as skipped, and it withholds any Gerrit
+credentials it inherits, so a Gerrit target fails rather than submitting
+changes. It always addresses the GitHub server running the workflow: it refuses
+a target on any other host and ignores host settings inherited from the caller.
+It never offers a local signed rebase,
+which needs a signing identity a runner lacks; see `--rebase-local` under
+[Merge Command Options](#merge-command-options).
+
+Each run writes a results table to the step summary, failures first, then
+removes its results file. A run that leaves PRs failed or blocked fails the step
+with exit code `7` after writing the summary. Set `fail_on_merge_errors: false`
+when a later step reports those PRs instead.
+
+<!-- markdownlint-disable MD013 -->
+
+| Input                  | Default               | Description                                                                 |
+| ---------------------- | --------------------- | --------------------------------------------------------------------------- |
+| `target`               | (required)            | Owner, `owner/repo`, or pull request URL                                    |
+| `token`                | `${{ github.token }}` | Token able to approve and merge; read access suffices for a dry run         |
+| `dry_run`              | `false`               | Assess every PR, merge nothing                                              |
+| `include_repos`        |                       | Owner-wide: act on these repositories alone (comma, space or newline list)  |
+| `exclude_repos`        |                       | Owner-wide: act on every repository except these                            |
+| `merge_method`         | `merge`               | `merge`, `squash` or `rebase`                                               |
+| `force`                | `code-owners`         | `none`, `code-owners`, `protection-rules` or `all`                          |
+| `max_wait`             | `900`                 | Owner-wide: wall-clock ceiling in seconds; `0` arms auto-merge and returns  |
+| `fix_out_of_date`      | `true`                | Bring behind PRs up to date before merging                                  |
+| `dismiss_copilot`      | `false`               | Dismiss unresolved GitHub Copilot review comments                           |
+| `fail_on_merge_errors` | `true`                | Fail the step when any PR ends failed or blocked                            |
+
+| Output                                                                                | Description                            |
+| ------------------------------------------------------------------------------------- | -------------------------------------- |
+| `version`                                                                             | The dependamerge version that ran      |
+| `exit_code`                                                                           | dependamerge's exit code               |
+| `total`                                                                               | Pull requests assessed or merged       |
+| `merged`, `auto_merge_pending`, `failed`, `blocked`, `unsettled`, `skipped`, `closed` | Pull requests ending with that outcome |
+
+<!-- markdownlint-enable MD013 -->
+
+The count outputs stay empty when the run stops before reporting results, for
+instance on an unknown `exclude_repos` name.
+
+Pin the action to a release's **commit** SHA; Dependabot keeps such pins
+current. The action reports the release that SHA belongs to as its version, and
+an untagged commit as `0.0.0+g<short-sha>`.
+
 ## Authentication
 
 Dependamerge supports both GitHub and Gerrit platforms, each with different
@@ -996,6 +1064,16 @@ dependamerge merge https://github.com/owner/repo/pull/123 \
   merge)
 - `--no-fix`: Disable automatic fixing of out-of-date branches
   (default: automatic fixing enabled)
+- `--rebase-local/--no-rebase-local`: When a behind PR's base branch requires
+  signed commits and its head carries a valid signature, or the PR comes from
+  `pre-commit-ci[bot]`, bring it up to date without breaking signatures
+  (default: enabled). Dependabot PRs get the `@dependabot rebase` macro, so
+  dependabot re-signs its own rebase; others get a local `git` clone, rebase
+  and force-push signed with your own git configuration. `--no-rebase-local`
+  uses the REST `update-branch` endpoint for every PR instead, which leaves
+  unsigned commits. Under GitHub Actions dependamerge refuses the local `git`
+  step, since a runner has no signing identity: the macro still runs, and a PR
+  that needs the local step fails with a reason asking for a manual rebase
 - `--no-fix-semantic-title`: Disable repair of automation PRs whose title
   differs from their single commit's subject. Dependabot shortens the commit
   subject by dropping the `from <old> to <new>` fragment while the title keeps

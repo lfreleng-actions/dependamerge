@@ -1,0 +1,291 @@
+---
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+
+# Exercises the composite action at the repository root against live
+# GitHub. Every run is a --dry-run under the read-only workflow token:
+# it evaluates the organisation's automation PRs but never approves,
+# merges, rebases or closes anything.
+name: 'Test GitHub Action 🧪'
+
+# yamllint disable-line rule:truthy
+on:
+  workflow_dispatch:
+  push:
+    branches: ['main']
+    paths:
+      - 'action.yaml'
+      - 'scripts/action_version.py'
+      - 'src/**'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - '.github/workflows/testing.yaml'
+  pull_request:
+    types: [opened, reopened, synchronize]
+    branches: ['main']
+    paths:
+      - 'action.yaml'
+      - 'scripts/action_version.py'
+      - 'src/**'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - '.github/workflows/testing.yaml'
+
+concurrency:
+  group: "${{ github.workflow }}-${{ github.ref }}"
+  cancel-in-progress: true
+
+permissions: {}
+
+jobs:
+  dry-run:
+    name: 'Dry run: ${{ matrix.name }}'
+    runs-on: 'ubuntu-latest'
+    timeout-minutes: 15
+    permissions:
+      contents: read  # Read repositories and their contents.
+      pull-requests: read  # Discover open PRs to evaluate (read-only).
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: 'repository'
+            target: '${{ github.repository }}'
+            include_repos: ''
+          - name: 'owner-wide, limited to this repository'
+            target: '${{ github.repository_owner }}'
+            include_repos: '${{ github.event.repository.name }}'
+    steps:
+      # yamllint disable-line rule:line-length
+      - uses: lfreleng-actions/harden-runner-block-action@805eedb0508c07714b61887a2b87a5c4bbeff22a  # v0.12.1
+        with:
+          # yamllint disable-line rule:line-length
+          config: 'lfreleng-actions//.github/harden-runner/lfreleng-actions/allow_list.txt@f0f76ac22f342c9a788ebcabe584e68a79cc2e83'  # v0.16.0
+
+      - name: 'Harden runner (block)'
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
+        with:
+          egress-policy: 'block'
+          allowed-endpoints: >
+            ${{ env.CONNECTION_ALLOW_LIST }}
+
+      - name: 'Checkout repository'
+        # yamllint disable-line rule:line-length
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: 'Run local action: ${{ matrix.name }}'
+        id: dependamerge
+        uses: $/
+        with:
+          target: '${{ matrix.target }}'
+          include_repos: '${{ matrix.include_repos }}'
+          dry_run: 'true'
+
+      - name: 'Validate action outputs'
+        shell: bash
+        env:
+          VERSION: '${{ steps.dependamerge.outputs.version }}'
+          EXIT_CODE: '${{ steps.dependamerge.outputs.exit_code }}'
+          TOTAL: '${{ steps.dependamerge.outputs.total }}'
+          MERGED: '${{ steps.dependamerge.outputs.merged }}'
+        run: |
+          # Validate action outputs
+          set -euo pipefail
+          echo "version=${VERSION} exit_code=${EXIT_CODE}"
+          echo "total=${TOTAL} merged=${MERGED}"
+          fail() { echo "::error::$1"; exit 1; }
+          [ -n "${VERSION}" ] || fail 'no version output'
+          [ "${EXIT_CODE}" = '0' ] || fail "exit code ${EXIT_CODE}"
+          # A dry run always publishes results, so the counts are set.
+          [[ "${TOTAL}" =~ ^[0-9]+$ ]] || fail 'no total output'
+          [[ "${MERGED}" =~ ^[0-9]+$ ]] || fail 'no merged output'
+          # The action removes its results file once rendered.
+          leftover="${RUNNER_TEMP}/dependamerge-results-*.json"
+          if compgen -G "${leftover}" >/dev/null; then
+            fail 'results file left behind'
+          fi
+
+  refuses-unknown-repository:
+    name: 'Bad options stop the run'
+    runs-on: 'ubuntu-latest'
+    timeout-minutes: 15
+    permissions:
+      contents: read  # Read repositories and their contents.
+      pull-requests: read  # Discover open PRs to evaluate (read-only).
+    steps:
+      # yamllint disable-line rule:line-length
+      - uses: lfreleng-actions/harden-runner-block-action@805eedb0508c07714b61887a2b87a5c4bbeff22a  # v0.12.1
+        with:
+          # yamllint disable-line rule:line-length
+          config: 'lfreleng-actions//.github/harden-runner/lfreleng-actions/allow_list.txt@f0f76ac22f342c9a788ebcabe584e68a79cc2e83'  # v0.16.0
+
+      - name: 'Harden runner (block)'
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
+        with:
+          egress-policy: 'block'
+          allowed-endpoints: >
+            ${{ env.CONNECTION_ALLOW_LIST }}
+
+      - name: 'Checkout repository'
+        # yamllint disable-line rule:line-length
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: 'Run local action with a misspelt exclusion'
+        id: dependamerge
+        continue-on-error: true
+        uses: $/
+        with:
+          target: '${{ github.repository_owner }}'
+          exclude_repos: 'no-such-repository-dependamerge-test'
+          dry_run: 'true'
+
+      - name: 'Expect a configuration error and no results'
+        shell: bash
+        env:
+          OUTCOME: '${{ steps.dependamerge.outcome }}'
+          EXIT_CODE: '${{ steps.dependamerge.outputs.exit_code }}'
+          TOTAL: '${{ steps.dependamerge.outputs.total }}'
+        run: |
+          # Expect a configuration error and no results
+          set -euo pipefail
+          echo "outcome=${OUTCOME} exit_code=${EXIT_CODE} total=${TOTAL}"
+          fail() { echo "::error::$1"; exit 1; }
+          [ "${OUTCOME}" = 'failure' ] || fail 'the step did not fail'
+          [ "${EXIT_CODE}" = '2' ] || fail "exit code ${EXIT_CODE}"
+          [ -z "${TOTAL}" ] || fail 'results were published'
+
+      - name: 'Run local action with a misspelt boolean'
+        id: misspelt-boolean
+        continue-on-error: true
+        uses: $/
+        with:
+          target: '${{ github.repository }}'
+          dry_run: 'ture'
+
+      - name: 'Expect the run to stop before dependamerge starts'
+        shell: bash
+        env:
+          OUTCOME: '${{ steps.misspelt-boolean.outcome }}'
+          EXIT_CODE: '${{ steps.misspelt-boolean.outputs.exit_code }}'
+        run: |
+          # Expect the run to stop before dependamerge starts
+          set -euo pipefail
+          echo "outcome=${OUTCOME} exit_code=${EXIT_CODE}"
+          fail() { echo "::error::$1"; exit 1; }
+          [ "${OUTCOME}" = 'failure' ] || fail 'the step did not fail'
+          [ -z "${EXIT_CODE}" ] || fail 'dependamerge ran'
+
+      - name: 'Run local action with a misspelt merge method'
+        id: misspelt-method
+        continue-on-error: true
+        uses: $/
+        with:
+          target: '${{ github.repository }}'
+          merge_method: 'squahs'
+          dry_run: 'true'
+
+      - name: 'Expect the misspelt merge method to stop the run'
+        shell: bash
+        env:
+          OUTCOME: '${{ steps.misspelt-method.outcome }}'
+          EXIT_CODE: '${{ steps.misspelt-method.outputs.exit_code }}'
+        run: |
+          # Expect the misspelt merge method to stop the run
+          set -euo pipefail
+          echo "outcome=${OUTCOME} exit_code=${EXIT_CODE}"
+          fail() { echo "::error::$1"; exit 1; }
+          [ "${OUTCOME}" = 'failure' ] || fail 'the step did not fail'
+          [ -z "${EXIT_CODE}" ] || fail 'dependamerge ran'
+
+      - name: 'Run local action with an option-shaped target'
+        id: option-target
+        continue-on-error: true
+        uses: $/
+        with:
+          # Leading blanks, which the CLI strips, must not hide the dash.
+          target: '  --include-human-prs'
+          dry_run: 'true'
+
+      - name: 'Expect the option-shaped target to stop the run'
+        shell: bash
+        env:
+          OUTCOME: '${{ steps.option-target.outcome }}'
+          EXIT_CODE: '${{ steps.option-target.outputs.exit_code }}'
+        run: |
+          # Expect the option-shaped target to stop the run
+          set -euo pipefail
+          echo "outcome=${OUTCOME} exit_code=${EXIT_CODE}"
+          fail() { echo "::error::$1"; exit 1; }
+          [ "${OUTCOME}" = 'failure' ] || fail 'the step did not fail'
+          [ -z "${EXIT_CODE}" ] || fail 'dependamerge ran'
+
+      - name: 'Run local action with a blank target'
+        id: blank-target
+        continue-on-error: true
+        uses: $/
+        with:
+          target: '  '
+          dry_run: 'true'
+
+      - name: 'Expect the blank target to stop the run'
+        shell: bash
+        env:
+          OUTCOME: '${{ steps.blank-target.outcome }}'
+          EXIT_CODE: '${{ steps.blank-target.outputs.exit_code }}'
+        run: |
+          # Expect the blank target to stop the run
+          set -euo pipefail
+          echo "outcome=${OUTCOME} exit_code=${EXIT_CODE}"
+          fail() { echo "::error::$1"; exit 1; }
+          [ "${OUTCOME}" = 'failure' ] || fail 'the step did not fail'
+          [ -z "${EXIT_CODE}" ] || fail 'dependamerge ran'
+
+      - name: 'Run local action with a host hidden behind a query'
+        id: query-target
+        continue-on-error: true
+        uses: $/
+        with:
+          # The '@' sits in the query, so it is no userinfo separator.
+          target: 'https://evil.example?next=@github.com/acme/widget'
+          dry_run: 'true'
+
+      - name: 'Expect the host hidden behind a query to stop the run'
+        shell: bash
+        env:
+          OUTCOME: '${{ steps.query-target.outcome }}'
+          EXIT_CODE: '${{ steps.query-target.outputs.exit_code }}'
+        run: |
+          # Expect the host hidden behind a query to stop the run
+          set -euo pipefail
+          echo "outcome=${OUTCOME} exit_code=${EXIT_CODE}"
+          fail() { echo "::error::$1"; exit 1; }
+          [ "${OUTCOME}" = 'failure' ] || fail 'the step did not fail'
+          [ -z "${EXIT_CODE}" ] || fail 'dependamerge ran'
+
+      - name: 'Run local action with a target on another host'
+        id: foreign-target
+        continue-on-error: true
+        uses: $/
+        with:
+          # An scp remote whose host has no dot still names a host.
+          target: 'git@ghe:acme/widget.git'
+          dry_run: 'true'
+
+      - name: 'Expect the target on another host to stop the run'
+        shell: bash
+        env:
+          OUTCOME: '${{ steps.foreign-target.outcome }}'
+          EXIT_CODE: '${{ steps.foreign-target.outputs.exit_code }}'
+        run: |
+          # Expect the target on another host to stop the run
+          set -euo pipefail
+          echo "outcome=${OUTCOME} exit_code=${EXIT_CODE}"
+          fail() { echo "::error::$1"; exit 1; }
+          [ "${OUTCOME}" = 'failure' ] || fail 'the step did not fail'
+          [ -z "${EXIT_CODE}" ] || fail 'dependamerge ran'

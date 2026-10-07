@@ -291,6 +291,23 @@ class TestModuleEntryPoint:
         assert main(["html"]) == 2
         assert "usage" in capsys.readouterr().err
 
+    def test_outputs_lists_every_count_and_the_total(self, tmp_path, capsys):
+        path = tmp_path / "results.json"
+        document = _document(
+            [
+                MergeResult(_make_pr(1), MergeStatus.MERGED),
+                MergeResult(_make_pr(2), MergeStatus.BLOCKED, error="x"),
+            ]
+        )
+        path.write_text(json.dumps(document))
+        assert main(["outputs", str(path)]) == 0
+        lines = capsys.readouterr().out.splitlines()
+        assert "merged=1" in lines
+        assert "blocked=1" in lines
+        assert "failed=0" in lines
+        assert lines[-1] == "total=2"
+        assert all(re.fullmatch(r"[a-z_]+=\d+", line) for line in lines)
+
     def test_a_missing_file_exits_1(self, tmp_path, capsys):
         assert main(["markdown", str(tmp_path / "absent.json")]) == 1
         assert "dependamerge.ci_report" in capsys.readouterr().err

@@ -73,6 +73,8 @@ class _MergeManagerBase:
     _last_merge_exception: dict[str, Exception]
     _last_merge_exception_head: dict[str, str]
     _last_merge_was_answered: dict[str, bool]
+    _local_rebase_refused: set[str]
+    _rebase_requested: set[str]
     _max_wait: float | None
     _merge_dispatch_locks: dict[str, asyncio.Lock]
     _merge_dispatch_locks_lock: asyncio.Lock
@@ -313,6 +315,11 @@ class _MergeManagerBase:
     async def _refresh_pr_mergeable(
         self, owner: str, repo: str, pr_info: PullRequestInfo, pr_key: str
     ) -> None:
+        raise NotImplementedError
+
+    async def _refuse_unsigned_rebase(
+        self, pr_info: PullRequestInfo, owner: str, repo: str
+    ) -> bool:
         raise NotImplementedError
 
     def _recreated_pr_stub(

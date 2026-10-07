@@ -161,9 +161,6 @@ class TestRenderPayload:
         assert "Excluding: beta" in payload["text"]
         assert f"<{RUN_URL}|View workflow run>" in payload["text"]
 
-    @pytest.mark.xfail(
-        strict=True, reason="#555: the fallback reuses the fitted listings"
-    )
     def test_the_fallback_lists_prs_the_blocks_shed(self):
         # The blocks fit each listing to 3,000 units; the fallback has a
         # 40,000-unit ceiling, so a PR shed from a block stays listed in

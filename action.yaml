@@ -8,11 +8,21 @@ description: >-
   repository or similar-PR set
 
 inputs:
+  # The merge options below default to empty, meaning "not set": an
+  # unset option takes its value from config, else from the default
+  # named in its description.
+  config:
+    description: >-
+      JSON object of merge options, keyed by input name (e.g. a repository
+      or organisation variable); explicit inputs override it
+    required: false
+    default: ""
   target:
     description: >-
       What to merge: an owner (organisation or user), owner/repo, or a
-      pull request URL
-    required: true
+      pull request URL. Required, here or in config
+    required: false
+    default: ""
   token:
     # Write access is needed to approve and merge; a dry run needs read
     # access alone. The value reaches dependamerge through the
@@ -23,9 +33,9 @@ inputs:
     required: false
     default: "${{ github.token }}"
   dry_run:
-    description: "Preview only: assess every PR, merge nothing"
+    description: "Preview only: assess every PR, merge nothing (default false)"
     required: false
-    default: "false"
+    default: ""
   include_repos:
     description: >-
       Owner-wide only: act on these repositories alone (comma, space or
@@ -39,33 +49,50 @@ inputs:
     required: false
     default: ""
   merge_method:
-    description: "merge, squash or rebase"
+    description: "merge, squash or rebase (default merge)"
     required: false
-    default: "merge"
+    default: ""
   force:
-    description: "Override level: none, code-owners, protection-rules or all"
+    description: >-
+      Override level: none, code-owners, protection-rules or all (default
+      code-owners)
     required: false
-    default: "code-owners"
+    default: ""
   max_wait:
     description: >-
       Owner-wide only: wall-clock ceiling in seconds for the whole run
-      (0 arms auto-merge and returns)
+      (0 arms auto-merge and returns; default 900)
     required: false
-    default: "900"
+    default: ""
   fix_out_of_date:
-    description: "Bring behind PRs up to date before merging"
+    description: "Bring behind PRs up to date before merging (default true)"
     required: false
-    default: "true"
+    default: ""
   dismiss_copilot:
-    description: "Dismiss unresolved GitHub Copilot review comments"
+    description: >-
+      Dismiss unresolved GitHub Copilot review comments (default false)
     required: false
-    default: "false"
+    default: ""
   fail_on_merge_errors:
     # A run with PRs left failed or blocked exits 7. Set false when a
     # later step (a Slack digest, say) reports them instead.
     description: "Fail the step when any PR is left failed or blocked"
     required: false
     default: "true"
+  slack_channel:
+    # The action builds the digest but does not post it: posting needs
+    # the Slack token, which stays with the caller's own step.
+    description: >-
+      Slack channel ID; when set, the slack_payload output carries a
+      chat.postMessage digest of the run
+    required: false
+    default: ""
+  slack_when:
+    description: >-
+      When the run warrants a digest: always, activity (any PR processed),
+      attention (any PR failed or blocked) or never
+    required: false
+    default: "always"
   source_sha:
     # For a reusable workflow that checks this action out at its own
     # commit: the runner then cannot report which release it is.
@@ -112,6 +139,11 @@ outputs:
   closed:
     description: "Pull requests closed without merging"
     value: ${{ steps.summary.outputs.closed }}
+  slack_payload:
+    description: >-
+      Slack chat.postMessage payload (JSON); empty unless slack_channel
+      is set, the run reported results, and slack_when calls for a digest
+    value: ${{ steps.summary.outputs.slack_payload }}
 
 runs:
   using: "composite"
@@ -184,119 +216,59 @@ runs:
         echo "version=$version" >> "$GITHUB_OUTPUT"
         echo "dependamerge version: $version"
 
-    - name: "Validate inputs"
+    - name: "Resolve options"
+      id: options
       shell: bash
       env:
         GITHUB_TOKEN: ""
         GH_TOKEN: ""
         BASH_ENV: ""
         SHELLOPTS: ""
+        INPUT_CONFIG: ${{ inputs.config }}
+        INPUT_TARGET: ${{ inputs.target }}
         INPUT_DRY_RUN: ${{ inputs.dry_run }}
+        INPUT_INCLUDE_REPOS: ${{ inputs.include_repos }}
+        INPUT_EXCLUDE_REPOS: ${{ inputs.exclude_repos }}
+        INPUT_MERGE_METHOD: ${{ inputs.merge_method }}
+        INPUT_FORCE: ${{ inputs.force }}
+        INPUT_MAX_WAIT: ${{ inputs.max_wait }}
         INPUT_FIX_OUT_OF_DATE: ${{ inputs.fix_out_of_date }}
         INPUT_DISMISS_COPILOT: ${{ inputs.dismiss_copilot }}
         INPUT_FAIL_ON_MERGE_ERRORS: ${{ inputs.fail_on_merge_errors }}
-        INPUT_MERGE_METHOD: ${{ inputs.merge_method }}
-        INPUT_MAX_WAIT: ${{ inputs.max_wait }}
-        INPUT_TARGET: ${{ inputs.target }}
-        INPUT_FORCE: ${{ inputs.force }}
+        INPUT_SLACK_WHEN: ${{ inputs.slack_when }}
       run: |
-        # Validate inputs
-        # A boolean input is exactly true or false, and an enumerated one
-        # one of its values. Anything else stops the run: a typo such as
-        # 'ture' must not turn a dry run live, nor 'squahs' let the merge
-        # fall back to another method. Values are not echoed back: they
-        # could forge a workflow command.
+        # Resolve options
+        # Explicit inputs win over config, config over defaults; every
+        # value is validated and an unknown config key stops the run.
+        # A boolean is exactly true or false and an enumeration one of its
+        # values: a typo such as 'ture' must not turn a dry run live, nor
+        # 'squahs' let the merge fall back to another method.
         status=0
-        check() {
-          case "$2" in
-            true|false) ;;
-            *) echo "::error::$1 must be true or false"; status=2 ;;
-          esac
-        }
-        check dry_run "$INPUT_DRY_RUN"
-        check fix_out_of_date "$INPUT_FIX_OUT_OF_DATE"
-        check dismiss_copilot "$INPUT_DISMISS_COPILOT"
-        check fail_on_merge_errors "$INPUT_FAIL_ON_MERGE_ERRORS"
-        # An empty target would make the CLI fall back to the checked-out
-        # repository; an option-shaped one such as '--include-human-prs'
-        # would switch on behaviour this action does not expose.
-        if [ -z "${INPUT_TARGET//[[:space:]]/}" ]; then
-          echo "::error::target is required"
-          status=2
-        fi
-        # A line break would let the target forge a workflow command when
-        # an error message quotes it.
-        if [[ "$INPUT_TARGET" == *$'\n'* || "$INPUT_TARGET" == *$'\r'* ]]; then
-          echo "::error::target must be a single line"
-          status=2
-        fi
-        case "$INPUT_FORCE" in
-          none|code-owners|protection-rules|all) ;;
-          *)
-            echo "::error::force must be none, code-owners," \
-              "protection-rules or all"
-            status=2
-            ;;
-        esac
-        # The CLI strips surrounding blanks, which could hide a leading '-'
-        # or '//' from the checks below, so they read the stripped value.
-        target="${INPUT_TARGET#"${INPUT_TARGET%%[![:space:]]*}"}"
-        case "$target" in
-          -*)
-            echo "::error::target must name an owner, repository or PR"
-            status=2
-            ;;
-        esac
+        uv run --no-project --quiet \
+          "$GITHUB_ACTION_PATH/scripts/action_config.py" || status=$?
         # Linux and macOS runners only: the Windows path is untested.
         if [ "$RUNNER_OS" = "Windows" ]; then
           echo "::error::this action runs on Linux and macOS runners"
           status=2
         fi
-        # The token goes to the server running this workflow and nowhere
-        # else, so a target naming another host is refused. The test is
-        # the CLI's own: a target names a host when it starts with a
-        # scheme or '//', or when its first segment holds a dot or a
-        # colon, which no login or repository name has
-        # ('ghe.example.com/acme', 'git@host:acme/widget.git').
-        # Shorthand resolves to the pinned server.
-        lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
-        server="$(lower "${GITHUB_SERVER_URL#*://}")"
-        scheme_re='^[A-Za-z][A-Za-z0-9+.-]*://'
-        named=''
-        if [[ "$target" =~ $scheme_re ]]; then
-          named="${target#*://}"
-        elif [[ "$target" == //* ]]; then
-          named="${target#//}"
-        elif [[ "${target%%/*}" == *[.:]* ]]; then
-          named="$target"
-        fi
-        if [ -n "$named" ]; then
-          # The authority ends at the first '/', '?' or '#': an '@' after
-          # it belongs to the path, query or fragment, not to userinfo.
-          named="${named%%[/?#]*}"
-          named="${named##*@}"
-          named="$(lower "${named%%:*}")"
-          if [ "$named" != "$server" ]; then
-            echo "::error::target must be on the GitHub server running" \
-              "this workflow"
-            status=2
-          fi
-        fi
-        case "$INPUT_MERGE_METHOD" in
-          merge|squash|rebase) ;;
+        # Not merge options, so not in config; checked here alike, and
+        # not echoed back, since they could forge a workflow command.
+        case "$INPUT_SLACK_WHEN" in
+          always|activity|attention|never) ;;
           *)
-            echo "::error::merge_method must be merge, squash or rebase"
+            echo "::error::slack_when must be always, activity, attention" \
+              "or never"
             status=2
             ;;
         esac
-        # Plain decimal seconds only: no sign, exponent, NaN or infinity,
-        # any of which could remove the run's wall-clock ceiling. At most
-        # nine whole digits (over 31 years): a longer value would parse
-        # as infinity in the CLI.
-        if [[ ! "$INPUT_MAX_WAIT" =~ ^[0-9]{1,9}(\.[0-9]{1,6})?$ ]]; then
-          echo "::error::max_wait must be 0 or a positive number of seconds"
-          status=2
-        fi
+        case "$INPUT_FAIL_ON_MERGE_ERRORS" in
+          true|false) ;;
+          *)
+            echo "::error::fail_on_merge_errors must be true or false"
+            status=2
+            ;;
+        esac
+
         exit "$status"
 
     - name: "Run dependamerge"
@@ -313,15 +285,15 @@ runs:
         # hatch-vcs would otherwise read the version from git, which the
         # action's copy lacks.
         SETUPTOOLS_SCM_PRETEND_VERSION: ${{ steps.version.outputs.version }}
-        INPUT_TARGET: ${{ inputs.target }}
-        INPUT_DRY_RUN: ${{ inputs.dry_run }}
-        INPUT_INCLUDE_REPOS: ${{ inputs.include_repos }}
-        INPUT_EXCLUDE_REPOS: ${{ inputs.exclude_repos }}
-        INPUT_MERGE_METHOD: ${{ inputs.merge_method }}
-        INPUT_FORCE: ${{ inputs.force }}
-        INPUT_MAX_WAIT: ${{ inputs.max_wait }}
-        INPUT_FIX_OUT_OF_DATE: ${{ inputs.fix_out_of_date }}
-        INPUT_DISMISS_COPILOT: ${{ inputs.dismiss_copilot }}
+        OPT_TARGET: ${{ steps.options.outputs.target }}
+        OPT_DRY_RUN: ${{ steps.options.outputs.dry_run }}
+        OPT_INCLUDE_REPOS: ${{ steps.options.outputs.include_repos }}
+        OPT_EXCLUDE_REPOS: ${{ steps.options.outputs.exclude_repos }}
+        OPT_MERGE_METHOD: ${{ steps.options.outputs.merge_method }}
+        OPT_FORCE: ${{ steps.options.outputs.force }}
+        OPT_MAX_WAIT: ${{ steps.options.outputs.max_wait }}
+        OPT_FIX_OUT_OF_DATE: ${{ steps.options.outputs.fix_out_of_date }}
+        OPT_DISMISS_COPILOT: ${{ steps.options.outputs.dismiss_copilot }}
       run: |
         # Run dependamerge
         set -euo pipefail
@@ -360,28 +332,28 @@ runs:
         # would make every target ambiguous and refused.
         unset DEPENDAMERGE_GERRIT_HOST DEPENDAMERGE_GERRIT_HOSTS
         args+=(--github-host "${GITHUB_SERVER_URL#*://}")
-        args+=(--merge-method "$INPUT_MERGE_METHOD" --force "$INPUT_FORCE")
-        args+=(--max-wait "$INPUT_MAX_WAIT")
-        if [ "$INPUT_DRY_RUN" = "true" ]; then
+        args+=(--merge-method "$OPT_MERGE_METHOD" --force "$OPT_FORCE")
+        args+=(--max-wait "$OPT_MAX_WAIT")
+        if [ "$OPT_DRY_RUN" = "true" ]; then
           args+=(--dry-run)
         fi
-        if [ -n "$INPUT_INCLUDE_REPOS" ]; then
-          args+=(--include-repos "$INPUT_INCLUDE_REPOS")
+        if [ -n "$OPT_INCLUDE_REPOS" ]; then
+          args+=(--include-repos "$OPT_INCLUDE_REPOS")
         fi
-        if [ -n "$INPUT_EXCLUDE_REPOS" ]; then
-          args+=(--exclude-repos "$INPUT_EXCLUDE_REPOS")
+        if [ -n "$OPT_EXCLUDE_REPOS" ]; then
+          args+=(--exclude-repos "$OPT_EXCLUDE_REPOS")
         fi
-        if [ "$INPUT_FIX_OUT_OF_DATE" = "false" ]; then
+        if [ "$OPT_FIX_OUT_OF_DATE" = "false" ]; then
           args+=(--no-fix)
         fi
-        if [ "$INPUT_DISMISS_COPILOT" = "true" ]; then
+        if [ "$OPT_DISMISS_COPILOT" = "true" ]; then
           args+=(--dismiss-copilot)
         fi
 
         # Keep going on failure: the summary step still has to render
         # the results, and the last step applies the exit code. The
         # target follows '--', so it can only ever be read as a target.
-        args+=(-- "$INPUT_TARGET")
+        args+=(-- "$OPT_TARGET")
         status=0
         # The build backend comes from the lock too. uv does not lock
         # [build-system] requires, so an isolated build would fetch the
@@ -410,6 +382,10 @@ runs:
         BASH_ENV: ""
         SHELLOPTS: ""
         RESULTS_FILE: ${{ steps.run.outputs.results_file }}
+        SLACK_CHANNEL: ${{ inputs.slack_channel }}
+        SLACK_WHEN: ${{ inputs.slack_when }}
+        # yamllint disable-line rule:line-length
+        RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
       run: |
         # Summarise results
         set -euo pipefail
@@ -423,15 +399,25 @@ runs:
         # directly avoids a second resolution (and a rebuild).
         # Validation refuses Windows runners, so the layout is Unix's.
         python="$RUNNER_TEMP/dependamerge-venv/bin/python"
-        "$python" -m dependamerge.ci_report markdown "$RESULTS_FILE" \
-          >> "$GITHUB_STEP_SUMMARY"
-        "$python" -m dependamerge.ci_report outputs "$RESULTS_FILE" \
-          >> "$GITHUB_OUTPUT"
+        report() { "$python" -m dependamerge.ci_report "$@"; }
+        report markdown "$RESULTS_FILE" >> "$GITHUB_STEP_SUMMARY"
+        report outputs "$RESULTS_FILE" >> "$GITHUB_OUTPUT"
+        if [ -n "$SLACK_CHANNEL" ]; then
+          # One line of JSON: json.dumps escapes every line break. Empty
+          # when slack_when says this run does not warrant a digest.
+          payload="$(report slack "$RESULTS_FILE" --when "$SLACK_WHEN" \
+            --channel "$SLACK_CHANNEL" --run-url "$RUN_URL")"
+          if [ -n "$payload" ]; then
+            # printf, not echo: macOS bash's echo expands the JSON's \n
+            # escapes into real line breaks, splitting the output.
+            printf 'slack_payload=%s\n' "$payload" >> "$GITHUB_OUTPUT"
+          fi
+        fi
 
     - name: "Apply exit code"
-      # Not when validation stopped the run: that step has already said
-      # why, and "did not run" here would only repeat it.
-      if: always() && steps.run.outcome != 'skipped'
+      # Not after an options error: that step already failed the run,
+      # and reporting "did not run" here would only repeat it.
+      if: always() && steps.options.outcome == 'success'
       shell: bash
       env:
         GITHUB_TOKEN: ""

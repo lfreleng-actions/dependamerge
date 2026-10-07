@@ -15,21 +15,23 @@ on:
     branches: ['main']
     paths:
       - 'action.yaml'
-      - 'scripts/action_version.py'
+      - 'scripts/action_*.py'
       - 'src/**'
       - 'pyproject.toml'
       - 'uv.lock'
       - '.github/workflows/testing.yaml'
+      - '.github/workflows/dependamerge.yaml'
   pull_request:
     types: [opened, reopened, synchronize]
     branches: ['main']
     paths:
       - 'action.yaml'
-      - 'scripts/action_version.py'
+      - 'scripts/action_*.py'
       - 'src/**'
       - 'pyproject.toml'
       - 'uv.lock'
       - '.github/workflows/testing.yaml'
+      - '.github/workflows/dependamerge.yaml'
 
 concurrency:
   group: "${{ github.workflow }}-${{ github.ref }}"
@@ -52,9 +54,16 @@ jobs:
           - name: 'repository'
             target: '${{ github.repository }}'
             include_repos: ''
+            config: ''
           - name: 'owner-wide, limited to this repository'
             target: '${{ github.repository_owner }}'
             include_repos: '${{ github.event.repository.name }}'
+            config: ''
+          - name: 'owner-wide, scoped by JSON config'
+            target: ''
+            include_repos: ''
+            # yamllint disable-line rule:line-length
+            config: '{"target": "${{ github.repository_owner }}", "include_repos": ["${{ github.event.repository.name }}"], "max_wait": 0}'
     steps:
       # yamllint disable-line rule:line-length
       - uses: lfreleng-actions/harden-runner-block-action@805eedb0508c07714b61887a2b87a5c4bbeff22a  # v0.12.1
@@ -82,7 +91,10 @@ jobs:
         with:
           target: '${{ matrix.target }}'
           include_repos: '${{ matrix.include_repos }}'
+          config: '${{ matrix.config }}'
           dry_run: 'true'
+          # Exercises the digest without posting it.
+          slack_channel: 'C0000000000'
 
       - name: 'Validate action outputs'
         shell: bash
@@ -91,6 +103,7 @@ jobs:
           EXIT_CODE: '${{ steps.dependamerge.outputs.exit_code }}'
           TOTAL: '${{ steps.dependamerge.outputs.total }}'
           MERGED: '${{ steps.dependamerge.outputs.merged }}'
+          SLACK_PAYLOAD: '${{ steps.dependamerge.outputs.slack_payload }}'
         run: |
           # Validate action outputs
           set -euo pipefail
@@ -107,6 +120,12 @@ jobs:
           if compgen -G "${leftover}" >/dev/null; then
             fail 'results file left behind'
           fi
+          # The digest is a Slack payload for the requested channel.
+          channel="$(jq -r '.channel' <<< "${SLACK_PAYLOAD}")" \
+            || fail 'slack_payload is not JSON'
+          [ "${channel}" = 'C0000000000' ] || fail 'wrong Slack channel'
+          jq -e '.blocks | length > 0 and length <= 50' \
+            <<< "${SLACK_PAYLOAD}" >/dev/null || fail 'bad Slack blocks'
 
   refuses-unknown-repository:
     name: 'Bad options stop the run'
@@ -289,3 +308,89 @@ jobs:
           fail() { echo "::error::$1"; exit 1; }
           [ "${OUTCOME}" = 'failure' ] || fail 'the step did not fail'
           [ -z "${EXIT_CODE}" ] || fail 'dependamerge ran'
+
+      - name: 'Run local action with a misspelt config key'
+        id: misspelt
+        continue-on-error: true
+        uses: $/
+        with:
+          # yamllint disable-line rule:line-length
+          config: '{"target": "${{ github.repository_owner }}", "exlude_repos": ["x"]}'
+          dry_run: 'true'
+
+      - name: 'Expect the options to be refused before dependamerge runs'
+        shell: bash
+        env:
+          OUTCOME: '${{ steps.misspelt.outcome }}'
+          EXIT_CODE: '${{ steps.misspelt.outputs.exit_code }}'
+        run: |
+          # Expect the options to be refused before dependamerge runs
+          set -euo pipefail
+          echo "outcome=${OUTCOME} exit_code=${EXIT_CODE}"
+          fail() { echo "::error::$1"; exit 1; }
+          [ "${OUTCOME}" = 'failure' ] || fail 'the step did not fail'
+          [ -z "${EXIT_CODE}" ] || fail 'dependamerge ran'
+
+      - name: 'Run local action with an unknown slack_when'
+        id: bad-slack-when
+        continue-on-error: true
+        uses: $/
+        with:
+          target: '${{ github.repository }}'
+          slack_channel: 'C0000000000'
+          slack_when: 'sometimes'
+          dry_run: 'true'
+
+      - name: 'Expect the unknown slack_when to stop the run'
+        shell: bash
+        env:
+          OUTCOME: '${{ steps.bad-slack-when.outcome }}'
+          EXIT_CODE: '${{ steps.bad-slack-when.outputs.exit_code }}'
+        run: |
+          # Expect the unknown slack_when to stop the run
+          set -euo pipefail
+          echo "outcome=${OUTCOME} exit_code=${EXIT_CODE}"
+          fail() { echo "::error::$1"; exit 1; }
+          [ "${OUTCOME}" = 'failure' ] || fail 'the step did not fail'
+          [ -z "${EXIT_CODE}" ] || fail 'dependamerge ran'
+
+  reusable-workflow:
+    name: 'Reusable workflow (dry run)'
+    permissions:
+      contents: read  # The reusable workflow fetches the action.
+    uses: $/.github/workflows/dependamerge.yaml
+    with:
+      target: '${{ github.repository }}'
+      dry_run: true
+      # This repository's environment for live dry-run tests.
+      environment: 'integration'
+      timeout_minutes: 15
+      # A channel but no Slack token: the action builds the digest, and
+      # the workflow takes its missing-token path rather than posting.
+      slack_channel: 'C0000000000'
+      slack_when: 'always'
+    secrets:
+      DEPENDAMERGE_TOKEN: '${{ secrets.GITHUB_TOKEN }}'
+
+  reusable-workflow-outputs:
+    name: 'Reusable workflow outputs'
+    needs: ['reusable-workflow']
+    runs-on: 'ubuntu-latest'
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: 'Expect a clean dry run'
+        shell: bash
+        env:
+          EXIT_CODE: '${{ needs.reusable-workflow.outputs.exit_code }}'
+          MERGED: '${{ needs.reusable-workflow.outputs.merged }}'
+          POSTED: '${{ needs.reusable-workflow.outputs.digest_posted }}'
+        run: |
+          # Expect a clean dry run
+          set -euo pipefail
+          echo "exit_code=${EXIT_CODE} merged=${MERGED} posted=${POSTED}"
+          fail() { echo "::error::$1"; exit 1; }
+          [ "${EXIT_CODE}" = '0' ] || fail "exit code ${EXIT_CODE}"
+          [[ "${MERGED}" =~ ^[0-9]+$ ]] || fail 'no counts'
+          # Without a Slack token nothing is posted, and the run succeeds.
+          [ "${POSTED}" = 'false' ] || fail 'a digest was posted'

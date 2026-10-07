@@ -88,6 +88,11 @@ jobs:
       - name: 'Run local action: ${{ matrix.name }}'
         id: dependamerge
         uses: $/
+        # A caller's version override must not reach the build: were it
+        # to, dependamerge would be built as 9.9.9, and the output check
+        # below would see that disagree with the version output.
+        env:
+          SETUPTOOLS_SCM_PRETEND_METADATA: '{tag="9.9.9"}'
         with:
           target: '${{ matrix.target }}'
           include_repos: '${{ matrix.include_repos }}'
@@ -111,6 +116,12 @@ jobs:
           echo "total=${TOTAL} merged=${MERGED}"
           fail() { echo "::error::$1"; exit 1; }
           [ -n "${VERSION}" ] || fail 'no version output'
+          # The version reported is the version that ran.
+          installed="$("${RUNNER_TEMP}/dependamerge-venv/bin/python" -c \
+            'import importlib.metadata as m; print(m.version("dependamerge"))')"
+          echo "installed=${installed}"
+          [ "${installed}" = "${VERSION}" ] \
+            || fail "built ${installed}, but reported ${VERSION}"
           [ "${EXIT_CODE}" = '0' ] || fail "exit code ${EXIT_CODE}"
           # A dry run always publishes results, so the counts are set.
           [[ "${TOTAL}" =~ ^[0-9]+$ ]] || fail 'no total output'
@@ -126,6 +137,84 @@ jobs:
           [ "${channel}" = 'C0000000000' ] || fail 'wrong Slack channel'
           jq -e '.blocks | length > 0 and length <= 50' \
             <<< "${SLACK_PAYLOAD}" >/dev/null || fail 'bad Slack blocks'
+
+  macos:
+    # The action supports macOS runners as well as Linux; this smoke run
+    # catches what differs there: the shell, BSD userland tools and the
+    # venv layout the run and summary steps rely on. One dry run and one
+    # refused input keep the macOS minutes small.
+    name: 'macOS: dry run and a refused input'
+    runs-on: 'macos-latest'
+    timeout-minutes: 15
+    permissions:
+      contents: read  # Read repositories and their contents.
+      pull-requests: read  # Discover open PRs to evaluate (read-only).
+    steps:
+      # Harden-Runner blocks egress on Linux alone; on macOS it audits.
+      - name: 'Harden runner (audit)'
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
+        with:
+          egress-policy: 'audit'
+
+      - name: 'Checkout repository'
+        # yamllint disable-line rule:line-length
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: 'Run local action on macOS'
+        id: dependamerge
+        uses: $/
+        with:
+          target: '${{ github.repository }}'
+          dry_run: 'true'
+          slack_channel: 'C0000000000'
+
+      - name: 'Validate action outputs'
+        shell: bash
+        env:
+          VERSION: '${{ steps.dependamerge.outputs.version }}'
+          EXIT_CODE: '${{ steps.dependamerge.outputs.exit_code }}'
+          TOTAL: '${{ steps.dependamerge.outputs.total }}'
+          SLACK_PAYLOAD: '${{ steps.dependamerge.outputs.slack_payload }}'
+        run: |
+          # Validate action outputs
+          set -euo pipefail
+          echo "version=${VERSION} exit_code=${EXIT_CODE} total=${TOTAL}"
+          fail() { echo "::error::$1"; exit 1; }
+          [ -n "${VERSION}" ] || fail 'no version output'
+          installed="$("${RUNNER_TEMP}/dependamerge-venv/bin/python" -c \
+            'import importlib.metadata as m; print(m.version("dependamerge"))')"
+          [ "${installed}" = "${VERSION}" ] \
+            || fail "built ${installed}, but reported ${VERSION}"
+          [ "${EXIT_CODE}" = '0' ] || fail "exit code ${EXIT_CODE}"
+          [[ "${TOTAL}" =~ ^[0-9]+$ ]] || fail 'no total output'
+          [[ "${SLACK_PAYLOAD}" == *'"channel": "C0000000000"'* ]] \
+            || [[ "${SLACK_PAYLOAD}" == *'"channel":"C0000000000"'* ]] \
+            || fail 'no Slack payload for the channel'
+
+      - name: 'Run local action with a misspelt merge method'
+        id: bad-method
+        continue-on-error: true
+        uses: $/
+        with:
+          target: '${{ github.repository }}'
+          merge_method: 'squahs'
+          dry_run: 'true'
+
+      - name: 'Expect the misspelt merge method to stop the run'
+        shell: bash
+        env:
+          OUTCOME: '${{ steps.bad-method.outcome }}'
+          EXIT_CODE: '${{ steps.bad-method.outputs.exit_code }}'
+        run: |
+          # Expect the misspelt merge method to stop the run
+          set -euo pipefail
+          echo "outcome=${OUTCOME} exit_code=${EXIT_CODE}"
+          fail() { echo "::error::$1"; exit 1; }
+          [ "${OUTCOME}" = 'failure' ] || fail 'the step did not fail'
+          [ -z "${EXIT_CODE}" ] || fail 'dependamerge ran'
 
   refuses-unknown-repository:
     name: 'Bad options stop the run'

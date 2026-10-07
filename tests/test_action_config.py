@@ -202,6 +202,31 @@ class TestProblems:
         problems = self._problems(action_config, config, {"target": "acme"})
         assert expected in problems[0]
 
+    @pytest.mark.parametrize(
+        ("config", "inputs", "expected"),
+        [
+            # JSON allows an unpaired surrogate escape; UTF-8 cannot hold it.
+            ('{"target": "\\ud800"}', {}, "target (config)"),
+            (
+                '{"target": "acme", "include_repos": ["a", "\\udfff"]}',
+                {},
+                "include_repos (config)",
+            ),
+            (
+                '{"target": "acme", "exclude_repos": "b\\ud83d"}',
+                {},
+                "exclude_repos (config)",
+            ),
+            # An input of invalid UTF-8 bytes reaches Python the same way.
+            ("", {"target": "acme\udc80"}, "target (input)"),
+        ],
+    )
+    def test_invalid_unicode_is_a_problem_not_a_crash(
+        self, action_config, config, inputs, expected
+    ):
+        problems = self._problems(action_config, config, inputs)
+        assert problems == [f"{expected}: contains invalid Unicode"]
+
     @pytest.mark.parametrize("value", ["", [], ",", [" "]])
     def test_a_list_naming_nothing_is_refused(self, action_config, value):
         problems = self._problems(
@@ -326,6 +351,18 @@ class TestMain:
         err = capsys.readouterr().err
         assert err.count("\n") == 1  # one command, one line
         assert "%0A::warning::forged" in err
+
+    def test_invalid_unicode_stops_the_run_cleanly(
+        self, action_config, tmp_path, capsys
+    ):
+        output = tmp_path / "output"
+        env = {"INPUT_CONFIG": '{"target": "\\ud800"}', "GITHUB_OUTPUT": str(output)}
+        assert action_config.main(env) == 2
+        assert not output.exists()
+        assert capsys.readouterr().err == (
+            "::error title=dependamerge options::"
+            "target (config): contains invalid Unicode\n"
+        )
 
     def test_the_target_value_is_never_logged(self, action_config, tmp_path, capsys):
         output = tmp_path / "output"

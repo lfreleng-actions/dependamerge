@@ -235,6 +235,21 @@ def _named_host(target: str) -> str | None:
     return authority.rsplit("@", 1)[-1].split(":", 1)[0].lower()
 
 
+def _encodable(value: str) -> str:
+    """``value``, once it is known to encode as UTF-8.
+
+    JSON allows an unpaired surrogate escape (``"\\ud800"``), and an input
+    of invalid UTF-8 bytes arrives as one, but neither can be written to
+    the UTF-8 GITHUB_OUTPUT: left alone, the write would end the step
+    with a traceback rather than a reported problem.
+    """
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        raise ValueError("contains invalid Unicode") from None
+    return value
+
+
 def resolve(
     config_text: str, inputs: Mapping[str, str], server: str = ""
 ) -> dict[str, str]:
@@ -268,7 +283,7 @@ def resolve(
                 resolved[name] = default
             continue
         try:
-            resolved[name] = parse(value)
+            resolved[name] = _encodable(parse(value))
         except ValueError as exc:
             problems.append(f"{name} ({source}): {exc}")
     # Whether each list was supplied, not whether it parsed: a malformed

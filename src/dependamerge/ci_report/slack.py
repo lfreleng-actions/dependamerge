@@ -28,6 +28,8 @@ MAX_TEXT_CHARS = 3000
 MAX_HEADER_CHARS = 150
 #: Slack's ceiling on the top-level ``text`` of a message.
 MAX_FALLBACK_CHARS = 40000
+#: Room a fallback section needs beyond its heading to be worth listing.
+_MIN_SECTION_ROOM = 80
 
 #: Outcomes listed PR by PR, with their reasons:
 #: (status, heading, heading in a preview or dry run).
@@ -168,6 +170,38 @@ def should_post(document: Mapping[str, Any], when: str) -> bool:
     return when == "always"
 
 
+def _fallback_text(
+    headline: str,
+    summary: str,
+    sections: Sequence[tuple[str, Sequence[str]]],
+    footer: str,
+) -> str:
+    """The top-level text: every section fitted to the fallback ceiling.
+
+    The headline, summary and footer are reserved first, so the run link
+    always survives. Sections then share what remains in reading order,
+    failures first, each shedding lines with a count only when the
+    ceiling is reached; a section with no room left for its heading is
+    left to its block.
+    """
+    separator = "\n\n"
+    parts = [headline, summary]
+    remaining = MAX_FALLBACK_CHARS - sum(
+        text_length(part) + text_length(separator) for part in parts
+    )
+    remaining -= text_length(footer)
+    for heading, lines in sections:
+        room = remaining - text_length(separator)
+        # A heading, one cut line and the shed count need some room;
+        # below that the fitted text would be noise.
+        if room < text_length(heading) + _MIN_SECTION_ROOM:
+            break
+        text = fit_lines(heading, lines, budget=room)
+        parts.append(text)
+        remaining -= text_length(text) + text_length(separator)
+    return separator.join([*parts, footer])
+
+
 def render_payload(
     document: Mapping[str, Any],
     *,
@@ -211,8 +245,10 @@ def render_payload(
     summary = _ellipsize(summary, MAX_TEXT_CHARS)
     blocks.append(_section(summary))
 
-    # The per-outcome listings, kept apart for the fallback text below.
+    # The per-outcome listings: each block's text fitted to a block's
+    # ceiling, and the unfitted lines, which the fallback fits to its own.
     listings: list[str] = []
+    sections: list[tuple[str, list[str]]] = []
     for status, heading, preview_heading in _LISTED:
         matching = [entry for entry in entries if entry.get("status") == status]
         if matching:
@@ -220,12 +256,15 @@ def render_payload(
                 _pr_line(entry, with_reason=status != "merged") for entry in matching
             ]
             title = preview_heading if preview else heading
+            sections.append((title, lines))
             listings.append(fit_lines(title, lines))
 
     scan_errors = [escape(error) for error in document.get("scan_errors") or []]
     if scan_errors:
         heading = "\u26a0\ufe0f *Repositories not scanned*"
-        listings.append(fit_lines(heading, [f"\u2022 {e}" for e in scan_errors]))
+        lines = [f"\u2022 {e}" for e in scan_errors]
+        sections.append((heading, lines))
+        listings.append(fit_lines(heading, lines))
     blocks.extend(_section(listing) for listing in listings)
 
     tool = document.get("tool") or {}
@@ -236,10 +275,11 @@ def render_payload(
 
     # Screen readers and notifications read the top-level text, not the
     # blocks, so it carries the whole digest: the headline, the counts and
-    # any scope selection, every listing as fitted (and escaped) for its
-    # block, and the footer with the run link.
+    # any scope selection, every listing (escaped as for its block, but
+    # fitted to the fallback's own ceiling rather than a block's), and the
+    # footer with the run link.
     headline = f"\U0001f916 Dependamerge{mode}: {target}"
-    fallback = "\n\n".join([headline, summary, *listings, footer])
+    fallback = _fallback_text(headline, summary, sections, footer)
     return {
         "channel": channel,
         "text": _ellipsize(fallback, MAX_FALLBACK_CHARS),

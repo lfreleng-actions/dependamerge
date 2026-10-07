@@ -9,7 +9,11 @@ input, and not a GITHUB_TOKEN or GH_TOKEN the caller's job exports.
 Composite steps inherit the job's environment, so each step masks both.
 """
 
+import json
+import os
 import re
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -141,6 +145,99 @@ def test_setup_uv_installs_an_exact_uv_without_a_token(steps) -> None:
     assert re.fullmatch(r"\d+\.\d+\.\d+", str(options["version"]))
     assert options["working-directory"] == "${{ github.action_path }}"
     assert options["github-token"] == ""
+
+
+def _run_step_environment_seen_by_uv(
+    steps: list[dict[str, Any]], tmp_path: Path, inherited: dict[str, str]
+) -> list[dict[str, str]]:
+    """Run the run step as the runner would; return each uv call's env.
+
+    The step's own ``env`` is laid over the inherited job environment,
+    as the runner does, and the script runs under the runner's bash
+    options. uv and the installed dependamerge are recorders, so the
+    test needs neither a network nor a build.
+    """
+    (run,) = [s for s in steps if s.get("id") == "run"]
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    seen = tmp_path / "uv-calls.jsonl"
+    recorder = (
+        f"#!{sys.executable}\n"
+        "import json, os\n"
+        f"with open({str(seen)!r}, 'a') as f:\n"
+        "    f.write(json.dumps(dict(os.environ)) + '\\n')\n"
+    )
+    (bin_dir / "uv").write_text(recorder)
+    (bin_dir / "uv").chmod(0o755)
+    venv_bin = tmp_path / "dependamerge-venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    (venv_bin / "dependamerge").write_text("#!/bin/sh\nexit 0\n")
+    (venv_bin / "dependamerge").chmod(0o755)
+
+    def evaluate(value: Any) -> str:
+        # Every expression the step uses names an input or a step output.
+        return re.sub(r"\$\{\{.*?\}\}", "x", str(value))
+
+    env = {
+        "PATH": f"{bin_dir}{os.pathsep}/usr/bin{os.pathsep}/bin",
+        "HOME": str(tmp_path),
+        "RUNNER_TEMP": str(tmp_path),
+        "GITHUB_ACTION_PATH": str(_ACTION.parent),
+        "GITHUB_OUTPUT": str(tmp_path / "output"),
+        "GITHUB_SERVER_URL": "https://github.com",
+        **inherited,
+        **{k: evaluate(v) for k, v in (run.get("env") or {}).items()},
+    }
+    script = tmp_path / "run.sh"
+    script.write_text(run["run"])
+    subprocess.run(
+        ["bash", "--noprofile", "--norc", "-eo", "pipefail", str(script)],
+        env=env,
+        check=True,
+        capture_output=True,
+    )
+    return [json.loads(line) for line in seen.read_text().splitlines()]
+
+
+_VERSION_PREFIXES = ("SETUPTOOLS_SCM_", "VCS_VERSIONING_")
+
+
+def _version_settings(call: dict[str, str]) -> dict[str, str]:
+    return {
+        key: value for key, value in call.items() if key.startswith(_VERSION_PREFIXES)
+    }
+
+
+def test_the_build_is_given_the_resolved_version(steps, tmp_path) -> None:
+    calls = _run_step_environment_seen_by_uv(steps, tmp_path, {})
+    assert len(calls) == 2  # the dependency sync, then the project build
+    for call in calls:
+        assert _version_settings(call) == {"SETUPTOOLS_SCM_PRETEND_VERSION": "x"}
+
+
+@pytest.mark.xfail(strict=True, reason="#553: inherited SCM overrides reach the build")
+@pytest.mark.parametrize(
+    "name",
+    [
+        # Each overrides the release the action resolved, even with
+        # SETUPTOOLS_SCM_PRETEND_VERSION set: a metadata 'tag' replaces it.
+        "SETUPTOOLS_SCM_PRETEND_METADATA",
+        "SETUPTOOLS_SCM_PRETEND_METADATA_FOR_DEPENDAMERGE",
+        "VCS_VERSIONING_PRETEND_METADATA",
+        "VCS_VERSIONING_PRETEND_VERSION",
+        "SETUPTOOLS_SCM_PRETEND_VERSION_FOR_DEPENDAMERGE",
+        "SETUPTOOLS_SCM_OVERRIDES_FOR_DEPENDAMERGE",
+    ],
+)
+def test_the_build_sees_only_the_resolved_version(steps, tmp_path, name) -> None:
+    inherited = {name: '{tag="9.9.9"}' if "METADATA" in name else "9.9.9"}
+    calls = _run_step_environment_seen_by_uv(steps, tmp_path, inherited)
+    assert calls, "the run step called uv"
+    for call in calls:
+        # The resolved release alone: any other setting could change the
+        # version built into dependamerge, so it would disagree with the
+        # action's version output.
+        assert _version_settings(call) == {"SETUPTOOLS_SCM_PRETEND_VERSION": "x"}
 
 
 def test_the_version_resolver_joins_each_value_to_its_option(steps) -> None:

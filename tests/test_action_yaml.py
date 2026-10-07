@@ -215,7 +215,6 @@ def test_the_build_is_given_the_resolved_version(steps, tmp_path) -> None:
         assert _version_settings(call) == {"SETUPTOOLS_SCM_PRETEND_VERSION": "x"}
 
 
-@pytest.mark.xfail(strict=True, reason="#553: inherited SCM overrides reach the build")
 @pytest.mark.parametrize(
     "name",
     [

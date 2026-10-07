@@ -88,6 +88,11 @@ jobs:
       - name: 'Run local action: ${{ matrix.name }}'
         id: dependamerge
         uses: $/
+        # A caller's version override must not reach the build: were it
+        # to, dependamerge would be built as 9.9.9, and the output check
+        # below would see that disagree with the version output.
+        env:
+          SETUPTOOLS_SCM_PRETEND_METADATA: '{tag="9.9.9"}'
         with:
           target: '${{ matrix.target }}'
           include_repos: '${{ matrix.include_repos }}'
@@ -111,6 +116,12 @@ jobs:
           echo "total=${TOTAL} merged=${MERGED}"
           fail() { echo "::error::$1"; exit 1; }
           [ -n "${VERSION}" ] || fail 'no version output'
+          # The version reported is the version that ran.
+          installed="$("${RUNNER_TEMP}/dependamerge-venv/bin/python" -c \
+            'import importlib.metadata as m; print(m.version("dependamerge"))')"
+          echo "installed=${installed}"
+          [ "${installed}" = "${VERSION}" ] \
+            || fail "built ${installed}, but reported ${VERSION}"
           [ "${EXIT_CODE}" = '0' ] || fail "exit code ${EXIT_CODE}"
           # A dry run always publishes results, so the counts are set.
           [[ "${TOTAL}" =~ ^[0-9]+$ ]] || fail 'no total output'

@@ -283,7 +283,7 @@ runs:
         # variable and hands it to the dependamerge process alone.
         MERGE_TOKEN: ${{ inputs.token }}
         # hatch-vcs would otherwise read the version from git, which the
-        # action's copy lacks.
+        # action's copy lacks. The run clears every other version setting.
         SETUPTOOLS_SCM_PRETEND_VERSION: ${{ steps.version.outputs.version }}
         OPT_TARGET: ${{ steps.options.outputs.target }}
         OPT_DRY_RUN: ${{ steps.options.outputs.dry_run }}
@@ -331,6 +331,17 @@ runs:
         # Gerrit routing declarations too: one naming this GitHub host
         # would make every target ambiguous and refused.
         unset DEPENDAMERGE_GERRIT_HOST DEPENDAMERGE_GERRIT_HOSTS
+        # The version built into dependamerge is the release the version
+        # step resolved, and nothing else: the build backend also reads
+        # inherited SETUPTOOLS_SCM_* and VCS_VERSIONING_* settings, any
+        # of which (a PRETEND_METADATA tag, a _FOR_<DIST> override) could
+        # replace it, so the version output would disagree with what ran.
+        while IFS= read -r name; do
+          case "$name" in
+            SETUPTOOLS_SCM_PRETEND_VERSION) ;;
+            SETUPTOOLS_SCM_* | VCS_VERSIONING_*) unset "$name" ;;
+          esac
+        done < <(compgen -e)
         args+=(--github-host "${GITHUB_SERVER_URL#*://}")
         args+=(--merge-method "$OPT_MERGE_METHOD" --force "$OPT_FORCE")
         args+=(--max-wait "$OPT_MAX_WAIT")

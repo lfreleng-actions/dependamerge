@@ -202,9 +202,6 @@ class TestProblems:
         problems = self._problems(action_config, config, {"target": "acme"})
         assert expected in problems[0]
 
-    @pytest.mark.xfail(
-        strict=True, reason="#554: lone surrogates crash the GITHUB_OUTPUT write"
-    )
     @pytest.mark.parametrize(
         ("config", "inputs", "expected"),
         [
@@ -355,9 +352,6 @@ class TestMain:
         assert err.count("\n") == 1  # one command, one line
         assert "%0A::warning::forged" in err
 
-    @pytest.mark.xfail(
-        strict=True, reason="#554: lone surrogates crash the GITHUB_OUTPUT write"
-    )
     def test_invalid_unicode_stops_the_run_cleanly(
         self, action_config, tmp_path, capsys
     ):

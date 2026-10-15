@@ -62,6 +62,7 @@ fragment PRState on PullRequest {
   mergedAt
   mergeable
   mergeStateStatus
+  isDraft
   headRefOid
 }
 """
@@ -93,9 +94,11 @@ _MERGE_STATE = {
     # Reporting it as blocked would make the wait loops keep waiting on a PR
     # that is ready to merge.
     "HAS_HOOKS": "has_hooks",
-    # ``DRAFT`` above is not currently in GitHub's MergeStateStatus enum
-    # (drafts surface via ``isDraft``), but REST does report a ``draft``
-    # mergeable_state, so the mapping is kept for parity and forward safety.
+    # ``DRAFT`` is deprecated in GitHub's MergeStateStatus enum in favour
+    # of ``isDraft``, and REST reports a draft's mergeable_state as
+    # ``blocked`` or ``dirty`` like any other PR.  The mapping stays for a
+    # literal value, but drafts are recognised by ``isDraft`` (REST
+    # ``draft``), never by this state.
 }
 
 
@@ -144,6 +147,7 @@ def _to_rest_shape(node: dict[str, Any]) -> dict[str, Any]:
         "merged_at": node.get("mergedAt"),
         "mergeable": _MERGEABLE.get((node.get("mergeable") or "").upper()),
         "mergeable_state": merge_state,
+        "draft": node.get("isDraft") is True,
     }
     head_sha = node.get("headRefOid")
     if head_sha:

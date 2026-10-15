@@ -26,6 +26,7 @@ from ..models import ComparisonResult, PullRequestInfo
 from ..progress_tracker import MergeProgressTracker
 from ._app import MAX_RETRIES, console
 from ._context import _MergeContext
+from ._drafts import _set_aside_drafts
 from ._merge_report import (
     _conclude_run,
     _confirmed_run_results,
@@ -81,6 +82,14 @@ def _scan_and_find_similar(ctx: _MergeContext) -> None:
             await svc.close()
 
     ctx.all_similar_prs = asyncio.run(_find_similar())
+
+    # Drafts cannot merge; set them aside before anything is evaluated.
+    kept = {
+        id(pr) for pr in _set_aside_drafts(ctx, [pr for pr, _ in ctx.all_similar_prs])
+    }
+    ctx.all_similar_prs = [
+        entry for entry in ctx.all_similar_prs if id(entry[0]) in kept
+    ]
 
     if ctx.progress_tracker:
         ctx.progress_tracker.stop()

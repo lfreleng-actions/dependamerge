@@ -291,6 +291,7 @@ class TestAsyncIntegration:
             def __init__(self, mergeable, mergeable_state):
                 self.mergeable = mergeable
                 self.mergeable_state = mergeable_state
+                self.is_draft = False
 
         # Test cases: (mergeable, mergeable_state, should_attempt)
         test_cases = [

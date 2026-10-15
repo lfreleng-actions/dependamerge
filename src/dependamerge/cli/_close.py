@@ -23,7 +23,7 @@ import dependamerge.cli as _pkg
 
 from ..bot_policy import BotPolicy
 from ..close_manager import CloseResult
-from ..error_codes import ExitCode, exit_with_error
+from ..error_codes import ExitCode, exit_for_pr_state_error, exit_with_error
 from ..models import ComparisonResult, PullRequestInfo
 from ..progress_tracker import MergeProgressTracker
 from ._app import console
@@ -128,6 +128,15 @@ def _validate_close_authorization(
             ``OVERRIDE_REQUIRED`` when only the override is missing.
     """
     author = ctx.source_pr.author
+    if ctx.source_pr.is_draft is True:
+        exit_for_pr_state_error(
+            ctx.pr_number,
+            "a draft",
+            details=(
+                "Drafts are set aside, as merge sets them aside; mark it ready "
+                "for review first. Nothing was scanned or closed"
+            ),
+        )
     if ctx.github_client.is_automation_author(author):
         decision = ctx.bot_policy.decide(author, ctx.source_pr.repository_full_name)
         if not decision.in_scope:

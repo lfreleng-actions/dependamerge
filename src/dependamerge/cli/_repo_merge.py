@@ -17,7 +17,6 @@ import asyncio
 import dependamerge.cli as _pkg
 
 from ..bot_identity import is_automation_author
-from ..bot_policy import BotPolicy
 from ..merge_manager import (
     MergeResult,
 )
@@ -29,6 +28,7 @@ from ..url_parser import (
 from ._app import console
 from ._bot_scope import _remove_out_of_scope_bots
 from ._context import _MergeContext
+from ._drafts import _set_aside_drafts
 from ._human_gate import _confirm_human_prs_in_scope
 from ._merge_order import _repo_merge_order
 from ._merge_permissions import _maybe_check_merge_permissions
@@ -122,25 +122,27 @@ def _fetch_repo_prs(
 
 
 def _partition_repo_prs(
+    ctx: _MergeContext,
     parsed_repo: ParsedRepoUrl,
     repo_prs: list[PullRequestInfo],
-    bot_policy: BotPolicy,
 ) -> tuple[list[PullRequestInfo], list[PullRequestInfo], list[PullRequestInfo]]:
     """Split the fetched PRs by authorship and print the repository summary.
 
-    PRs from Apps outside the bot policy are listed and dropped first.
+    PRs from Apps outside the bot policy, then drafts, are listed and
+    set aside first.
 
     Args:
+        ctx: Shared merge context, holding the bot policy.
         parsed_repo: Parsed repository URL, used for the summary line.
         repo_prs: The repository's open PRs, in merge order.
-        bot_policy: The Apps this run may act on.
 
     Returns:
         The PRs left in scope, then the automation-authored and the
         human-authored PRs among them.
     """
     console.print(f"\n📊 Found {len(repo_prs)} open PR(s) in {parsed_repo.project}")
-    repo_prs = _remove_out_of_scope_bots(bot_policy, repo_prs)
+    repo_prs = _remove_out_of_scope_bots(ctx.bot_policy, repo_prs)
+    repo_prs = _set_aside_drafts(ctx, repo_prs)
 
     automation_prs: list[PullRequestInfo] = []
     human_prs: list[PullRequestInfo] = []
@@ -273,7 +275,7 @@ def _handle_repo_merge(
     # identically; the preview list below is derived from this order too.
     repo_prs = _repo_merge_order(repo_prs)
 
-    repo_prs, _, human_prs = _partition_repo_prs(parsed_repo, repo_prs, ctx.bot_policy)
+    repo_prs, _, human_prs = _partition_repo_prs(ctx, parsed_repo, repo_prs)
     if not repo_prs:
         console.print(f"❌ No open PRs in scope in {parsed_repo.project}")
         _conclude_run(ctx, [], preview=ctx.dry_run or not ctx.no_confirm)

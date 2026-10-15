@@ -18,6 +18,7 @@ from pathlib import Path
 import dependamerge.cli as _pkg
 
 from ..bot_policy import BotPolicy
+from ..merge_manager import MergeResult
 from ..models import ComparisonResult, PullRequestInfo
 from ..progress_tracker import MergeProgressTracker
 from ..repo_selection import RepoSelection
@@ -72,6 +73,9 @@ class _MergeContext:
     # --exclude-bots and the user's config.json; without any, only the
     # built-in Apps.
     bot_policy: BotPolicy = field(default_factory=BotPolicy)
+    # Drafts set aside when the run's scope was settled, recorded as
+    # skipped so the results document reports them.
+    draft_results: list[MergeResult] = field(default_factory=list)
 
     # Derived / mutable state
     github_client: _pkg.GitHubClient | None = None

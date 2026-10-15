@@ -213,6 +213,10 @@ or user account in one command.
   `@dependabot recreate`, `pre-commit.ci run`). Both are running totals
   of *operations*, so they keep reporting what the run did after the PRs
   themselves have landed in `✅ Merged` / `❌ Failed`
+- **Draft Exclusion**: The run lists draft PRs as skipped and never approves
+  or merges them, since a draft cannot merge until its author marks it ready.
+  The results document records them as skipped; a draft source PR stops the
+  run with exit code `6`
 - **Grouped Preview**: The preview lists candidate PRs grouped by repository
   for readability, then prompts for a confirmation token before merging
 - **Human PR Safety**: The run excludes human-authored PRs by default;

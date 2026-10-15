@@ -62,8 +62,9 @@ class _ApprovalMixin(_MergeManagerBase):
 
         Raises:
             RuntimeError: When the PR's App author is outside the run's
-                bot policy.  Entry to the merge flow already refuses such
-                a PR; this guards the one write that matters most.
+                bot policy, or the PR is a draft.  Entry to the merge flow
+                already refuses both; this guards the one write that
+                matters most.
         """
         if is_automation_author(pr_info.author) and not self.bot_policy.admits(
             pr_info.author, f"{owner}/{repo}"
@@ -71,6 +72,10 @@ class _ApprovalMixin(_MergeManagerBase):
             raise RuntimeError(
                 f"refusing to approve {owner}/{repo}#{pr_info.number}: "
                 f"{pr_info.author} is not in this run's scope"
+            )
+        if pr_info.is_draft:
+            raise RuntimeError(
+                f"refusing to approve {owner}/{repo}#{pr_info.number}: draft PR"
             )
         approved = await self._approve_pr(owner, repo, pr_info.number)
         if approved:

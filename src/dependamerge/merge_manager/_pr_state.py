@@ -98,6 +98,8 @@ class _PullRequestStateMixin(_MergeManagerBase):
                 if isinstance(refreshed, dict):
                     pr_info.mergeable = refreshed.get("mergeable")
                     pr_info.mergeable_state = refreshed.get("mergeable_state")
+                    if isinstance(refreshed.get("draft"), bool):
+                        pr_info.is_draft = refreshed["draft"]
                     self.log.debug(
                         f"Refreshed {pr_key}: mergeable={pr_info.mergeable}, "
                         f"mergeable_state={pr_info.mergeable_state}"

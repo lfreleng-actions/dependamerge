@@ -98,7 +98,15 @@ class _SinglePullRequestMixin(
         if is_automation_author(pr_info.author):
             scope = self.bot_policy.decide(pr_info.author, pr_info.repository_full_name)
             if not scope.in_scope:
-                return self._out_of_scope_skip(pr_info, scope.reason, start_time)
+                return self._entry_skip(
+                    pr_info,
+                    f"{pr_info.author} is not in this run's scope ({scope.reason})",
+                    start_time,
+                )
+        # A draft cannot merge until its author marks it ready, so every
+        # attempt would only produce a refusal.
+        if pr_info.is_draft:
+            return self._entry_skip(pr_info, "draft PR", start_time)
 
         # Early determination of merge method based on repository settings
         merge_method = await self._get_merge_method_for_repo(repo_owner, repo_name)
@@ -170,14 +178,14 @@ class _SinglePullRequestMixin(
             return early
         return flow.result
 
-    def _out_of_scope_skip(
+    def _entry_skip(
         self, pr_info: PullRequestInfo, reason: str, start_time: float
     ) -> MergeResult:
-        """Report a PR whose App author this run's policy does not admit."""
+        """Skip a PR the run must not act on, before any API call."""
         result = MergeResult(pr_info=pr_info, status=MergeStatus.SKIPPED)
-        result.error = f"{pr_info.author} is not in this run's scope ({reason})"
+        result.error = reason
         self._pr_status(
-            f"⏭️ Skipped: {pr_info.html_url} [{result.error}]",
+            f"⏭️ Skipped: {pr_info.html_url} [{reason}]",
             level="warning",
         )
         result.duration = time.time() - start_time

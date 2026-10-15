@@ -211,7 +211,7 @@ class AsyncCloseManager:
             return None
 
         # Check if PR is a draft
-        if pr_info.mergeable_state == "draft":
+        if pr_info.is_draft or pr_info.mergeable_state == "draft":
             result.status = CloseStatus.SKIPPED
             result.error = "PR is a draft"
             log_and_print(

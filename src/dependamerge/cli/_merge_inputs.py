@@ -146,6 +146,17 @@ def _fetch_and_validate_source_pr(ctx: _MergeContext) -> None:
                 "closed",
                 details="Pull request has been closed",
             )
+        if source_pr.is_draft is True:
+            if ctx.progress_tracker:
+                ctx.progress_tracker.stop()
+            exit_for_pr_state_error(
+                ctx.pr_number,
+                "a draft",
+                details=(
+                    "A draft cannot merge until its author marks it ready "
+                    "for review; nothing was scanned or merged"
+                ),
+            )
     except (
         urllib3.exceptions.NameResolutionError,
         urllib3.exceptions.MaxRetryError,

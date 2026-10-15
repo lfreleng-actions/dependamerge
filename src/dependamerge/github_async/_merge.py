@@ -187,15 +187,17 @@ class _MergeMixin(_GitHubAsyncBase):
                 f"mergeable_state: {mergeable_state})"
             )
 
-            # Note common state-based causes for 405-style errors.
-            if mergeable_state == "blocked":
+            # Note common state-based causes for 405-style errors.  A
+            # draft reports ``blocked`` or ``dirty`` like any other PR, so
+            # it is checked first or it would be misreported as either.
+            if draft:
+                error_msg += " [cannot merge draft PR]"
+            elif mergeable_state == "blocked":
                 error_msg += " [blocked by branch protection / required checks]"
             elif mergeable_state == "behind":
                 error_msg += " [PR branch is behind base branch]"
             elif mergeable_state == "dirty":
                 error_msg += " [PR has merge conflicts]"
-            elif draft:
-                error_msg += " [cannot merge draft PR]"
             elif state == "closed" and not merged:
                 error_msg += " [PR was closed without merging]"
             elif state != "open":

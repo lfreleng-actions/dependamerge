@@ -158,6 +158,7 @@ class _RecreatedPullRequestMixin(_MergeManagerBase):
             state="open",
             mergeable=None,
             mergeable_state=None,
+            is_draft=pr_data.get("draft") is True,
             behind_by=None,
             files_changed=[],
             repository_full_name=full_name,

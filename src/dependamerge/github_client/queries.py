@@ -135,6 +135,7 @@ def _build_pull_request_info(
         state=pr.get("state") or "open",
         mergeable=pr.get("mergeable"),
         mergeable_state=pr.get("mergeable_state"),
+        is_draft=pr.get("draft") is True,
         behind_by=None,
         files_changed=files_changed,
         repository_full_name=f"{owner}/{repo}",

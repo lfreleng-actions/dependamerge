@@ -92,6 +92,9 @@ class _MergeabilityRefreshMixin(_MergeManagerBase):
             head_sha = (data.get("head") or {}).get("sha")
             if head_sha:
                 pr_info.head_sha = head_sha
+            # A PR marked not ready since the scan must not be merged.
+            if isinstance(data.get("draft"), bool):
+                pr_info.is_draft = data["draft"]
 
             mergeable = data.get("mergeable")
             mergeable_state = data.get("mergeable_state")

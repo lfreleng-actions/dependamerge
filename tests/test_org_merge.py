@@ -507,6 +507,31 @@ class TestMergeOrgUrl:
         )
         mock_check_perms.assert_not_called()
 
+    @patch("dependamerge.cli._run_parallel_merge")
+    @patch("dependamerge.cli.GitHubClient")
+    @patch("dependamerge.cli.asyncio.run")
+    def test_drafts_are_listed_and_never_reach_the_merge(
+        self, mock_asyncio_run, mock_client_class, mock_merge
+    ):
+        # #566: a draft reports ``blocked`` like any PR; only the flag
+        # says it is one, and the run must set it aside up front.
+        ready = _make_pr(1, repo="acme/widget")
+        draft = _make_pr(2, repo="acme/widget").model_copy(update={"is_draft": True})
+
+        mock_client_class.return_value = Mock(token="test_token")
+        mock_asyncio_run.side_effect = _mock_asyncio_run([([ready, draft], [])])
+        mock_merge.return_value = []
+
+        result = self.runner.invoke(
+            app,
+            ["merge", "https://github.com/acme", "--token", "t", "--dry-run"],
+        )
+
+        assert result.exit_code == 0, result.stdout
+        assert "Draft PRs skipped: 1" in _strip_ansi(result.stdout)
+        merged = [pr for pr, _ in mock_merge.call_args.args[1]]
+        assert merged == [ready]
+
     def test_ghe_owner_url_surfaces_owner_wide_message(self):
         # Regression: an owner-shaped URL on a non-github host (e.g. GHE)
         # must surface parse_org_url's actionable "only supported for

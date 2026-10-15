@@ -299,7 +299,8 @@ def _conclude_run(
     Every route that reports final results ends here, including an
     owner or repository with nothing to merge, so a scheduled run always
     leaves a results document behind.  Publishing comes first because
-    the exit for a failed run would otherwise skip it.
+    the exit for a failed run would otherwise skip it.  The drafts the
+    run set aside are published with the results, as skipped.
 
     Args:
         ctx: The run's shared state.
@@ -312,7 +313,7 @@ def _conclude_run(
             its preview rejected but never attempted them, so its exit
             code comes from this list alone, as it always has.
     """
-    _publish_results(ctx, results, preview=preview)
+    _publish_results(ctx, [*results, *ctx.draft_results], preview=preview)
     if not preview:
         _exit_if_any_failed(results if attempted is None else attempted)
 

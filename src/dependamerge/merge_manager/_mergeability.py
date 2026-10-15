@@ -250,7 +250,9 @@ class _MergeabilityMixin(_MergeManagerBase):
 
         - ``dirty``: real merge conflict; the branch must be
           rebased by a human (or by ``--fix``).
-        - ``draft``: GitHub blocks merging draft PRs by design.
+        - ``draft``: GitHub blocks merging draft PRs by design.  Drafts are
+          recognised by ``is_draft``; neither API reports a ``draft``
+          merge state any more.
 
         For all other states (``blocked``, ``behind``, ``unstable``,
         empty/``"unknown"``) we return True regardless of the
@@ -272,7 +274,7 @@ class _MergeabilityMixin(_MergeManagerBase):
                 pr_info.number,
             )
             return False
-        if pr_info.mergeable_state == "draft":
+        if pr_info.is_draft or pr_info.mergeable_state == "draft":
             self.log.debug(
                 "⏭️ Skipping draft PR %s#%s",
                 pr_info.repository_full_name,

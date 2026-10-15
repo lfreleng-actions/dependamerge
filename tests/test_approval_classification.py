@@ -18,16 +18,9 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 
-import dependamerge.github_async as _ga_module
+import dependamerge.github_async as ga
 from dependamerge.github_async import GitHubAsync
 from tests.conftest import make_merge_manager
-
-# Typed loosely until the names under test exist.
-ga: Any = _ga_module
-
-pytestmark = pytest.mark.xfail(
-    strict=True, reason="approval failures are not yet classified by status"
-)
 
 
 def _status_error(

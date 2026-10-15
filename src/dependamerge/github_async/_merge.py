@@ -13,7 +13,7 @@ extraction those messages rely on, and the GraphQL auto-merge enable.
 from __future__ import annotations
 
 from ._base import _GitHubAsyncBase
-from ._errors import PermissionError
+from ._errors import PermissionError, github_error_detail
 
 
 class _MergeMixin(_GitHubAsyncBase):
@@ -93,6 +93,7 @@ class _MergeMixin(_GitHubAsyncBase):
                                     "token"
                                 ),
                             },
+                            status_code=perm_error.status_code,
                         )
                 self.log.debug(
                     f"Permission error merging PR #{number} in {owner}/{repo}: {perm_error}"
@@ -124,31 +125,10 @@ class _MergeMixin(_GitHubAsyncBase):
     def _extract_github_error_detail(error: Exception) -> str:
         """Extract GitHub's response-body message from a failed request.
 
-        GitHub puts the *actual* reason here — ruleset violations,
-        "Required workflows ... are not satisfied", required-check names,
-        etc.  The ``HTTPStatusError`` text only carries the status line
-        (e.g. "405 Method Not Allowed"), so without this the real cause is
-        silently lost.  Whitespace/newlines are collapsed so the reason
-        fits on a single status line.
-
+        Delegates to :func:`github_error_detail`, which approvals share.
         Returns an empty string when no detail could be extracted.
         """
-        response = getattr(error, "response", None)
-        if response is None:
-            return ""
-        try:
-            body = response.json()
-            if isinstance(body, dict) and isinstance(body.get("message"), str):
-                return " ".join(body["message"].split())
-        except Exception:
-            # Response body was not JSON (or .json() failed); fall through
-            # to the raw-text extraction below rather than failing here.
-            pass
-        try:
-            raw = getattr(response, "text", "") or ""
-            return " ".join(raw.split())[:500]
-        except Exception:
-            return ""
+        return github_error_detail(error)
 
     async def _validate_merge_result(
         self,

@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+from ..github_async import ApprovalError
 from ..github_async import PermissionError as GitHubPermissionError
 from ..models import PullRequestInfo
 from ..rule_violations import violation_verb
@@ -373,6 +374,11 @@ class _ApprovalMixin(_MergeManagerBase):
             # handler and routed the failure through the catch-all
             # path, which dumps a full stack trace to stderr on
             # every PR in the batch.
+            raise
+        except ApprovalError:
+            # Already carries GitHub's own reason for the refusal; the
+            # string checks below would read its 422 as "already
+            # approved" and report a refused approval as a success.
             raise
         except Exception as e:
             error_str = str(e)

@@ -24,7 +24,7 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 
-from dependamerge.github_async import GitHubAsync
+from dependamerge.github_async import ApprovalError, GitHubAsync
 from dependamerge.merge_manager import (
     MergeResult,
     MergeStatus,
@@ -566,7 +566,7 @@ class TestApproveRetry:
         c.post = AsyncMock(side_effect=_http_error(422))  # type: ignore[method-assign]
         c._has_own_approval = AsyncMock(return_value=False)  # type: ignore[method-assign]
 
-        with pytest.raises(httpx.HTTPStatusError):
+        with pytest.raises(ApprovalError):
             await c.approve_pull_request("o", "r", 1, "lgtm")
         assert c.post.await_count == 1
         await c.aclose()

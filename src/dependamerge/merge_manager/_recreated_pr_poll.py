@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from ..bot_identity import rest_author_login
 from ..models import PullRequestInfo
 from ._base import _MergeManagerBase
 from ._types import RecreateOutcome, RecreateResult, _merged_from_payload
@@ -100,7 +101,7 @@ class _RecreatedPollMixin(_MergeManagerBase):
                         node_id=refreshed.get("node_id"),
                         title=refreshed.get("title", ""),
                         body=refreshed.get("body"),
-                        author=((refreshed.get("user") or {}).get("login", "")),
+                        author=rest_author_login(refreshed.get("user")),
                         head_sha=((refreshed.get("head") or {}).get("sha", "")),
                         base_branch=((refreshed.get("base") or {}).get("ref", "")),
                         head_branch=((refreshed.get("head") or {}).get("ref", "")),
@@ -171,7 +172,7 @@ class _RecreatedPollMixin(_MergeManagerBase):
             node_id=refreshed.get("node_id"),
             title=refreshed.get("title", ""),
             body=refreshed.get("body"),
-            author=((refreshed.get("user") or {}).get("login", "")),
+            author=rest_author_login(refreshed.get("user")),
             head_sha=((refreshed.get("head") or {}).get("sha", "")),
             base_branch=((refreshed.get("base") or {}).get("ref", "")),
             head_branch=((refreshed.get("head") or {}).get("ref", "")),

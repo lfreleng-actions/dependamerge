@@ -29,6 +29,7 @@ from collections.abc import Callable
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
+from ..bot_identity import rest_author_login
 from ..models import (
     FileChange,
     OrganizationScanResult,
@@ -127,7 +128,7 @@ def _build_pull_request_info(
         node_id=pr.get("node_id"),  # REST API uses "node_id" key
         title=pr.get("title") or "",
         body=pr.get("body"),
-        author=((pr.get("user") or {}).get("login") or ""),
+        author=rest_author_login(pr.get("user")),
         head_sha=((pr.get("head") or {}).get("sha") or ""),
         base_branch=((pr.get("base") or {}).get("ref") or ""),
         head_branch=((pr.get("head") or {}).get("ref") or ""),

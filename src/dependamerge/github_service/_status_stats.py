@@ -9,7 +9,11 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from ..bot_identity import is_automation_author
+from ..bot_identity import (
+    canonical_bot_login,
+    is_automation_author,
+    rest_author_login,
+)
 from ._base import _GitHubServiceBase
 
 
@@ -50,10 +54,15 @@ class _StatusStatsMixin(_GitHubServiceBase):
                 ):
                     open_prs.append(pr_node)
 
-            # Count open PRs
+            # Count open PRs.  The raw GraphQL login is bare for an App,
+            # so canonicalise it by account type before classifying.
             for pr in open_prs:
-                author = (pr.get("author") or {}).get("login", "").lower()
-                is_automation = self._is_automation_author(author)
+                author_node = pr.get("author") or {}
+                is_automation = self._is_automation_author(
+                    canonical_bot_login(
+                        author_node.get("login"), author_node.get("__typename")
+                    )
+                )
 
                 if is_automation:
                     stats["open_prs_automation"] += 1
@@ -81,8 +90,9 @@ class _StatusStatsMixin(_GitHubServiceBase):
             if since_date:
                 merged_prs = await self._get_merged_prs_since(owner, name, since_date)
                 for pr in merged_prs:
-                    author = (pr.get("user") or {}).get("login", "").lower()
-                    is_automation = self._is_automation_author(author)
+                    is_automation = self._is_automation_author(
+                        rest_author_login(pr.get("user"))
+                    )
 
                     if is_automation:
                         stats["merged_prs_automation"] += 1

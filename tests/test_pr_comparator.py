@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: 2025 The Linux Foundation
 
+from dependamerge.bot_identity import canonical_bot_login
 from dependamerge.models import FileChange, PullRequestInfo
 from dependamerge.pr_comparator import PRComparator
 
@@ -607,12 +608,13 @@ class TestPRComparator:
             html_url="https://github.com/org/repo1/pull/15",
         )
 
-        # Create PR with GraphQL API style author (dependabot)
+        # Create PR as the GraphQL boundary builds it: GraphQL reports the
+        # App as a bare ``dependabot`` Bot node, canonicalised on the way in.
         pr2 = PullRequestInfo(
             number=18,
             title="Chore: Bump amannn/action-semantic-pull-request from 6.0.1 to 6.1.1",
             body="Bumps [amannn/action-semantic-pull-request] from 6.0.1 to 6.1.1.",
-            author="dependabot",  # GraphQL API format (no [bot] suffix)
+            author=canonical_bot_login("dependabot", "Bot"),
             head_sha="def456",
             base_branch="main",
             head_branch="dependabot/github_actions/amannn/action-semantic-pull-request-6.1.1",
@@ -633,9 +635,10 @@ class TestPRComparator:
             html_url="https://github.com/org/repo2/pull/18",
         )
 
-        # Test that normalization makes them equivalent
+        # Test that normalization makes the raw REST and GraphQL forms
+        # equivalent, then that the canonical forms compare as one author
         normalized1 = comparator._normalize_author(pr1.author)
-        normalized2 = comparator._normalize_author(pr2.author)
+        normalized2 = comparator._normalize_author("dependabot")
         assert normalized1 == normalized2, (
             f"Expected normalized authors to match: '{normalized1}' vs '{normalized2}'"
         )

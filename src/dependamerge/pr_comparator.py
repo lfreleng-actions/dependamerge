@@ -4,7 +4,7 @@
 import re
 from difflib import SequenceMatcher
 
-from .bot_identity import normalize_bot_login
+from .bot_identity import is_automation_author, normalize_bot_login
 from .models import ComparisonResult, FileChange, PullRequestInfo
 
 
@@ -78,19 +78,13 @@ class PRComparator:
         )
 
     def _is_automation_pr(self, pr: PullRequestInfo) -> bool:
-        """Check if PR is from an automation tool."""
-        automation_indicators = [
-            "dependabot",
-            "pre-commit",
-            "renovate",
-            "github-actions",
-            "auto-update",
-            "automated",
-            "bot",
-        ]
+        """Check if PR is from an automation tool.
 
-        pr_text = f"{pr.title} {pr.body or ''} {pr.author}".lower()
-        return any(indicator in pr_text for indicator in automation_indicators)
+        Decided by the author's identity alone.  Words in the title or
+        body say nothing about who wrote a pull request, and matching
+        them let a person's PR pass as automation.
+        """
+        return is_automation_author(pr.author)
 
     def _compare_titles(self, title1: str, title2: str) -> float:
         """Compare PR titles for similarity."""

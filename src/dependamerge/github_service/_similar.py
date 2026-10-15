@@ -12,6 +12,7 @@ helpers so each stays reviewable.
 
 from __future__ import annotations
 
+from ..bot_identity import is_automation_author
 from ..models import ComparisonResult, PullRequestInfo
 from ._base import _GitHubServiceBase
 
@@ -150,18 +151,12 @@ class _SimilarPullRequestsMixin(_GitHubServiceBase):
         ):
             return False
 
-        # Candidate filtering
+        # Candidate filtering: an App author when the source is one (the
+        # same identity rule as everywhere else, so a person whose login
+        # merely contains "bot" never qualifies), the same author
+        # otherwise.
         if only_automation:
-            return any(
-                bot in (target_pr.author or "").lower()
-                for bot in [
-                    "dependabot",
-                    "renovate",
-                    "pre-commit",
-                    "github-actions",
-                    "bot",
-                ]
-            )
+            return is_automation_author(target_pr.author)
         return (target_pr.author or "") == (source_pr.author or "")
 
     @staticmethod

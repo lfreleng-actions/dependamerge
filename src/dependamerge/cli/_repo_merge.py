@@ -137,8 +137,8 @@ def _partition_repo_prs(
     human_prs: list[PullRequestInfo] = []
 
     for pr in repo_prs:
-        # is_automation_author normalizes REST and GraphQL login forms
-        # (e.g. "dependabot[bot]" vs "dependabot") so they classify
+        # Authors are canonical by now (an App is always "<slug>[bot]",
+        # whichever API reported it), so REST and GraphQL forms classify
         # identically.
         if is_automation_author(pr.author):
             automation_prs.append(pr)

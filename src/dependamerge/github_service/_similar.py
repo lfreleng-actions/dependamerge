@@ -12,7 +12,7 @@ helpers so each stays reviewable.
 
 from __future__ import annotations
 
-from ..bot_identity import is_automation_author
+from ..bot_policy import BotPolicy
 from ..models import ComparisonResult, PullRequestInfo
 from ._base import _GitHubServiceBase
 
@@ -27,6 +27,7 @@ class _SimilarPullRequestsMixin(_GitHubServiceBase):
         comparator,
         *,
         only_automation: bool,
+        bot_policy: BotPolicy | None = None,
     ) -> list[tuple[PullRequestInfo, ComparisonResult]]:
         """
         Find PRs across an organization that are similar to the provided source PR.
@@ -42,6 +43,8 @@ class _SimilarPullRequestsMixin(_GitHubServiceBase):
             source_pr: The PR to compare against.
             comparator: Provides compare_pull_requests(source, target) -> ComparisonResult.
             only_automation: If True, restrict candidates to automation PRs; otherwise, same author as source.
+            bot_policy: The Apps whose PRs count as automation candidates;
+                without one, only the built-in Apps do.
 
         Returns:
             List of (PullRequestInfo, ComparisonResult) tuples for similar PRs.
@@ -68,6 +71,7 @@ class _SimilarPullRequestsMixin(_GitHubServiceBase):
                 source_pr,
                 comparator,
                 only_automation=only_automation,
+                bot_policy=bot_policy,
             )
 
             results.extend(matching_prs_in_repo)
@@ -84,6 +88,7 @@ class _SimilarPullRequestsMixin(_GitHubServiceBase):
         comparator,
         *,
         only_automation: bool,
+        bot_policy: BotPolicy | None = None,
     ) -> list[tuple[PullRequestInfo, ComparisonResult]]:
         """Compare every open PR of one repository against *source_pr*."""
         owner_n, name_n = repo_full_name.split("/", 1)
@@ -105,7 +110,10 @@ class _SimilarPullRequestsMixin(_GitHubServiceBase):
             target_pr = self.to_pull_request_info(repo_full_name, pr_node)
 
             if not self._is_similar_pr_candidate(
-                source_pr, target_pr, only_automation=only_automation
+                source_pr,
+                target_pr,
+                only_automation=only_automation,
+                bot_policy=bot_policy,
             ):
                 continue
 
@@ -142,6 +150,7 @@ class _SimilarPullRequestsMixin(_GitHubServiceBase):
         target_pr: PullRequestInfo,
         *,
         only_automation: bool,
+        bot_policy: BotPolicy | None = None,
     ) -> bool:
         """Whether *target_pr* is worth comparing against *source_pr*."""
         # Skip the source PR itself
@@ -151,12 +160,13 @@ class _SimilarPullRequestsMixin(_GitHubServiceBase):
         ):
             return False
 
-        # Candidate filtering: an App author when the source is one (the
-        # same identity rule as everywhere else, so a person whose login
-        # merely contains "bot" never qualifies), the same author
-        # otherwise.
+        # Candidate filtering: an App the policy admits when the source is
+        # automation (a person whose login merely contains "bot" never
+        # qualifies), the same author otherwise.
         if only_automation:
-            return is_automation_author(target_pr.author)
+            return (bot_policy or BotPolicy()).admits(
+                target_pr.author, target_pr.repository_full_name
+            )
         return (target_pr.author or "") == (source_pr.author or "")
 
     @staticmethod

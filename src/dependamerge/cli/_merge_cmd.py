@@ -20,6 +20,12 @@ from ..merge_manager import (
     DEFAULT_MERGE_TIMEOUT,
 )
 from ._app import DEFAULT_MAX_WAIT, app
+from ._bot_scope import (
+    EXCLUDE_BOTS_OPTION,
+    INCLUDE_BOTS_OPTION,
+    _build_bot_policy,
+    _check_listed_bots,
+)
 from ._context import _MergeContext
 from ._github_host import apply_gerrit_host, apply_github_host
 from ._merge_dispatch import (
@@ -211,6 +217,8 @@ def merge(
             "set (prompting for confirmation unless --no-confirm)"
         ),
     ),
+    include_bots: list[str] | None = INCLUDE_BOTS_OPTION,
+    exclude_bots: list[str] | None = EXCLUDE_BOTS_OPTION,
     include_repos: list[str] | None = typer.Option(
         None,
         "--include-repos",
@@ -391,6 +399,10 @@ def merge(
     if gerrit_target is not None:
         _dispatch_gerrit(gerrit_target, ctx, topic)
         return
+
+    # Bot policy is GitHub's: Gerrit changes have owners, not Apps.
+    ctx.bot_policy = _build_bot_policy(include_bots, exclude_bots)
+    _check_listed_bots(ctx.bot_policy, ctx.token, ctx.host)
 
     if target.org is not None:
         org = target.org

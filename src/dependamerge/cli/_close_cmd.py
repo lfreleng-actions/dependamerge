@@ -37,6 +37,12 @@ from ..url_parser import (
     normalize_target,
 )
 from ._app import app, console
+from ._bot_scope import (
+    EXCLUDE_BOTS_OPTION,
+    INCLUDE_BOTS_OPTION,
+    _build_bot_policy,
+    _check_listed_bots,
+)
 from ._close import (
     _CloseContext,
     _find_similar_prs_for_close,
@@ -49,6 +55,29 @@ from ._close import (
 )
 from ._github_host import apply_gerrit_host, apply_github_host
 from ._pr_display import _display_pr_info
+
+
+def _close_client(pr_url: str, token: str | None) -> _pkg.GitHubClient:
+    """Build the client for the host the pull request URL names.
+
+    A GitHub Enterprise Server install serves its API from different base
+    URLs, and the client bakes those in at construction, so the host comes
+    from the URL first.  Normalise first, or a scheme-less target is read
+    as a bare path and yields no host at all.
+
+    Falling back to dotcom rather than None when the target names no
+    host.  ``None`` makes the client consult the configured default, so a
+    malformed ``GH_HOST`` reported *its* problem instead of the invalid URL
+    the operator actually typed --- and configuring a host cannot make
+    ``not a url`` valid.  Valid shorthand has already resolved to an
+    absolute host by this point, so nothing legitimate reaches the
+    fallback.
+    """
+    target_host = (urlparse(normalize_target(pr_url)).hostname or "").lower()
+    github_client = _pkg.GitHubClient(token, host=target_host or DEFAULT_GITHUB_HOST)
+    # GitHubClient resolves None -> GITHUB_TOKEN env var (raises if missing)
+    assert github_client.token is not None
+    return github_client
 
 
 @app.command()
@@ -86,6 +115,8 @@ def close(
     override: str | None = typer.Option(
         None, "--override", help="SHA hash to override non-automation PR restriction"
     ),
+    include_bots: list[str] | None = INCLUDE_BOTS_OPTION,
+    exclude_bots: list[str] | None = EXCLUDE_BOTS_OPTION,
     show_progress: bool = typer.Option(
         True, "--progress/--no-progress", help="Show real-time progress updates"
     ),
@@ -128,31 +159,14 @@ def close(
     # permitted at all.
     apply_github_host(github_host)
     apply_gerrit_host(gerrit_host)
+    bot_policy = _build_bot_policy(include_bots, exclude_bots)
 
     progress_tracker = None
 
     try:
-        # Derive the host from the URL before building the client: a
-        # GitHub Enterprise Server install serves its API from
-        # different base URLs, and the client bakes those in at
-        # construction.  Normalise first, or a scheme-less target is
-        # read as a bare path and yields no host at all.
-        #
-        # Falling back to dotcom rather than None when the target names
-        # no host.  ``None`` makes the client consult the configured
-        # default, so a malformed ``GH_HOST`` reported *its* problem
-        # instead of the invalid URL the operator actually typed ---
-        # and configuring a host cannot make ``not a url`` valid.
-        # Valid shorthand has already resolved to an absolute host by
-        # this point, so nothing legitimate reaches the fallback.
-        target_host = (urlparse(normalize_target(pr_url)).hostname or "").lower()
-        github_client = _pkg.GitHubClient(
-            token,
-            host=target_host or DEFAULT_GITHUB_HOST,
-        )
-        # GitHubClient resolves None -> GITHUB_TOKEN env var (raises if missing)
-        assert github_client.token is not None
+        github_client = _close_client(pr_url, token)
         token = github_client.token
+        _check_listed_bots(bot_policy, token, github_client.host)
         owner, repo_name, pr_number = github_client.parse_pr_url(pr_url)
 
         if show_progress:
@@ -183,6 +197,7 @@ def close(
             pr_number=pr_number,
             source_pr=source_pr,
             progress_tracker=progress_tracker,
+            bot_policy=bot_policy,
         )
 
         # Debug matching info for source PR

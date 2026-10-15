@@ -38,12 +38,16 @@ GitHub organisation, or similar changes on a Gerrit Code Review server.
 ### GitHub Mode
 
 By default, bypasses code owner review requirements to enable automated merging
-of dependency updates. Supports common automation tools:
+of dependency updates from the built-in automation tools:
 
 - Dependabot
 - pre-commit.ci
 - Renovate
-- GitHub Copilot
+
+Dependamerge lists pull requests from any other GitHub App, such as GitHub
+Copilot's coding agent or an organisation's own bots, and acts on them when a
+[bot policy](docs/BOT_POLICY.md) includes that App. Use `--include-bots` and
+`--exclude-bots` for one run, or a policy file to set it once.
 
 Also works for individual GitHub users when provided with an override flag.
 
@@ -169,7 +173,9 @@ or user account in one command.
 
 - **Owner-Wide Scope**: Enumerates every repository owned by the
   organisation or user, then bulk merges their open automation PRs
-  (`dependabot`, `pre-commit`, `renovate`, and other recognised bots)
+  (`dependabot`, `pre-commit-ci` and `renovate`, plus any App a
+  [bot policy](docs/BOT_POLICY.md) includes); the summary lists PRs from
+  other Apps as out of scope
 - **Organisation or User**: Detects the account type (org vs user)
   automatically at runtime; the same URL works for both
 - **Archived and Fork Exclusion**: Skips archived repositories, and
@@ -228,8 +234,8 @@ or user account in one command.
 
 - Any pull request from any author
 - Manual pull requests from developers
-- Automation tool pull requests (Dependabot, Renovate, etc.)
-- Bot-generated pull requests
+- Automation tool pull requests (Dependabot, Renovate, pre-commit.ci)
+- Pull requests from other GitHub Apps a bot policy includes
 - Coordinated changes across repositories
 
 ## Installation (uv + hatch)
@@ -1256,6 +1262,13 @@ export DEPENDAMERGE_CONTENT_PER_HOUR=300
   for detailed documentation
 - `--token TEXT`: GitHub token (alternative to GITHUB_TOKEN env var)
 - `--override TEXT`: SHA hash for extra security validation
+- `--include-bots NAMES`: Act on PRs from these GitHub Apps as well as the
+  built-in Dependabot, Renovate and pre-commit.ci.
+  Comma-separated and/or repeatable; each entry is `name`, `name[bot]` or
+  `app/name`, and `'*'` includes every App
+- `--exclude-bots NAMES`: Never act on PRs from these GitHub Apps, built-in
+  ones included. A name matching no GitHub App stops the run with exit
+  code 2 before anything merges. See [Bot Policy](docs/BOT_POLICY.md)
 
 **Owner-Wide Options:**
 
@@ -1307,6 +1320,8 @@ Fallback variables:
 - `--debug-matching`: Show detailed scoring information for PR matching
 - `--token TEXT`: GitHub token (alternative to GITHUB_TOKEN env var)
 - `--override TEXT`: SHA hash to override non-automation PR restriction
+- `--include-bots NAMES` / `--exclude-bots NAMES`: Which GitHub Apps' PRs to
+  act on, as for `merge`. See [Bot Policy](docs/BOT_POLICY.md)
 
 ## How It Works
 

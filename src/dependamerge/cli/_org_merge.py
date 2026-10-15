@@ -19,6 +19,7 @@ import typer
 import dependamerge.cli as _pkg
 
 from ..bot_identity import is_automation_author
+from ..bot_policy import BotPolicy
 from ..error_codes import exit_for_configuration_error
 from ..merge_manager import (
     MergeResult,
@@ -29,6 +30,7 @@ from ..url_parser import (
     ParsedOrgUrl,
 )
 from ._app import console
+from ._bot_scope import _remove_out_of_scope_bots
 from ._context import _MergeContext
 from ._merge_order import _owner_merge_order, _print_prs_grouped_by_repo
 from ._merge_permissions import _maybe_check_merge_permissions
@@ -163,16 +165,30 @@ def _require_selection_matched(parsed_org: ParsedOrgUrl, ctx: _MergeContext) -> 
 def _partition_owner_prs(
     parsed_org: ParsedOrgUrl,
     owner_prs: list[PullRequestInfo],
-) -> tuple[list[PullRequestInfo], list[PullRequestInfo]]:
+    bot_policy: BotPolicy,
+) -> tuple[list[PullRequestInfo], list[PullRequestInfo], list[PullRequestInfo]]:
     """Split the enumerated PRs by authorship and print the owner summary.
+
+    PRs from Apps outside the bot policy are listed and dropped first.
 
     Args:
         parsed_org: Parsed owner URL, used for the summary line.
         owner_prs: Every in-scope open PR, in merge order.
+        bot_policy: The Apps this run may act on.
 
     Returns:
-        The automation-authored PRs and the human-authored PRs.
+        The PRs left in scope, then the automation-authored and the
+        human-authored PRs among them.
     """
+    distinct_repos = {pr.repository_full_name for pr in owner_prs}
+    repo_count = len(distinct_repos)
+    repo_noun = "repository" if repo_count == 1 else "repositories"
+    console.print(
+        f"\n📊 Found {len(owner_prs)} open PR(s) across "
+        f"{repo_count} {repo_noun} in {parsed_org.owner}"
+    )
+    owner_prs = _remove_out_of_scope_bots(bot_policy, owner_prs)
+
     automation_prs: list[PullRequestInfo] = []
     human_prs: list[PullRequestInfo] = []
     for pr in owner_prs:
@@ -181,13 +197,6 @@ def _partition_owner_prs(
         else:
             human_prs.append(pr)
 
-    distinct_repos = {pr.repository_full_name for pr in owner_prs}
-    repo_count = len(distinct_repos)
-    repo_noun = "repository" if repo_count == 1 else "repositories"
-    console.print(
-        f"\n📊 Found {len(owner_prs)} open PR(s) across "
-        f"{repo_count} {repo_noun} in {parsed_org.owner}"
-    )
     if automation_prs:
         console.print(f"🤖 Automation PRs: {len(automation_prs)}")
     if human_prs:
@@ -196,7 +205,7 @@ def _partition_owner_prs(
     # Grouped-by-repository listing keeps a large owner-wide list scannable.
     _print_prs_grouped_by_repo(owner_prs)
 
-    return automation_prs, human_prs
+    return owner_prs, automation_prs, human_prs
 
 
 def _confirm_owner_human_prs(
@@ -344,7 +353,13 @@ def _handle_org_merge(
     # Both the grouped listing and the merge list derive from this order.
     owner_prs = _owner_merge_order(owner_prs)
 
-    automation_prs, human_prs = _partition_owner_prs(parsed_org, owner_prs)
+    owner_prs, automation_prs, human_prs = _partition_owner_prs(
+        parsed_org, owner_prs, ctx.bot_policy
+    )
+    if not owner_prs:
+        console.print(f"❌ No open PRs in scope in {parsed_org.owner}")
+        _conclude_run(ctx, [], preview=preview_run)
+        return
 
     selected = _confirm_owner_human_prs(
         ctx, parsed_org, owner_prs, automation_prs, human_prs

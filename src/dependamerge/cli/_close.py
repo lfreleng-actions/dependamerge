@@ -12,7 +12,7 @@ away.
 import asyncio
 import os
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import typer
 
@@ -21,10 +21,12 @@ import typer
 # caller rather than only the module that bound the name.
 import dependamerge.cli as _pkg
 
+from ..bot_policy import BotPolicy
 from ..close_manager import CloseResult
 from ..models import ComparisonResult, PullRequestInfo
 from ..progress_tracker import MergeProgressTracker
 from ._app import console
+from ._bot_scope import _out_of_scope_hint
 from ._sha import _generate_continue_sha, _generate_override_sha
 from ._similarity import _format_condensed_similarity
 
@@ -45,6 +47,9 @@ class _CloseContext:
     pr_number: int
     source_pr: PullRequestInfo
     progress_tracker: MergeProgressTracker | None
+    # The GitHub Apps this run may act on; without any flags or user
+    # config, only the built-in Apps.
+    bot_policy: BotPolicy = field(default_factory=BotPolicy)
 
 
 def _run_close_parallel(
@@ -107,7 +112,17 @@ def _validate_close_authorization(
     should stop (the reason has already been printed).
     """
     if ctx.github_client.is_automation_author(ctx.source_pr.author):
-        return True
+        decision = ctx.bot_policy.decide(
+            ctx.source_pr.author, ctx.source_pr.repository_full_name
+        )
+        if decision.in_scope:
+            return True
+        console.print(
+            f"Source PR author {ctx.source_pr.author} is not in this run's "
+            f"scope ({decision.reason})."
+        )
+        console.print(_out_of_scope_hint(ctx.source_pr.author))
+        return False
 
     commit_messages = ctx.github_client.get_pull_request_commits(
         ctx.owner, ctx.repo_name, ctx.pr_number
@@ -176,6 +191,7 @@ def _find_similar_prs_for_close(
                 ctx.source_pr,
                 comparator,
                 only_automation=only_automation,
+                bot_policy=ctx.bot_policy,
             )
         finally:
             await svc.close()

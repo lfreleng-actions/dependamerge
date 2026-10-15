@@ -14,8 +14,34 @@ from ..error_codes import (
     exit_with_error,
 )
 from ._app import console
+from ._bot_scope import _out_of_scope_hint
 from ._context import _MergeContext
 from ._sha import _generate_override_sha, _validate_override_sha
+
+
+def _require_source_bot_in_scope(ctx: _MergeContext) -> None:
+    """Stop the run when the source PR's App is outside the bot policy.
+
+    Being a bot is not enough: an App the policy does not admit needs a
+    human to look at its PRs, so no override is offered.  The App can be
+    brought into scope, which is what the message says.
+
+    Raises:
+        SystemExit: With ``VALIDATION_ERROR`` when the App is out of scope.
+    """
+    assert ctx.source_pr is not None
+    author = ctx.source_pr.author
+    decision = ctx.bot_policy.decide(author, ctx.source_pr.repository_full_name)
+    if decision.in_scope:
+        return
+    exit_with_error(
+        ExitCode.VALIDATION_ERROR,
+        message=(
+            f"❌ Source PR author {author} is not in this run's scope "
+            f"({decision.reason})"
+        ),
+        details=_out_of_scope_hint(author),
+    )
 
 
 def _validate_automation_author(ctx: _MergeContext) -> None:
@@ -39,6 +65,7 @@ def _validate_automation_author(ctx: _MergeContext) -> None:
     assert ctx.source_pr is not None
 
     if ctx.github_client.is_automation_author(ctx.source_pr.author):
+        _require_source_bot_in_scope(ctx)
         return
 
     human_source_notice = (

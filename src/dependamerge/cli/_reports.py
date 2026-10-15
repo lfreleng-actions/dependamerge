@@ -144,10 +144,8 @@ def _display_status_results(status_result, output_format: str):
     console.print("PR counts are for human/automation")
     console.print("\nAutomation tools supported:")
     special_tool_labels = {
-        "[bot]": "Any other [bot] account",
+        "[bot]": "Any other GitHub App (merged only when a bot policy includes it)",
         "pre-commit": "pre-commit.ci",
-        "github-actions": "GitHub Actions",
-        "copilot": "GitHub Copilot",
     }
     for tool in AUTOMATION_TOOLS:
         label = special_tool_labels.get(tool, tool.capitalize())

@@ -33,6 +33,8 @@ from __future__ import annotations
 import logging
 import time
 
+from ..bot_identity import is_automation_author
+from ..bot_policy import BotPolicy
 from ..github_async import PermissionError as GitHubPermissionError
 from ..github_async import (
     RateLimitError,
@@ -63,6 +65,11 @@ class _SinglePullRequestMixin(
     # Established by ``_LifecycleMixin.__init__``; only read here.
     _permission_failure_reasons: dict[str, str]
     _preflight_repository: str | None
+    # Which GitHub Apps this run may act on.  Callers decide scope before
+    # handing PRs over; checking again on entry means a PR reaching the
+    # manager by another route cannot widen it.  Without a policy, only
+    # the built-in Apps qualify.
+    bot_policy: BotPolicy
 
     async def _merge_single_pr_impl(self, pr_info: PullRequestInfo) -> MergeResult:
         """
@@ -84,6 +91,14 @@ class _SinglePullRequestMixin(
         # cleanly (single ❌ line, no traceback) and move on.
         if pr_info.repository_full_name in self._permission_failed_repos:
             return self._permission_fast_fail(pr_info, start_time)
+
+        # Scope is the caller's decision, but a PR can reach the manager
+        # by more than one route; one whose App author the run's bot
+        # policy does not admit is never acted on, whatever brought it.
+        if is_automation_author(pr_info.author):
+            scope = self.bot_policy.decide(pr_info.author, pr_info.repository_full_name)
+            if not scope.in_scope:
+                return self._out_of_scope_skip(pr_info, scope.reason, start_time)
 
         # Early determination of merge method based on repository settings
         merge_method = await self._get_merge_method_for_repo(repo_owner, repo_name)
@@ -154,6 +169,19 @@ class _SinglePullRequestMixin(
         if early is not None:
             return early
         return flow.result
+
+    def _out_of_scope_skip(
+        self, pr_info: PullRequestInfo, reason: str, start_time: float
+    ) -> MergeResult:
+        """Report a PR whose App author this run's policy does not admit."""
+        result = MergeResult(pr_info=pr_info, status=MergeStatus.SKIPPED)
+        result.error = f"{pr_info.author} is not in this run's scope ({reason})"
+        self._pr_status(
+            f"⏭️ Skipped: {pr_info.html_url} [{result.error}]",
+            level="warning",
+        )
+        result.duration = time.time() - start_time
+        return result
 
     def _permission_fast_fail(
         self, pr_info: PullRequestInfo, start_time: float

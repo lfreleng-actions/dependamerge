@@ -75,6 +75,7 @@ def _scan_and_find_similar(ctx: _MergeContext) -> None:
                 ctx.source_pr,
                 ctx.comparator,
                 only_automation=only_automation,
+                bot_policy=ctx.bot_policy,
             )
         finally:
             await svc.close()
@@ -183,6 +184,7 @@ def _run_parallel_merge(
             # merges keep the uncapped per-PR ``merge_timeout`` behaviour.
             max_wait=ctx.max_wait if stripe else None,
             preflight_repository=ctx.preflight_repository,
+            bot_policy=ctx.bot_policy,
         ) as merge_manager:
             if not preview:
                 prefix = "\n" if leading_blank else ""

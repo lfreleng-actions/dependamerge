@@ -9,11 +9,15 @@ permitted; the requirement is often only discovered from the error
 returned by a rejected merge, so approval and retry are intertwined.
 """
 
+# pyright: reportUninitializedInstanceVariable=false
+
 from __future__ import annotations
 
 import asyncio
 from typing import Any
 
+from ..bot_identity import is_automation_author
+from ..bot_policy import BotPolicy
 from ..github_async import ApprovalError
 from ..github_async import PermissionError as GitHubPermissionError
 from ..models import PullRequestInfo
@@ -23,6 +27,9 @@ from ._base import _MergeManagerBase
 
 class _ApprovalMixin(_MergeManagerBase):
     """Approving pull requests and retrying merges that need it."""
+
+    # Established by ``_LifecycleMixin.__init__``; only read here.
+    bot_policy: BotPolicy
 
     async def _ensure_pr_approved(
         self,
@@ -52,7 +59,19 @@ class _ApprovalMixin(_MergeManagerBase):
         Returns:
             True if a *new* approval was submitted, False if the PR was
             already approved (or approval was declined).
+
+        Raises:
+            RuntimeError: When the PR's App author is outside the run's
+                bot policy.  Entry to the merge flow already refuses such
+                a PR; this guards the one write that matters most.
         """
+        if is_automation_author(pr_info.author) and not self.bot_policy.admits(
+            pr_info.author, f"{owner}/{repo}"
+        ):
+            raise RuntimeError(
+                f"refusing to approve {owner}/{repo}#{pr_info.number}: "
+                f"{pr_info.author} is not in this run's scope"
+            )
         approved = await self._approve_pr(owner, repo, pr_info.number)
         if approved:
             pr_key = f"{owner}/{repo}#{pr_info.number}"

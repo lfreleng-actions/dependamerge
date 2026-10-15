@@ -100,8 +100,10 @@ class TestStatusCommand:
         assert "Human" in result.stdout
         assert "Total PRs" in result.stdout
         assert "Total Repositories" in result.stdout
-        # GitHub Copilot is listed among the supported automation tools.
-        assert "GitHub Copilot" in result.stdout
+        # The built-in bots are listed, and any other GitHub App is noted
+        # as merged only when a bot policy includes it.
+        assert "pre-commit.ci" in result.stdout
+        assert "merged only when a bot policy includes it" in result.stdout
 
     @patch("dependamerge.github_service.GitHubService")
     def test_status_command_json_output(self, mock_service_class):

@@ -19,6 +19,7 @@ import typer
 import dependamerge.cli as _pkg
 
 from ..bot_identity import is_automation_author
+from ..bot_policy import BotPolicy
 from ..merge_manager import (
     MergeResult,
 )
@@ -28,6 +29,7 @@ from ..url_parser import (
     ParsedRepoUrl,
 )
 from ._app import console
+from ._bot_scope import _remove_out_of_scope_bots
 from ._context import _MergeContext
 from ._merge_order import _repo_merge_order
 from ._merge_permissions import _maybe_check_merge_permissions
@@ -123,16 +125,24 @@ def _fetch_repo_prs(
 def _partition_repo_prs(
     parsed_repo: ParsedRepoUrl,
     repo_prs: list[PullRequestInfo],
-) -> tuple[list[PullRequestInfo], list[PullRequestInfo]]:
+    bot_policy: BotPolicy,
+) -> tuple[list[PullRequestInfo], list[PullRequestInfo], list[PullRequestInfo]]:
     """Split the fetched PRs by authorship and print the repository summary.
+
+    PRs from Apps outside the bot policy are listed and dropped first.
 
     Args:
         parsed_repo: Parsed repository URL, used for the summary line.
         repo_prs: The repository's open PRs, in merge order.
+        bot_policy: The Apps this run may act on.
 
     Returns:
-        The automation-authored PRs and the human-authored PRs.
+        The PRs left in scope, then the automation-authored and the
+        human-authored PRs among them.
     """
+    console.print(f"\n📊 Found {len(repo_prs)} open PR(s) in {parsed_repo.project}")
+    repo_prs = _remove_out_of_scope_bots(bot_policy, repo_prs)
+
     automation_prs: list[PullRequestInfo] = []
     human_prs: list[PullRequestInfo] = []
 
@@ -145,7 +155,6 @@ def _partition_repo_prs(
         else:
             human_prs.append(pr)
 
-    console.print(f"\n📊 Found {len(repo_prs)} open PR(s) in {parsed_repo.project}")
     if automation_prs:
         console.print(f"🤖 Automation PRs: {len(automation_prs)}")
     if human_prs:
@@ -157,7 +166,7 @@ def _partition_repo_prs(
     for pr in repo_prs:
         console.print(f"  #{pr.number} {pr.title} (by {pr.author})")
 
-    return automation_prs, human_prs
+    return repo_prs, automation_prs, human_prs
 
 
 def _confirm_repo_human_prs(
@@ -310,7 +319,13 @@ def _handle_repo_merge(
     # identically; the preview list below is derived from this order too.
     repo_prs = _repo_merge_order(repo_prs)
 
-    automation_prs, human_prs = _partition_repo_prs(parsed_repo, repo_prs)
+    repo_prs, automation_prs, human_prs = _partition_repo_prs(
+        parsed_repo, repo_prs, ctx.bot_policy
+    )
+    if not repo_prs:
+        console.print(f"❌ No open PRs in scope in {parsed_repo.project}")
+        _conclude_run(ctx, [], preview=ctx.dry_run or not ctx.no_confirm)
+        return
 
     selected = _confirm_repo_human_prs(ctx, repo_prs, automation_prs, human_prs)
     if selected is None:

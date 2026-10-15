@@ -99,6 +99,7 @@ def _fetch_repo_prs(
             token=ctx.token,
             host=ctx.host,
             progress_tracker=ctx.progress_tracker,
+            read_policies=True,
         )
         try:
             # The owner's file costs one query, and each variable a

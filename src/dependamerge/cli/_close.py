@@ -24,7 +24,12 @@ import dependamerge.cli as _pkg
 from ..bot_policy import BotPolicy
 from ..bot_policy_files import PolicyFiles
 from ..close_manager import CloseResult
-from ..error_codes import ExitCode, exit_for_pr_state_error, exit_with_error
+from ..error_codes import (
+    ExitCode,
+    exit_for_configuration_error,
+    exit_for_pr_state_error,
+    exit_with_error,
+)
 from ..models import ComparisonResult, PullRequestInfo
 from ..progress_tracker import MergeProgressTracker
 from ._app import console
@@ -35,9 +40,10 @@ from ._human_gate import (
     _refuse_human_source,
 )
 from ._policy_files import (
+    _apply_policy_files,
     _capture_policy_files,
+    _keep_admitted_candidates,
     _load_source_policy_files,
-    _warn_unreadable_variables,
 )
 from ._sha import _generate_continue_sha, _generate_override_sha
 from ._similarity import _format_condensed_similarity
@@ -148,16 +154,7 @@ def _validate_close_authorization(
     # The owner's and repository's files decide which Apps are in scope.
     _load_source_policy_files(ctx)
     if ctx.github_client.is_automation_author(author):
-        decision = ctx.bot_policy.decide(author, ctx.source_pr.repository_full_name)
-        if not decision.in_scope:
-            exit_with_error(
-                ExitCode.VALIDATION_ERROR,
-                message=(
-                    f"❌ Source PR author {author} is not in this run's scope "
-                    f"({decision.reason})"
-                ),
-                details=_out_of_scope_hint(author),
-            )
+        _require_source_in_scope(ctx)
         return
 
     if not include_human_prs:
@@ -176,6 +173,41 @@ def _validate_close_authorization(
         ),
         derivation="the PR's author and first commit message",
     )
+
+
+def _require_source_in_scope(ctx: _CloseContext) -> None:
+    """Stop when the run's policy puts the source PR out of scope.
+
+    Judged when the request is authorised, and again once the search has
+    applied every policy it read: that can still invalidate the source's
+    repository or exclude its App, and close has no later guard, while
+    the close list always starts with the source.
+
+    Raises:
+        SystemExit: ``CONFIGURATION_ERROR`` when the source repository's
+            policy is invalid; ``VALIDATION_ERROR`` when the source's
+            App is out of scope.
+    """
+    source = ctx.source_pr
+    repository = source.repository_full_name
+    problem = ctx.bot_policy.repository_error(repository)
+    if problem is not None:
+        exit_for_configuration_error(
+            message=f"❌ Invalid bot policy in {repository}",
+            details=f"{problem}. Nothing in the repository is in scope.",
+        )
+    if not ctx.github_client.is_automation_author(source.author):
+        return
+    decision = ctx.bot_policy.decide(source.author, repository)
+    if not decision.in_scope:
+        exit_with_error(
+            ExitCode.VALIDATION_ERROR,
+            message=(
+                f"❌ Source PR author {source.author} is not in this run's "
+                f"scope ({decision.reason})"
+            ),
+            details=_out_of_scope_hint(source.author),
+        )
 
 
 def _find_similar_prs_for_close(
@@ -201,6 +233,7 @@ def _find_similar_prs_for_close(
             host=ctx.host,
             progress_tracker=ctx.progress_tracker,
             debug_matching=debug_matching,
+            read_policies=True,
         )
         # The variables read with the source's are not read again.
         svc.adopt_policy_variables(ctx.policy_files)
@@ -222,8 +255,12 @@ def _find_similar_prs_for_close(
 
     refused_before = ctx.policy_files.variables_refused
     found: list[tuple[PullRequestInfo, ComparisonResult]] = asyncio.run(_find_similar())
-    _warn_unreadable_variables(ctx, refused_before)
-    return found
+    # Apply and check every candidate repository's policy, as merge does:
+    # close has no later recheck, so an invalid repository's PRs must not
+    # survive to it, nor the source, which every close list starts with.
+    _apply_policy_files(ctx, refused_before=refused_before)
+    _require_source_in_scope(ctx)
+    return _keep_admitted_candidates(ctx.bot_policy, found)
 
 
 def _print_close_analysis_summary(

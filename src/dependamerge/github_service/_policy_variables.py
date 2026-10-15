@@ -99,9 +99,16 @@ class _PolicyVariablesMixin(_GitHubServiceBase):
     ) -> None:
         """Keep the variable ``scope`` holds as ``read[key]``.
 
-        ``None`` when there is none, or when reading it fails for any
-        reason but a refusal or a rate limit.  A refusal records that the
-        run cannot read this kind of variable, and keeps nothing.
+        ``None`` when there is none (HTTP 404).  A refusal (401, 403)
+        records that the run cannot read this kind of variable, and keeps
+        nothing.  Any other failure stops the run, as does an answer that
+        holds no string value: the variable might hold an exclusion, and
+        taking it for absent would act on the PRs that exclusion protects.
+
+        Raises:
+            PolicyVariableError: When the read fails for another reason,
+                after the transport's own retries, or answers without a
+                value.
         """
         kind = scope.split("/", 2)[1]  # "orgs" or "repos"
         if kind in self._policy_variables_refused:
@@ -116,13 +123,23 @@ class _PolicyVariablesMixin(_GitHubServiceBase):
             if status in _REFUSED:
                 self._policy_variables_refused.add(kind)
                 return
-            if status != 404:
-                self.log.debug("Taking %s as unset: HTTP %s", path, status)
-            read[key] = None
-            return
+            if status == 404:
+                read[key] = None
+                return
+            raise PolicyVariableError(path, f"HTTP {status}") from exc
         except Exception as exc:
-            self.log.debug("Taking %s as unset: %s", path, exc)
-            read[key] = None
-            return
+            raise PolicyVariableError(path, str(exc) or type(exc).__name__) from exc
         value = body.get("value") if isinstance(body, dict) else None
-        read[key] = value if isinstance(value, str) else None
+        if not isinstance(value, str):
+            raise PolicyVariableError(path, "the answer held no value")
+        read[key] = value
+
+
+class PolicyVariableError(RuntimeError):
+    """A ``DEPENDAMERGE_BOTS`` variable could not be read."""
+
+    def __init__(self, path: str, reason: str) -> None:
+        super().__init__(
+            f"Could not read the bot policy variable at {path} ({reason}); "
+            "stopping rather than acting without it"
+        )

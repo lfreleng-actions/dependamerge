@@ -24,10 +24,12 @@ considered:
 from __future__ import annotations
 
 from ..bot_identity import is_dependabot
+from ..merge_signals import DraftPullRequestError, PullRequestStopSignal
 from ..models import PullRequestInfo
 from ._failure_summary import _FailureSummaryFromExceptionMixin
 from ._single_pr_context import _MergeFlow
 from ._types import MergeStatus, RecreateCause, RecreateResult
+from ._write_guards import is_draft_now
 
 
 class _SinglePrRecreateMixin(_FailureSummaryFromExceptionMixin):
@@ -100,6 +102,10 @@ class _SinglePrRecreateMixin(_FailureSummaryFromExceptionMixin):
     ) -> None:
         """Approve and merge the PR dependabot created in place of ours."""
         result = flow.result
+        # From here on the outcome is the replacement's, whatever ends it.
+        # The original is closed by now, so a failure confirmed against it
+        # would read as closed, with nothing to follow up.
+        result.pr_info = recreated_pr
         # We have a fresh PR — approve and merge it
         new_owner, new_repo = recreated_pr.repository_full_name.split("/", 1)
         await self._approve_pr(new_owner, new_repo, recreated_pr.number)
@@ -110,7 +116,6 @@ class _SinglePrRecreateMixin(_FailureSummaryFromExceptionMixin):
 
         if new_merged:
             result.status = MergeStatus.MERGED
-            result.pr_info = recreated_pr
             self._pr_status(
                 f"✅ Merged (recreated): {recreated_pr.html_url}",
                 level="debug",
@@ -122,11 +127,10 @@ class _SinglePrRecreateMixin(_FailureSummaryFromExceptionMixin):
         # it can start between the wait's last poll and this dispatch ---
         # in which case GitHub answers "merge already in progress",
         # ``_dispatch_recreated_merge`` swallows it, and we would report
-        # a failure for a PR that is merging.  The outer
-        # ``_confirm_failure`` cannot catch that: it rechecks the
-        # *original* PR, which dependabot has already closed.
+        # a failure for a PR that is merging.
         #
-        # So confirm against the **replacement** before reporting.
+        # So confirm against the replacement before classifying the
+        # failure below.
         result.status = MergeStatus.FAILED
         # Marked only when GitHub judged the *replacement*.  The dispatch
         # reports the run's own troubles with the same failure it uses
@@ -136,7 +140,6 @@ class _SinglePrRecreateMixin(_FailureSummaryFromExceptionMixin):
         # permission error would identify it as a mergeability verdict
         # and then hide it, which is the more damaging direction.
         result.merge_refused = refused
-        result.pr_info = recreated_pr
         result.error = (
             f"Dependabot recreated PR #{recreated_pr.number} but merge still failed"
         )
@@ -146,9 +149,10 @@ class _SinglePrRecreateMixin(_FailureSummaryFromExceptionMixin):
             # Confirmation corrected it (merged, or closed unmerged).
             return
 
-        # Genuinely unmerged.  Report BLOCKED rather than FAILED so the
-        # outer confirmation --- which rechecks the closed original ---
-        # cannot rewrite this to CLOSED, i.e. "nothing to follow up on".
+        # Genuinely unmerged: BLOCKED, as for any replacement that will
+        # not merge without help (see ``_record_recreated_abandoned``).
+        # The outer confirmation passes over a result that is not FAILED,
+        # so it does not repeat the read made above.
         result.status = MergeStatus.BLOCKED
         self.log.error(
             "Failed to merge recreated PR %s#%s",
@@ -187,6 +191,10 @@ class _SinglePrRecreateMixin(_FailureSummaryFromExceptionMixin):
         one is consumed by its immediate caller, so run-scoped state
         would be write-only bookkeeping --- and a third writer of an
         invariant nothing reads is how the invariant gets broken.
+
+        Raises:
+            DraftPullRequestError: When the replacement is a draft once
+                the lock is held; no merge is sent.
         """
         new_merge_method = self._pr_merge_methods.get(
             f"{new_owner}/{new_repo}", self.default_merge_method
@@ -198,12 +206,21 @@ class _SinglePrRecreateMixin(_FailureSummaryFromExceptionMixin):
             # path — see ``_get_merge_dispatch_lock``.
             new_dispatch_lock = await self._get_merge_dispatch_lock(new_owner, new_repo)
             async with new_dispatch_lock:
+                # Read live, as the main dispatch does: a replacement
+                # marked draft while queued here is skipped, not merged.
+                # The result already names it (``_merge_recreated_pr``).
+                if await is_draft_now(self, recreated_pr, new_owner, new_repo):
+                    raise DraftPullRequestError(
+                        f"{new_owner}/{new_repo}#{recreated_pr.number}"
+                    )
                 new_merged = await self._github_client.merge_pull_request(
                     new_owner,
                     new_repo,
                     recreated_pr.number,
                     new_merge_method,
                 )
+        except PullRequestStopSignal:
+            raise
         except Exception as merge_err:
             self.log.error(
                 "Failed to merge recreated PR %s#%s: %s",

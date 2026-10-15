@@ -32,10 +32,12 @@ Do NOT skip when:
 
 from __future__ import annotations
 
+from ..merge_signals import DraftPullRequestError
 from ._single_pr_context import _MergeFlow
 from ._single_pr_outcome import _SinglePrOutcomeMixin
 from ._stale_head import _StaleHeadRecoveryMixin
 from ._types import MergeResult, MergeStatus
+from ._write_guards import is_draft_now
 
 
 class _SinglePrMergeMixin(_SinglePrOutcomeMixin, _StaleHeadRecoveryMixin):
@@ -231,9 +233,14 @@ class _SinglePrMergeMixin(_SinglePrOutcomeMixin, _StaleHeadRecoveryMixin):
             # merge, so polling GitHub's recompute window here would
             # serialise the whole repo batch.
             if self._repo_scoped:
+                # The same read records a conversion to draft.
                 dirty_before_dispatch = await self._is_pr_dirty_now(
                     pr_info, flow.repo_owner, flow.repo_name
                 )
+            else:
+                await is_draft_now(self, pr_info, flow.repo_owner, flow.repo_name)
+            if pr_info.is_draft:
+                raise DraftPullRequestError(flow.pr_key)
             if dirty_before_dispatch:
                 merged = False
             else:

@@ -33,7 +33,11 @@ from ._merge_report import (
     _print_failed_pr_details,
     _print_final_merge_summary,
 )
-from ._policy_files import _apply_policy_files, _capture_policy_files
+from ._policy_files import (
+    _apply_policy_files,
+    _capture_policy_files,
+    _keep_admitted_candidates,
+)
 from ._sha import _generate_continue_sha
 from ._similarity import _format_condensed_similarity
 
@@ -64,6 +68,7 @@ def _scan_and_find_similar(ctx: _MergeContext) -> None:
             host=ctx.host,
             progress_tracker=ctx.progress_tracker,
             debug_matching=ctx.debug_matching,
+            read_policies=True,
         )
         # The variables read with the source's are not read again.
         svc.adopt_policy_variables(ctx.policy_files)
@@ -92,6 +97,9 @@ def _scan_and_find_similar(ctx: _MergeContext) -> None:
     refused_before = ctx.policy_files.variables_refused
     ctx.all_similar_prs = asyncio.run(_find_similar())
     _apply_policy_files(ctx, refused_before=refused_before)
+    # Checking the files can still invalidate a candidate's repository
+    # (an exclusion naming no App), so filter against the checked policy.
+    ctx.all_similar_prs = _keep_admitted_candidates(ctx.bot_policy, ctx.all_similar_prs)
 
     # Drafts cannot merge; set them aside before anything is evaluated.
     kept = {

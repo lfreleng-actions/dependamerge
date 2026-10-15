@@ -80,12 +80,14 @@ query($org: String!, $reposCursor: String) {
 # ``repositoryOwner`` is null, without an error, for an unknown login.  A
 # missing repository is null *with* a NOT_FOUND error at its alias, which
 # the caller must tolerate.  ``policy`` is null when the file is absent,
-# and has none of the Blob fields when the path is a directory.
+# and has none of the Blob fields when the path is a directory.  The
+# ``.github`` file is read only ``$withPolicy``: commands that do not act
+# on pull requests (``status``, ``blocked``) need no access to it.
 OWNER_PROFILE = """
-query($owner: String!, $repo: String!, $withRepo: Boolean!) {
+query($owner: String!, $repo: String!, $withRepo: Boolean!, $withPolicy: Boolean!) {
   repositoryOwner(login: $owner) {
     __typename
-    dotgithub: repository(name: ".github") {
+    dotgithub: repository(name: ".github") @include(if: $withPolicy) {
       policy: object(expression: "HEAD:.github/dependamerge/config.json") {
         ... on Blob { text byteSize isTruncated isBinary }
       }

@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 
 from ..bot_identity import rest_author_login
 from ..github_async import PermissionError as GitHubPermissionError
+from ..merge_signals import PullRequestStopSignal
 from ..models import PullRequestInfo
 from ..url_parser import pull_request_url_for
 from ._base import _MergeManagerBase
@@ -242,6 +243,11 @@ class _RecreatedPullRequestMixin(_MergeManagerBase):
             )
             approved = True
         except GitHubPermissionError:
+            raise
+        except PullRequestStopSignal as signal:
+            # A draft, or draft state unknown: never arm auto-merge.  The
+            # outcome concerns the replacement, which the signal names.
+            signal.pull_request = replacement
             raise
         except Exception as exc:
             self.log.warning(

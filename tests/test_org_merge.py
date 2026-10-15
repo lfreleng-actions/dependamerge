@@ -751,7 +751,13 @@ class TestFetchOwnerOpenPrs:
         assert resolved == (root_key, query)
         [(sent, variables, kwargs)] = calls
         assert sent == OWNER_PROFILE
-        assert variables == {"owner": "acme", "repo": "", "withRepo": False}
+        # A reporting service never asks for the policy files.
+        assert variables == {
+            "owner": "acme",
+            "repo": "",
+            "withRepo": False,
+            "withPolicy": False,
+        }
         # Only a missing ``.github`` (or target) repository is an answer;
         # every other GraphQL error still raises.
         assert set(kwargs["allow_not_found"]) == {

@@ -12,9 +12,11 @@ from the conflict handler so that it reads as the sequence it is.
 
 from __future__ import annotations
 
+from ..merge_signals import DraftPullRequestError, PullRequestStopSignal
 from ..models import PullRequestInfo
 from ._failure_summary import _FailureSummaryFromExceptionMixin
 from ._types import MergeResult, MergeStatus
+from ._write_guards import is_draft_now
 
 
 class _MergeConflictWaitMixin(_FailureSummaryFromExceptionMixin):
@@ -68,6 +70,9 @@ class _MergeConflictWaitMixin(_FailureSummaryFromExceptionMixin):
             await self._request_dependabot_rebase(pr_info, owner, repo)
         try:
             await self._approve_pr(owner, repo, pr_info.number)
+        except PullRequestStopSignal:
+            # A draft, or draft state unknown: never approved here.
+            raise
         except Exception as exc:
             self.log.debug(
                 "no-wait approve failed for %s/%s#%s: %s",
@@ -172,6 +177,9 @@ class _MergeConflictWaitMixin(_FailureSummaryFromExceptionMixin):
         """
         try:
             await self._approve_pr(owner, repo, pr_info.number)
+        except PullRequestStopSignal:
+            # A draft, or draft state unknown: never approved here.
+            raise
         except Exception as exc:
             return self._report_rebase_approval_failure(
                 pr_info, owner, repo, result, exc
@@ -280,6 +288,10 @@ class _MergeConflictWaitMixin(_FailureSummaryFromExceptionMixin):
         if pr_info.mergeable_state == "clean":
             dispatch_lock = await self._get_merge_dispatch_lock(owner, repo)
             async with dispatch_lock:
+                # Read live, as every other dispatch does: a PR marked
+                # draft since the wait's last poll is skipped, not merged.
+                if await is_draft_now(self, pr_info, owner, repo):
+                    raise DraftPullRequestError(f"{owner}/{repo}#{pr_info.number}")
                 merged = await self._merge_pr_with_retry(pr_info, owner, repo)
             if merged:
                 result.status = MergeStatus.MERGED

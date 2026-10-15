@@ -903,6 +903,52 @@ class TestCLI:
             candidates=None,
         )
 
+    @pytest.mark.parametrize("automation", [False, True])
+    @patch("dependamerge.cli.create_gerrit_comparator")
+    @patch("dependamerge.cli.create_gerrit_service")
+    @patch("dependamerge.cli.resolve_gerrit_credentials")
+    def test_gerrit_dry_run_never_rebases_a_conflicted_source(
+        self,
+        mock_resolve_credentials,
+        mock_create_service,
+        mock_create_comparator,
+        automation,
+    ):
+        """A dry run uploads no patchset, even to clear a conflict.
+
+        A person's change reaches a dry run without the --override that
+        would confirm acting on it, and rebasing it would upload a new
+        patchset (Copilot review on #567).
+        """
+        change = self._human_gerrit_change()
+        change.mergeable = False
+        credentials = Mock(is_valid=True, username="user", password="pass")
+        credentials.auth_method_display.return_value = ".netrc file"
+        mock_resolve_credentials.return_value = credentials
+
+        service = Mock(is_authenticated=True)
+        service.get_change_info.return_value = change
+        service.find_similar_changes.return_value = []
+        mock_create_service.return_value = service
+
+        comparator = Mock()
+        comparator.is_automation_change.return_value = automation
+        mock_create_comparator.return_value = comparator
+
+        console = Console(record=True, width=120)
+        _handle_gerrit_merge(
+            parsed_url=self._gerrit_parsed_url(),
+            no_confirm=True,
+            similarity_threshold=0.8,
+            verbose=False,
+            console=console,
+            dry_run=True,
+            include_human_prs=not automation,
+        )
+
+        service.rebase_change.assert_not_called()
+        assert "a run would try to rebase it" in console.export_text()
+
     @patch("dependamerge.cli.create_gerrit_comparator")
     @patch("dependamerge.cli.create_gerrit_service")
     @patch("dependamerge.cli.resolve_gerrit_credentials")

@@ -162,7 +162,9 @@ Reading variables needs more than reading code:
 A token can lack one and hold the other. When GitHub refuses a kind of
 variable, dependamerge stops reading that kind and says so once. The
 refused variables' inclusions do not apply, and their exclusions cannot
-hold, so keep exclusions that must hold in files:
+hold, so keep exclusions that must hold in files. Any other failure to
+read a variable stops the run, since the variable might hold an
+exclusion:
 
 ```text
 ⚠️ This token cannot read the organisation's DEPENDAMERGE_BOTS Actions

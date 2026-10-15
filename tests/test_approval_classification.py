@@ -207,6 +207,8 @@ class TestManagerReportsGitHubsMessage:
     async def test_refused_approval_is_not_read_as_already_approved(self) -> None:
         mgr, client = make_merge_manager()
         mgr._should_skip_approval = AsyncMock(return_value=(False, None))  # type: ignore[method-assign]
+        # The live read before approving finds a ready PR.
+        mgr._fetch_pr_state = AsyncMock(return_value={"draft": False})  # type: ignore[method-assign]
         client.approve_pull_request = AsyncMock(
             side_effect=ga.ApprovalError("o/r#1", 422, "Head sha moved")
         )

@@ -606,5 +606,8 @@ class TestGitHubClient:
             )
 
         # GitHub reports a draft's state as ``blocked`` (or ``dirty``), never
-        # ``draft``: only the draft flag says not to merge it.
-        assert client._should_attempt_merge(MockPR(True, "blocked", True)) is False
+        # ``draft``: only the draft flag says not to merge it, whatever
+        # ``mergeable`` reads (Copilot review on #567).
+        for mergeable in (True, False, None):
+            draft = MockPR(mergeable, "blocked", True)
+            assert client._should_attempt_merge(draft) is False, mergeable

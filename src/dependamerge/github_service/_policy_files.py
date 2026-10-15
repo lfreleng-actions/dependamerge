@@ -71,7 +71,7 @@ class _PolicyFilesMixin(_GitHubServiceBase):
         Returns:
             :attr:`policy_files`, including what this read.
         """
-        await self._read_owner_profile(owner, repo)
+        await self._read_owner_profile(owner, repo, with_policy=True)
         repository = f"{owner}/{repo}"
         exists = (
             repo is not None and repository.lower() in self._repository_policy_files
@@ -103,15 +103,25 @@ class _PolicyFilesMixin(_GitHubServiceBase):
         applied, _ = apply_policy_files(policy, files)
         return applied
 
-    async def _read_owner_profile(self, owner: str, repo: str | None = None) -> None:
+    async def _read_owner_profile(
+        self, owner: str, repo: str | None = None, *, with_policy: bool | None = None
+    ) -> None:
         """Run the owner profile query, and keep everything it says.
 
         Caches the owner's account type for :meth:`_resolve_owner_root`,
         taking an owner that does not resolve for a user, as before, so
-        the user listing reports it.  Records the owner's policy file,
+        the user listing reports it.  Records the owner's policy file
+        when ``with_policy`` (by default, when the service reads policy),
         and ``repo``'s when given and it exists.
         """
-        variables = {"owner": owner, "repo": repo or "", "withRepo": repo is not None}
+        if with_policy is None:
+            with_policy = self._read_policies
+        variables = {
+            "owner": owner,
+            "repo": repo or "",
+            "withRepo": repo is not None,
+            "withPolicy": with_policy,
+        }
         data = await self._api.graphql(
             OWNER_PROFILE, variables, allow_not_found=_MAY_BE_MISSING
         )
@@ -122,7 +132,10 @@ class _PolicyFilesMixin(_GitHubServiceBase):
             self._owner_root_cache[owner] = ("user", USER_REPOS_ONLY)
         if not profile:
             return
-        self._owner_policy_files[owner.lower()] = _policy_blob(profile.get("dotgithub"))
+        if with_policy:
+            self._owner_policy_files[owner.lower()] = _policy_blob(
+                profile.get("dotgithub")
+            )
         target = profile.get("target")
         if repo is not None and target is not None:
             self._record_repository_policy(f"{owner}/{repo}", target)

@@ -97,6 +97,14 @@ class TestValues:
         assert options["include_bots"] == "my-bot,app/other-bot,third[bot]"
         assert options["exclude_bots"] == "renovate"
 
+    def test_bot_names_are_accepted_in_any_case(self, action_config):
+        # The CLI ignores case throughout an App name, its prefix and
+        # suffix included, so the action must accept what the CLI does
+        # (Copilot review on #567).
+        names = "RENOVATE[BOT],App/My-Bot,APP/Third[Bot]"
+        options = action_config.resolve(_config(target="acme", exclude_bots=names), {})
+        assert options["exclude_bots"] == names
+
     def test_bot_lists_may_both_be_set(self, action_config):
         # Unlike the repository lists, inclusion and exclusion combine.
         options = action_config.resolve(

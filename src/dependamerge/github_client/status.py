@@ -121,16 +121,16 @@ class _GitHubStatusMixin:
 
         Returns True if merge should be attempted, False otherwise.
         """
+        # A draft cannot merge whatever its merge state or mergeability says
+        if pr.is_draft:
+            return False
+
         # If mergeable is explicitly False, only attempt merge for blocked state
         # where branch protection might resolve after approval
         if pr.mergeable is False:
             # For blocked state, we can attempt merge as approval might resolve the block
             # For other states (dirty, behind), don't attempt as they need manual fixes
             return bool(pr.mergeable_state == "blocked")
-
-        # A draft cannot merge whatever its merge state says
-        if pr.is_draft:
-            return False
 
         # If mergeable is None, GitHub is still calculating - be conservative
         if pr.mergeable is None:

@@ -109,6 +109,7 @@ def _fetch_owner_prs(
             token=ctx.token,
             host=ctx.host,
             progress_tracker=ctx.progress_tracker,
+            read_policies=True,
         )
         try:
             found = await svc.fetch_owner_open_prs(

@@ -540,6 +540,33 @@ class TestEnterpriseRepositoryMergeRuns:
         assert "Repository mode" not in result.stdout
 
 
+class TestCloseChecksTheHostFirst:
+    """close refuses an undeclared host before any App lookup.
+
+    With an App named, close looked it up on the URL's host before
+    parsing refused that host, so the caller's token reached a server
+    nobody declared (Copilot review on #567).
+    """
+
+    runner = CliRunner()
+
+    def test_an_undeclared_host_receives_no_request(self, no_declared_hosts, mocker):
+        lookup = mocker.patch("dependamerge.cli._bot_scope._lookup_apps")
+        result = self.runner.invoke(
+            app,
+            [
+                "close",
+                "https://untrusted.example/acme/widget/pull/7",
+                "--token",
+                "t",
+                "--include-bots",
+                "renovate",
+            ],
+        )
+        assert result.exit_code != 0
+        lookup.assert_not_called()
+
+
 class TestGithubHostFlag:
     """``--github-host`` and its precedence over the environment.
 

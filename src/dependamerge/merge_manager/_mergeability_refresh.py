@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 
+from ..merge_signals import DraftPullRequestError
 from ..models import PullRequestInfo
 from ._base import _MergeManagerBase
 
@@ -51,9 +52,13 @@ class _MergeabilityRefreshMixin(_MergeManagerBase):
         value so the merge decision is made against real data.
 
         Mutates ``pr_info`` in place (``state``, ``mergeable``,
-        ``mergeable_state``, ``head_sha``).  Best-effort: any API error
-        leaves the existing snapshot untouched so the caller's
-        downstream logic still runs.
+        ``mergeable_state``, ``head_sha``, ``is_draft``).  Best-effort:
+        any API error leaves the existing snapshot untouched so the
+        caller's downstream logic still runs.
+
+        Raises:
+            DraftPullRequestError: When the PR has become a draft, so it
+                ends as skipped rather than entering conflict recovery.
         """
         # Resolved through the package at call time rather than bound at
         # import time, so that a test rebinding the constant on
@@ -92,9 +97,12 @@ class _MergeabilityRefreshMixin(_MergeManagerBase):
             head_sha = (data.get("head") or {}).get("sha")
             if head_sha:
                 pr_info.head_sha = head_sha
-            # A PR marked not ready since the scan must not be merged.
+            # A PR marked not ready since the scan must not be merged, nor
+            # routed to conflict recovery: stop here, as skipped.
             if isinstance(data.get("draft"), bool):
                 pr_info.is_draft = data["draft"]
+            if pr_info.is_draft:
+                raise DraftPullRequestError(f"{owner}/{repo}#{pr_info.number}")
 
             mergeable = data.get("mergeable")
             mergeable_state = data.get("mergeable_state")

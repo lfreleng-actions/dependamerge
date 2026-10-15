@@ -51,6 +51,7 @@ class _GitHubServiceBase:
     _branch_protection_cache: dict[str, dict[str, Any] | None]
     _owner_root_cache: dict[str, tuple[str, str]]
     _owner_policy_files: dict[str, dict[str, Any] | None]
+    _read_policies: bool
     _repository_policy_files: dict[str, dict[str, Any] | None]
     _owner_policy_variables: dict[str, str | None]
     _repository_policy_variables: dict[str, str | None]

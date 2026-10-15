@@ -258,18 +258,30 @@ def _maybe_rebase_gerrit_change(
     source_change: GerritChangeInfo,
     credentials: GerritCredentials,
     console: Console,
+    *,
+    dry_run: bool = False,
 ) -> GerritChangeInfo:
     """Rebase the source change when it has merge conflicts.
 
+    A dry run only reports the conflict: a rebase uploads a new patchset,
+    and a person's change reaches a dry run without the ``--override``
+    that would confirm acting on it.
+
     Returns:
         The (possibly refreshed) source change. Unchanged when the
-        change is already mergeable.
+        change is already mergeable, or in a dry run.
 
     Raises:
         typer.Exit: When the rebase fails, whether due to conflicts
             needing manual resolution or another error.
     """
     if source_change.mergeable is not False:
+        return source_change
+
+    if dry_run:
+        console.print(
+            "\n🧪 Dry run: change has merge conflicts; a run would try to rebase it."
+        )
         return source_change
 
     console.print("\n⚠️ Change has merge conflicts. Attempting to rebase...")

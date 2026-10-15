@@ -18,12 +18,39 @@ from ..models import ComparisonResult, PullRequestInfo
 from ._base import _GitHubServiceBase
 
 
+def _is_source(source_pr: PullRequestInfo, pr: PullRequestInfo) -> bool:
+    """Whether ``pr`` is ``source_pr`` itself."""
+    return (pr.number, pr.repository_full_name) == (
+        source_pr.number,
+        source_pr.repository_full_name,
+    )
+
+
 def _other_app_pr(source_pr: PullRequestInfo, pr: PullRequestInfo) -> bool:
     """Whether ``pr`` is an App's, other than ``source_pr`` itself."""
-    return is_automation_author(pr.author) and (
-        pr.number,
-        pr.repository_full_name,
-    ) != (source_pr.number, source_pr.repository_full_name)
+    return is_automation_author(pr.author) and not _is_source(source_pr, pr)
+
+
+def _variable_matters(
+    source_pr: PullRequestInfo,
+    prs: list[PullRequestInfo],
+    *,
+    only_automation: bool,
+) -> bool:
+    """Whether a repository's ``DEPENDAMERGE_BOTS`` variable bears on a search.
+
+    Read where an App's PR is open, as every run reads it.  The policy
+    judges no person's PR, but an invalid one keeps the search from
+    acting on any PR in the repository; so for a person's source PR it is
+    read where that person has another PR open, the only PRs the search
+    could act on there.
+    """
+    if not any(_other_app_pr(source_pr, pr) for pr in prs):
+        return False
+    author = source_pr.author or ""
+    return only_automation or any(
+        (pr.author or "") == author and not _is_source(source_pr, pr) for pr in prs
+    )
 
 
 class _SimilarPullRequestsMixin(_GitHubServiceBase):
@@ -165,8 +192,8 @@ class _SimilarPullRequestsMixin(_GitHubServiceBase):
 
         The policy also consults the repository's own file, which its
         first page carries, and its ``DEPENDAMERGE_BOTS`` variable, read
-        when an App's PR there could be a candidate.  ``None`` when that
-        policy is invalid.
+        where it bears on the search (see :func:`_variable_matters`).
+        ``None`` when that policy is invalid.
         """
         owner_n, name_n = repo_full_name.split("/", 1)
         first_nodes, page_info = await self._fetch_repo_prs_first_page(owner_n, name_n)
@@ -181,7 +208,7 @@ class _SimilarPullRequestsMixin(_GitHubServiceBase):
             ):
                 nodes.append(pr_node)
         prs = [self.to_pull_request_info(repo_full_name, node) for node in nodes]
-        if only_automation and any(_other_app_pr(source_pr, pr) for pr in prs):
+        if _variable_matters(source_pr, prs, only_automation=only_automation):
             await self._read_repository_variable(repo_full_name)
             policy = self._valid_repository_policy(bot_policy, repo_full_name)
         return None if policy is None else (prs, policy)
@@ -209,10 +236,7 @@ class _SimilarPullRequestsMixin(_GitHubServiceBase):
     ) -> bool:
         """Whether *target_pr* is worth comparing against *source_pr*."""
         # Skip the source PR itself
-        if (
-            target_pr.number == source_pr.number
-            and target_pr.repository_full_name == source_pr.repository_full_name
-        ):
+        if _is_source(source_pr, target_pr):
             return False
 
         # Candidate filtering: an App the policy admits when the source is

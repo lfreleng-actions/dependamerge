@@ -71,6 +71,7 @@ class GitHubService(
         max_page_tasks: int = 16,
         debug_matching: bool = False,
         client: GitHubAsync | None = None,
+        read_policies: bool = False,
     ) -> None:
         """
         Args:
@@ -134,7 +135,10 @@ class GitHubService(
         # repeated repository-pagination pages do not re-probe.
         self._owner_root_cache: dict[str, tuple[str, str]] = {}
         # The bot policy files read along the way, by lower-cased owner
-        # and ``owner/name``; see ``policy_files``.
+        # and ``owner/name``; see ``policy_files``.  Read only for runs
+        # that act on pull requests: reporting commands need no access to
+        # the files, and a token without it must not break their scans.
+        self._read_policies = read_policies
         self._owner_policy_files: dict[str, dict[str, Any] | None] = {}
         self._repository_policy_files: dict[str, dict[str, Any] | None] = {}
         # The DEPENDAMERGE_BOTS variables read, keyed the same way, and

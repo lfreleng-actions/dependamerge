@@ -84,8 +84,11 @@ def _repos(value: Any) -> str:
     return ",".join(names)
 
 
-#: One App name: 'name', 'name[bot]' or 'app/name', as the CLI accepts.
-_APP = re.compile(r"\A(?:app/)?[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\[bot\])?\Z")
+#: One App name: 'name', 'name[bot]' or 'app/name', in any case, as the
+#: CLI accepts.
+_APP = re.compile(
+    r"\A(?:app/)?[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\[bot\])?\Z", re.IGNORECASE
+)
 
 
 def _bots(value: Any) -> str:

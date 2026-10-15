@@ -73,17 +73,28 @@ def _listing(root: str, *names: str) -> dict[str, Any]:
 
 
 def _service(
-    answer: Answer,
+    answer: Answer, variables: dict[str, str] | None = None
 ) -> tuple[GitHubService, list[tuple[str, dict[str, Any]]]]:
-    """A service whose GraphQL requests ``answer`` handles, and what it sent."""
+    """A service whose GraphQL requests ``answer`` handles, and what it sent.
+
+    ``variables`` holds repositories' ``DEPENDAMERGE_BOTS`` values; a
+    repository it does not name has none.
+    """
     sent: list[tuple[str, dict[str, Any]]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
+        if "/actions/variables/" in request.url.path:
+            scope = request.url.path.split("/actions/")[0]
+            value = (variables or {}).get(scope.removeprefix("/repos/"))
+            if value is None:
+                # GitHub's answer for an unset variable.
+                return httpx.Response(404, json={"message": "Not Found"})
+            return httpx.Response(200, json={"name": "x", "value": value})
         payload = json.loads(request.content)
         sent.append((payload["query"], payload["variables"]))
         return httpx.Response(200, json=answer(payload["query"], payload["variables"]))
 
-    svc = GitHubService(token="t")
+    svc = GitHubService(token="t", read_policies=True)
     svc._api._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     return svc, sent
 
@@ -111,7 +122,12 @@ class TestOwnerProfile:
             await svc.close()
         # The first page of repositories is fetched once, to list them.
         assert [query for query, _ in sent] == [OWNER_PROFILE, ORG_REPOS_ONLY]
-        assert sent[0][1] == {"owner": "acme", "repo": "", "withRepo": False}
+        assert sent[0][1] == {
+            "owner": "acme",
+            "repo": "",
+            "withRepo": False,
+            "withPolicy": True,
+        }
         assert svc.policy_files == PolicyFiles(owners={"acme": policy})
 
     @pytest.mark.asyncio
@@ -163,7 +179,12 @@ class TestOwnerProfile:
             assert await _list(svc, "Acme") == ["acme/widget"]
         finally:
             await svc.close()
-        assert sent[0][1] == {"owner": "Acme", "repo": "Widget", "withRepo": True}
+        assert sent[0][1] == {
+            "owner": "Acme",
+            "repo": "Widget",
+            "withRepo": True,
+            "withPolicy": True,
+        }
         assert [query for query, _ in sent] == [OWNER_PROFILE, ORG_REPOS_ONLY]
         # A directory at the path is kept as GitHub returned it: not a file.
         # The variables were read too, and this fake API holds none.
@@ -197,20 +218,32 @@ class TestOwnerProfile:
         )
 
 
+def _author(number: int, people: tuple[int, ...]) -> dict[str, str]:
+    if number in people:
+        return {"__typename": "User", "login": "octocat"}
+    login = CODE_MONKEY if number % 2 else "dependabot"
+    return {"__typename": "Bot", "login": login}
+
+
 def _pr_page(
-    name: str, numbers: list[int], *, cursor: str | None = None, **policy: Any
+    name: str,
+    numbers: list[int],
+    *,
+    cursor: str | None = None,
+    people: tuple[int, ...] = (),
+    **policy: Any,
 ) -> dict[str, Any]:
-    """One page of open pull requests; ``policy`` only when asked for."""
+    """One page of open pull requests; ``policy`` only when asked for.
+
+    Those in ``people`` are octocat's, other odd numbers the code
+    monkey's, and even ones Dependabot's.
+    """
     nodes = [
         {
             "number": n,
             "title": f"Chore: Bump x to {n}",
             "url": f"https://github.com/acme/{name}/pull/{n}",
-            # Odd numbers are the code monkey's, even ones Dependabot's.
-            "author": {
-                "__typename": "Bot",
-                "login": CODE_MONKEY if n % 2 else "dependabot",
-            },
+            "author": _author(n, people),
         }
         for n in numbers
     ]
@@ -253,10 +286,65 @@ class TestFirstPullRequestPage:
         with pytest.raises(TypeError):
             files.repositories["acme/other"] = None  # type: ignore[index]
 
+    @pytest.mark.asyncio
+    async def test_a_reporting_service_reads_no_policy(self) -> None:
+        # status and blocked share these queries but never act on PRs, so
+        # a token that cannot read the files must not break their scans
+        # (Copilot review on #567).
+        def answer(query: str, variables: dict[str, Any]) -> dict[str, Any]:
+            if query == OWNER_PROFILE:
+                return _profile("Organization")
+            if query == REPO_OPEN_PRS_PAGE:
+                return _pr_page("widget", [1])
+            return _listing("organization", "acme/widget")
+
+        svc, sent = _service(answer)
+        svc._read_policies = False
+        try:
+            await _list(svc, "acme")
+            await svc._fetch_repo_prs_first_page("acme", "widget")
+        finally:
+            await svc.close()
+        flags = [v["withPolicy"] for _, v in sent if "withPolicy" in v]
+        assert flags == [False, False]
+        assert svc.policy_files == PolicyFiles()
+
 
 class _AllSimilar:
     def compare_pull_requests(self, source, target, only_automation):
         return ComparisonResult(is_similar=True, confidence_score=1.0, reasons=["x"])
+
+
+def _source(author: str, repository: str) -> PullRequestInfo:
+    return PullRequestInfo(
+        number=1,
+        title="Chore: Bump x to 1",
+        body=None,
+        author=author,
+        head_sha="abc",
+        base_branch="main",
+        head_branch="update",
+        state="open",
+        mergeable=True,
+        mergeable_state="clean",
+        behind_by=0,
+        files_changed=[],
+        repository_full_name=repository,
+        html_url=f"https://github.com/{repository}/pull/1",
+    )
+
+
+def _organisation(pages: dict[str, dict[str, Any]]) -> Answer:
+    """Answers for an organisation holding ``pages``' repositories."""
+
+    def answer(query: str, variables: dict[str, Any]) -> dict[str, Any]:
+        if query == OWNER_PROFILE:
+            return _profile("Organization", dotgithub={"policy": None})
+        if query == ORG_REPOS_ONLY:
+            return _listing("organization", *(f"acme/{n}" for n in pages))
+        return pages[variables["name"]]
+
+    return answer
 
 
 class TestSimilarPullRequests:
@@ -269,31 +357,8 @@ class TestSimilarPullRequests:
             # A directory where the file should be: invalid.
             "broken": _pr_page("broken", [7, 8], policy={}),
         }
-
-        def answer(query: str, variables: dict[str, Any]) -> dict[str, Any]:
-            if query == OWNER_PROFILE:
-                return _profile("Organization", dotgithub={"policy": None})
-            if query == ORG_REPOS_ONLY:
-                return _listing("organization", *(f"acme/{n}" for n in pages))
-            return pages[variables["name"]]
-
-        source = PullRequestInfo(
-            number=1,
-            title="Chore: Bump x to 1",
-            body=None,
-            author=f"{CODE_MONKEY}[bot]",
-            head_sha="abc",
-            base_branch="main",
-            head_branch="update",
-            state="open",
-            mergeable=True,
-            mergeable_state="clean",
-            behind_by=0,
-            files_changed=[],
-            repository_full_name="acme/widget",
-            html_url="https://github.com/acme/widget/pull/1",
-        )
-        svc, _ = _service(answer)
+        source = _source(f"{CODE_MONKEY}[bot]", "acme/widget")
+        svc, _ = _service(_organisation(pages))
         try:
             found = await svc.find_similar_prs(
                 "acme", source, _AllSimilar(), only_automation=True
@@ -315,3 +380,42 @@ class TestSimilarPullRequests:
             "acme/other": None,
             "acme/broken": {},
         }
+
+    @pytest.mark.asyncio
+    async def test_a_persons_search_reads_variables_where_they_matter(self) -> None:
+        # The policy judges none of a person's PRs, but an invalid one
+        # keeps the search out of its repository; that needs the variable
+        # where an App's PR is open beside the person's own (Copilot review
+        # on #567).
+        pages = {
+            # The file excludes the code monkey; the variable includes it.
+            "widget": _pr_page(
+                "widget", [2, 10], people=(10,), policy=_file(exclude_bots=CODE_MONKEY)
+            ),
+            # Nothing of octocat's to act on.
+            "quiet": _pr_page("quiet", [4], policy=None),
+            # No App's PR, so no policy decides anything, as in every run.
+            "people": _pr_page("people", [20], people=(20,), policy=None),
+        }
+        unparsable = "{not json"
+        svc, _ = _service(
+            _organisation(pages),
+            variables={
+                "acme/widget": json.dumps({"include_bots": [CODE_MONKEY]}),
+                "acme/quiet": unparsable,
+                "acme/people": unparsable,
+            },
+        )
+        try:
+            found = await svc.find_similar_prs(
+                "acme",
+                _source("octocat", "acme/home"),
+                _AllSimilar(),
+                only_automation=False,
+            )
+        finally:
+            await svc.close()
+        assert [(pr.repository_full_name, pr.number) for pr, _ in found] == [
+            ("acme/people", 20)
+        ]
+        assert list(svc.policy_files.repository_variables) == ["acme/widget"]

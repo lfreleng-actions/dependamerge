@@ -10,8 +10,10 @@ from __future__ import annotations
 import asyncio
 
 from ..github_async import PermissionError as GitHubPermissionError
+from ..merge_signals import DraftPullRequestError, PullRequestStopSignal
 from ..models import PullRequestInfo
 from ._base import _MergeManagerBase
+from ._write_guards import is_draft_now
 
 
 class _RequiredWorkflowWaitMixin(_MergeManagerBase):
@@ -132,30 +134,16 @@ class _RequiredWorkflowWaitMixin(_MergeManagerBase):
                     # multi-minute wait would serialise the whole
                     # repository batch behind this one PR, which is the
                     # head-of-line blocking the lock design avoids.
-                    dispatch_lock = await self._get_merge_dispatch_lock(owner, repo)
-                    async with dispatch_lock:
-                        # The wait can finish ``clean`` and a sibling can
-                        # then merge while we acquire the lock, so
-                        # re-read live state before dispatching --- a
-                        # single GET, matching the main dispatch path.
-                        # ``_is_pr_dirty_now`` updates ``pr_info``, so
-                        # the caller routes to conflict recovery on the
-                        # snapshot rather than issuing a doomed merge.
-                        if self._repo_scoped and await self._is_pr_dirty_now(
-                            pr_info, owner, repo
-                        ):
-                            return False
-                        merged = await self._github_client.merge_pull_request(
-                            owner, repo, pr_info.number, merge_method
-                        )
-                        # The API answered, so this attempt supersedes
-                        # any exception stored before it.  Maintained
-                        # here as well as in the retry loop because this
-                        # path dispatches its own single merge call and
-                        # would otherwise leave the signal describing an
-                        # attempt two cycles old.
-                        self._last_merge_was_answered[pr_key] = True
+                    dispatched = await self._dispatch_after_required_workflows(
+                        pr_info, owner, repo, pr_key, merge_method
+                    )
+                    if dispatched is None:
+                        return False
+                    merged = dispatched
                 except GitHubPermissionError:
+                    raise
+                except PullRequestStopSignal:
+                    # A draft: the single-PR handler records the skip.
                     raise
                 except Exception as exc:
                     self._last_merge_exception[pr_key] = exc
@@ -190,3 +178,47 @@ class _RequiredWorkflowWaitMixin(_MergeManagerBase):
                 await asyncio.sleep(min(self._merge_recheck_interval, remaining))
         finally:
             self._track_pr_state(pr_info, None)
+
+    async def _dispatch_after_required_workflows(
+        self,
+        pr_info: PullRequestInfo,
+        owner: str,
+        repo: str,
+        pr_key: str,
+        merge_method: str,
+    ) -> bool | None:
+        """One merge call under the dispatch lock; ``None`` when now dirty.
+
+        The wait can finish ``clean`` and a sibling can then merge while
+        the lock is acquired, so live state is re-read before dispatching
+        --- a single GET, matching the main dispatch path.
+        ``_is_pr_dirty_now`` updates ``pr_info``, so the caller routes to
+        conflict recovery on the snapshot rather than issuing a doomed
+        merge.  A draft is skipped even when dirty, as on that path.
+
+        Raises:
+            DraftPullRequestError: When the PR has become a draft.
+        """
+        if self._github_client is None:
+            return None
+        dispatch_lock = await self._get_merge_dispatch_lock(owner, repo)
+        async with dispatch_lock:
+            dirty = self._repo_scoped and await self._is_pr_dirty_now(
+                pr_info, owner, repo
+            )
+            if not self._repo_scoped:
+                await is_draft_now(self, pr_info, owner, repo)
+            if pr_info.is_draft:
+                raise DraftPullRequestError(pr_key)
+            if dirty:
+                return None
+            merged = await self._github_client.merge_pull_request(
+                owner, repo, pr_info.number, merge_method
+            )
+            # The API answered, so this attempt supersedes any exception
+            # stored before it.  Maintained here as well as in the retry
+            # loop because this path dispatches its own single merge call
+            # and would otherwise leave the signal describing an attempt
+            # two cycles old.
+            self._last_merge_was_answered[pr_key] = True
+            return bool(merged)

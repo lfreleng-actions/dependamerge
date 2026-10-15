@@ -33,6 +33,7 @@ from ._app import console
 __all__ = [
     "_apply_policy_files",
     "_capture_policy_files",
+    "_keep_admitted_candidates",
     "_load_source_policy_files",
     "_policy_with_files",
     "_warn_unreadable_variables",
@@ -82,9 +83,19 @@ def _check_file_apps(policy: BotPolicy, token: str | None, host: str) -> BotPoli
     unknown inclusion includes nothing, so it only warns.
     """
     listed = policy.listed()
-    checked = {item.login for item in listed if item.level not in _FILE_LEVELS}
     from_files = [item for item in listed if item.level in _FILE_LEVELS]
-    logins = sorted({item.login for item in from_files} - checked)
+    # Inclusions the flags or the user's file named were looked up
+    # already.  Exclusions in files are looked up regardless: a name the
+    # run only warned about as an inclusion may be a misspelt exclusion
+    # here, which must invalidate the file.
+    checked = {item.login for item in listed if item.level not in _FILE_LEVELS}
+    logins = sorted(
+        {
+            item.login
+            for item in from_files
+            if item.excluded or item.login not in checked
+        }
+    )
     if not logins:
         return policy
     found = _bot_scope._lookup_apps(logins, token, host)
@@ -171,3 +182,21 @@ def _load_source_policy_files(ctx: Any) -> None:
             message=f"❌ Invalid bot policy in {repository}",
             details=f"{problem}. Nothing in the repository is in scope.",
         )
+
+
+def _keep_admitted_candidates(
+    policy: BotPolicy, candidates: list[tuple[Any, Any]]
+) -> list[tuple[Any, Any]]:
+    """``candidates`` the checked ``policy`` admits, the rest reported.
+
+    The search judged each repository by its unchecked file; checking can
+    still invalidate one (an exclusion naming no App), and every PR in an
+    invalid repository, a person's included, is then out of scope.
+    """
+    kept = {
+        id(pr)
+        for pr in _bot_scope._remove_out_of_scope_bots(
+            policy, [pr for pr, _ in candidates]
+        )
+    }
+    return [entry for entry in candidates if id(entry[0]) in kept]

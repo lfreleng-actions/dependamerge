@@ -158,12 +158,14 @@ class _SinglePrOutcomeMixin(_SinglePrRecreateMixin):
     ) -> None:
         """Record a replacement that will not merge without help.
 
-        ``BLOCKED`` rather than ``FAILED``, because after a recreate the
-        **original** PR is closed unmerged by dependabot --- so a
-        ``FAILED`` result is rewritten to ``CLOSED`` by
-        ``_confirm_failure``, which documents ``CLOSED`` as "nothing for
-        the operator to follow up on".  That is the opposite of what a
-        conflicted or closed-unmerged replacement needs.
+        ``BLOCKED`` rather than ``FAILED``, because the PR
+        ``_confirm_failure`` rechecks is often closed unmerged: the
+        replacement itself, or the original, which dependabot closed,
+        when the replacement is unknown.  It rewrites a ``FAILED``
+        result for a closed PR to ``CLOSED``, which it documents as
+        "nothing for the operator to follow up on".  That is the
+        opposite of what a conflicted or closed-unmerged replacement
+        needs.
         ``_confirm_failure`` returns early for any status other than
         ``FAILED``, so ``BLOCKED`` survives it, and it is the status
         already used elsewhere for "will not merge on its own".

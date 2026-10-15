@@ -24,6 +24,7 @@ from dependamerge.bot_policy_files import PolicyFiles, apply_policy_files
 from dependamerge.cli._policy_files import _warn_unreadable_variables
 from dependamerge.github_graphql import ORG_REPOS_ONLY, USER_REPOS_ONLY
 from dependamerge.github_service import GitHubService
+from dependamerge.github_service._policy_variables import PolicyVariableError
 from dependamerge.models import PullRequestInfo
 
 CODE_MONKEY = "lf-releng-code-monkey-bot[bot]"
@@ -37,17 +38,23 @@ def _error(status: int, path: str) -> httpx.HTTPStatusError:
 
 
 class _Api:
-    """Answers variable reads from a table: a value, or an HTTP status."""
+    """Answers variable reads from a table.
+
+    An HTTP status, a raw body (a dict or a list), or the value of a
+    well-formed answer.
+    """
 
     def __init__(self, answers: dict[str, Any]) -> None:
         self.answers = answers
         self.paths: list[str] = []
 
-    async def get(self, path: str, params: Any = None) -> dict[str, Any]:
+    async def get(self, path: str, params: Any = None) -> Any:
         self.paths.append(path)
         answer = self.answers.get(path.split("/actions/")[0], 404)
         if isinstance(answer, int):
             raise _error(answer, path)
+        if isinstance(answer, dict | list):
+            return answer
         return {"name": "DEPENDAMERGE_BOTS", "value": answer}
 
 
@@ -130,6 +137,25 @@ class TestReads:
         await svc.fetch_policy_variables("acme", [_pr(CODE_MONKEY, "acme/b")])
         assert not any("/repos/acme/b/" in path for path in api.paths)
         assert svc.policy_files.variables_refused == frozenset({"repos"})
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("status", [500, 502, 422])
+    async def test_other_failures_stop_the_run(self, status: int) -> None:
+        # Taken for absent, a variable that excludes an App could not
+        # protect that App's PRs (Copilot review on #567).
+        svc, _api = _service({"/repos/acme/widget": status})
+        with pytest.raises(PolicyVariableError, match="acme/widget"):
+            await svc.fetch_policy_variables("acme", [_pr(CODE_MONKEY, "acme/widget")])
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("body", [{}, {"value": None}, {"value": 5}, []])
+    async def test_an_answer_without_a_value_stops_the_run(self, body: Any) -> None:
+        # Only a 404 says there is no variable: read as absent, a garbled
+        # answer would drop any exclusion it held (Copilot review on #567).
+        svc, _api = _service({"/repos/acme/widget": body})
+        with pytest.raises(PolicyVariableError, match="held no value"):
+            await svc.fetch_policy_variables("acme", [_pr(CODE_MONKEY, "acme/widget")])
+        assert "acme/widget" not in svc.policy_files.repository_variables
 
 
 def _blob(document: dict[str, Any]) -> dict[str, Any]:

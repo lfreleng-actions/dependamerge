@@ -147,8 +147,12 @@ def _to_rest_shape(node: dict[str, Any]) -> dict[str, Any]:
         "merged_at": node.get("mergedAt"),
         "mergeable": _MERGEABLE.get((node.get("mergeable") or "").upper()),
         "mergeable_state": merge_state,
-        "draft": node.get("isDraft") is True,
     }
+    # Only a real boolean says whether the PR is a draft: an absent or
+    # null ``isDraft`` leaves ``draft`` out, so the reader takes the
+    # state as unknown rather than as "not a draft".
+    if isinstance(node.get("isDraft"), bool):
+        payload["draft"] = node["isDraft"]
     head_sha = node.get("headRefOid")
     if head_sha:
         payload["head"] = {"sha": head_sha}

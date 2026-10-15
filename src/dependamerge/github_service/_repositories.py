@@ -189,10 +189,12 @@ class _RepositoriesMixin(_GitHubServiceBase):
         Fetch the first page of open PRs for a repository using GraphQL.
         Returns a tuple of (nodes, pageInfo).
 
-        The repository's bot policy file comes with it, and is kept for
-        ``policy_files``.
+        The repository's bot policy file comes with it when the service
+        reads policy, and is kept for ``policy_files``.
         """
-        variables = self._open_prs_page_variables(owner, name, None, with_policy=True)
+        variables = self._open_prs_page_variables(
+            owner, name, None, with_policy=self._read_policies
+        )
         async with self._page_semaphore:
             data = await self._api.graphql(REPO_OPEN_PRS_PAGE, variables)
         repo = (data or {}).get("repository") or {}

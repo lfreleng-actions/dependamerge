@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+from ..merge_signals import DraftPullRequestError, PullRequestStopSignal
 from ..models import PullRequestInfo
 from ._base import _MergeManagerBase
 from ._types import _merged_from_payload
@@ -29,6 +30,10 @@ class _PullRequestStateMixin(_MergeManagerBase):
 
         Returns True if the PR was already merged (skip retry), False if it
         was closed without merging (abort retry), or None to proceed.
+
+        Raises:
+            DraftPullRequestError: When the open PR is now a draft; another
+                dispatch would only be refused.
         """
         if self._github_client is None:
             raise RuntimeError("GitHub client not initialized")
@@ -55,9 +60,14 @@ class _PullRequestStateMixin(_MergeManagerBase):
                     )
                     # This will be caught by the outer merge logic and formatted consistently
                     return False
+                if current_state != "closed" and current_pr_data.get("draft") is True:
+                    pr_info.is_draft = True
+                    raise DraftPullRequestError(f"{owner}/{repo}#{pr_info.number}")
         except asyncio.CancelledError:
             # Cancellation must propagate so an in-flight shutdown is not
             # swallowed by the broad handler below.
+            raise
+        except PullRequestStopSignal:
             raise
         except Exception as state_check_error:
             self.log.debug(
@@ -91,7 +101,13 @@ class _PullRequestStateMixin(_MergeManagerBase):
     async def _refresh_pr_mergeable(
         self, owner: str, repo: str, pr_info: PullRequestInfo, pr_key: str
     ) -> None:
-        """Best-effort refresh of ``pr_info`` mergeable fields from the API."""
+        """Best-effort refresh of ``pr_info`` mergeable fields from the API.
+
+        Raises:
+            DraftPullRequestError: When the PR has become a draft, so the
+                retry that asked ends it as skipped rather than dispatching
+                another merge.
+        """
         try:
             if self._github_client:
                 refreshed = await self._fetch_pr_state(owner, repo, pr_info.number)
@@ -104,9 +120,11 @@ class _PullRequestStateMixin(_MergeManagerBase):
                         f"Refreshed {pr_key}: mergeable={pr_info.mergeable}, "
                         f"mergeable_state={pr_info.mergeable_state}"
                     )
-        except asyncio.CancelledError:
+                    if pr_info.is_draft:
+                        raise DraftPullRequestError(pr_key)
+        except (asyncio.CancelledError, PullRequestStopSignal):
             # Cancellation must propagate so an in-flight shutdown is not
-            # swallowed by the broad handler below.
+            # swallowed by the broad handler below; so must a stop signal.
             raise
         except Exception as refresh_err:
             self.log.debug(
@@ -205,6 +223,9 @@ class _PullRequestStateMixin(_MergeManagerBase):
         Returns True when the PR's ``mergeable_state`` became ``clean`` (so
         the merge should be retried); False otherwise.  Refresh failures are
         swallowed at debug level.
+
+        Raises:
+            DraftPullRequestError: When the open PR is now a draft.
         """
         try:
             if self._github_client:
@@ -230,12 +251,19 @@ class _PullRequestStateMixin(_MergeManagerBase):
                     )
                     pr_info.mergeable = new_mergeable
                     pr_info.mergeable_state = new_state
+                    if refreshed.get("state") != "closed" and (
+                        refreshed.get("draft") is True
+                    ):
+                        pr_info.is_draft = True
+                        raise DraftPullRequestError(pr_key)
                     if new_state == "clean":
                         # Approval has propagated — retry the merge
                         return True
         except asyncio.CancelledError:
             # Cancellation must propagate so an in-flight shutdown is not
             # swallowed by the broad handler below.
+            raise
+        except PullRequestStopSignal:
             raise
         except Exception as refresh_err:
             self.log.debug(
@@ -361,6 +389,10 @@ class _PullRequestStateMixin(_MergeManagerBase):
             return False
         if not isinstance(data, dict):
             return False
+        # A conversion to draft since the scan is recorded for the caller,
+        # which then refuses to dispatch.
+        if isinstance(data.get("draft"), bool):
+            pr_info.is_draft = data["draft"]
         # A closed PR is handled by the caller's closed-PR path, not as
         # a conflict.
         if data.get("state") == "closed":

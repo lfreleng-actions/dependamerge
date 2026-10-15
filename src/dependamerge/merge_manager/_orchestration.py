@@ -315,9 +315,14 @@ class _OrchestrationMixin(_MergeManagerBase):
         is deliberate: that method has several early ``return`` paths
         (permission denied, already merged, conflict handling), and a
         check placed before its final ``return`` would miss them.
+
+        The confirmation reads the PR the result is about, which after a
+        dependabot recreate is the replacement.  The original is closed
+        by then, and confirming against it would rewrite any failure of
+        the replacement to ``CLOSED``, letting the run exit 0.
         """
         result = await self._merge_single_pr_impl(pr_info)
-        return await self._confirm_failure(pr_info, result)
+        return await self._confirm_failure(result.pr_info, result)
 
     async def _get_merge_dispatch_lock(self, owner: str, repo: str) -> asyncio.Lock:
         """Return the ``asyncio.Lock`` that serialises merge dispatch for ``owner/repo``.

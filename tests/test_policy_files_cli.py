@@ -8,20 +8,24 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from dependamerge.bot_identity import is_automation_author
 from dependamerge.bot_policy import BotPolicy, run_policy_source
 from dependamerge.bot_policy_files import PolicyFiles
 from dependamerge.cli._bot_scope import _remove_out_of_scope_bots
 from dependamerge.cli._policy_files import (
     _capture_policy_files,
+    _keep_admitted_candidates,
     _load_source_policy_files,
     _policy_with_files,
 )
 from dependamerge.error_codes import ExitCode
+from dependamerge.merge_manager import MergeStatus
 from dependamerge.models import PullRequestInfo
+from tests.conftest import make_merge_manager
 
 CODE_MONKEY = "lf-releng-code-monkey-bot[bot]"
 LOOKUP = "dependamerge.cli._bot_scope._lookup_apps"
@@ -139,6 +143,17 @@ class TestUnknownApps:
             _policy_with_files(policy, files, "t", "")
         lookup.assert_called_once_with(["other-app[bot]"], "t", "")
 
+    def test_a_file_exclusion_is_checked_even_when_the_flags_named_it(self) -> None:
+        # The run only warned about a misspelt inclusion; the same name as
+        # a file's exclusion must still invalidate that file (Copilot
+        # review on #567).
+        policy = BotPolicy(run=run_policy_source(["renovat"], None))
+        files = _files(widget={"exclude_bots": ["renovat"]})
+        with patch(LOOKUP, return_value={"renovat[bot]": False}) as lookup:
+            checked = _policy_with_files(policy, files, "t", "")
+        lookup.assert_called_once_with(["renovat[bot]"], "t", "")
+        assert checked.repository_error("acme/widget") is not None
+
 
 class TestOverrides:
     def test_flags_overruling_a_file_are_reported(self, apps_exist, capsys) -> None:
@@ -162,6 +177,38 @@ class TestCapture:
         ctx = SimpleNamespace(policy_files=PolicyFiles())
         _capture_policy_files(ctx, MagicMock())
         assert ctx.policy_files == PolicyFiles()
+
+
+class TestCandidates:
+    """Similar-PR candidates are filtered against the checked policy."""
+
+    def test_an_invalidated_repository_contributes_nothing(self, capsys) -> None:
+        # Checking made widget's file invalid after the search had judged
+        # it valid (Copilot review on #567): its PRs, a person's included,
+        # must not survive to the merge or the close.
+        files = _files(widget={"exclude_bots": ["renovat"]})
+        with patch(LOOKUP, return_value={"renovat[bot]": False}):
+            policy = _policy_with_files(BotPolicy(), files, "t", "")
+        candidates = [
+            (_pr("octocat", 1), "comparison"),
+            (_pr("renovate[bot]", 2), "comparison"),
+            (_pr("renovate[bot]", 3, repo="acme/other"), "comparison"),
+        ]
+        kept = _keep_admitted_candidates(policy, candidates)
+        assert [pr.number for pr, _ in kept] == [3]
+        assert "Skipped 2 PR(s) in acme/widget" in capsys.readouterr().out
+
+
+class TestMergeManagerGuard:
+    @pytest.mark.asyncio
+    async def test_a_person_s_pr_in_an_invalid_repository_is_skipped(self) -> None:
+        policy = BotPolicy(invalid_repositories={"acme/widget": "not valid JSON"})
+        mgr, client = make_merge_manager(bot_policy=policy)
+        result = await mgr._merge_single_pr_impl(_pr("octocat"))
+        assert result.status is MergeStatus.SKIPPED
+        assert result.error is not None
+        assert "bot policy is invalid" in result.error
+        assert not client.mock_calls
 
 
 class TestSourceFiles:
@@ -189,3 +236,61 @@ class TestSourceFiles:
         with pytest.raises(SystemExit) as raised:
             _load_source_policy_files(ctx)
         assert raised.value.code == ExitCode.CONFIGURATION_ERROR
+
+
+class TestCloseSource:
+    """close judges its source again once the search applies every policy.
+
+    Every close list starts with the source, and the close manager has no
+    policy guard of its own, so a policy the search makes stricter must
+    stop the run (Copilot review on #567).
+    """
+
+    @staticmethod
+    def _search(author: str, policy_after: BotPolicy) -> Any:
+        """Run the close search; applying the policies yields ``policy_after``."""
+        from dependamerge.cli import _close
+
+        client = MagicMock()
+        client.is_automation_author.side_effect = is_automation_author
+        ctx = _close._CloseContext(
+            token="t",
+            github_client=client,
+            host="github.com",
+            owner="acme",
+            repo_name="widget",
+            pr_number=1,
+            source_pr=_pr(author),
+            progress_tracker=None,
+        )
+        svc = MagicMock()
+        svc.find_similar_prs = AsyncMock(return_value=[])
+        svc.close = AsyncMock()
+
+        def apply(ctx: Any, **_: Any) -> None:
+            ctx.bot_policy = policy_after
+
+        with (
+            patch("dependamerge.github_service.GitHubService", return_value=svc),
+            patch.object(_close, "_apply_policy_files", side_effect=apply),
+        ):
+            return _close._find_similar_prs_for_close(
+                ctx, MagicMock(), debug_matching=False
+            )
+
+    @pytest.mark.parametrize("author", ["dependabot[bot]", "octocat"])
+    def test_a_newly_invalid_source_repository_stops_the_run(self, author) -> None:
+        policy = BotPolicy(invalid_repositories={"acme/widget": "not valid JSON"})
+        with pytest.raises(SystemExit) as raised:
+            self._search(author, policy)
+        assert raised.value.code == ExitCode.CONFIGURATION_ERROR
+
+    def test_a_newly_excluded_source_app_stops_the_run(self, apps_exist) -> None:
+        files = _files(widget={"exclude_bots": ["dependabot"]})
+        policy = _policy_with_files(BotPolicy(), files, "t", "")
+        with pytest.raises(SystemExit) as raised:
+            self._search("dependabot[bot]", policy)
+        assert raised.value.code == ExitCode.VALIDATION_ERROR
+
+    def test_a_source_still_in_scope_carries_on(self) -> None:
+        assert self._search("dependabot[bot]", BotPolicy()) == []

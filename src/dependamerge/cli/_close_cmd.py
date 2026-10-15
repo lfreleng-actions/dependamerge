@@ -172,8 +172,10 @@ def close(
     try:
         github_client = _close_client(pr_url, token)
         token = github_client.token
-        _check_listed_bots(bot_policy, token, github_client.host)
+        # Parsed before the App lookups: parsing refuses a host nobody
+        # declared, and the lookups would carry the token to it.
         owner, repo_name, pr_number = github_client.parse_pr_url(pr_url)
+        _check_listed_bots(bot_policy, token, github_client.host)
 
         if show_progress:
             progress_tracker = MergeProgressTracker(owner, is_close_operation=True)

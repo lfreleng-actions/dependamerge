@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+from ..merge_signals import DraftPullRequestError
 from ..models import PullRequestInfo
 from .context import RebaseContext
 
@@ -32,6 +33,12 @@ async def _poll_post_rebase(
     Updates ``pr_info.head_sha`` in place when the refresh shows a
     new head commit (so any subsequent ``analyze_block_reason()``
     call queries the rebased commit, not the pre-rebase one).
+
+    Raises:
+        DraftPullRequestError: When a reading says the PR is now a
+            draft.  Its checks cannot make it mergeable, and once the
+            rebase is recorded nothing reads the PR again before Step 6
+            defers it to auto-merge as pending.
     """
     if ctx.github_client is None:
         return pr_info.mergeable, pr_info.mergeable_state
@@ -51,6 +58,11 @@ async def _poll_post_rebase(
             updated_head = (updated_pr_data.get("head") or {}).get("sha")
             if updated_head:
                 pr_info.head_sha = updated_head
+            if updated_pr_data.get("draft") is True and (
+                updated_pr_data.get("state") != "closed"
+            ):
+                pr_info.is_draft = True
+                raise DraftPullRequestError(f"{owner}/{repo}#{pr_info.number}")
         else:
             updated_mergeable = None
             updated_mergeable_state = None

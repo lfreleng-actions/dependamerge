@@ -254,7 +254,7 @@ def _handle_gerrit_merge(
         )
 
         source_change = _maybe_rebase_gerrit_change(
-            service, source_change, credentials, console
+            service, source_change, credentials, console, dry_run=dry_run
         )
 
         candidates = _resolve_gerrit_candidates(

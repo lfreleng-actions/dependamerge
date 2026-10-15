@@ -23,8 +23,11 @@ from ._client import (
 from ._errors import (
     _APPROVE_MAX_ATTEMPTS,
     _APPROVE_RETRY_BASE_DELAY,
+    _APPROVE_THROTTLE_BASE_DELAY,
+    _APPROVE_THROTTLE_MAX_ATTEMPTS,
     _TENACITY_MAX_BACKOFF,
     _TRANSIENT_SERVER_STATUSES,
+    ApprovalError,
     GraphQLError,
     PermissionError,
     RateLimitError,
@@ -36,6 +39,7 @@ from ._errors import (
     _is_transient_graphql_error,
     _is_transient_server_error,
     _now,
+    github_error_detail,
 )
 from ._permissions import (
     OPERATION_PERMISSIONS,
@@ -52,4 +56,5 @@ __all__ = [
     "SecondaryRateLimitError",
     "GraphQLError",
     "PermissionError",
+    "ApprovalError",
 ]

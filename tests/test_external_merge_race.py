@@ -12,11 +12,14 @@ entries that need follow-up.
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from dependamerge.merge_manager import MergeStatus
+from dependamerge.github_async import PermissionError as GitHubPermissionError
+from dependamerge.github_async import SecondaryRateLimitError
+from dependamerge.merge_manager import MergeResult, MergeStatus
 from dependamerge.models import PullRequestInfo
 from tests.conftest import make_merge_manager
 
@@ -264,7 +267,7 @@ class TestPermissionErrorFastFail:
         result = await mgr._merge_single_pr(pr)
 
         assert result.status == MergeStatus.FAILED
-        assert "token lacks required permissions" in (result.error or "")
+        assert "skipped: an earlier PR" in (result.error or "")
         # No API call should have been made; the short-circuit
         # runs before any await on the client.
         client.get.assert_not_called()
@@ -273,6 +276,108 @@ class TestPermissionErrorFastFail:
         """Sanity check: a fresh manager has no failed repos."""
         mgr, _client = make_merge_manager()
         assert mgr._permission_failed_repos == set()
+
+
+def _sequenced_manager(
+    first_error: Exception, **overrides: Any
+) -> tuple[Any, AsyncMock]:
+    """A manager whose first PR raises ``first_error`` and second merges."""
+    mgr, _client = make_merge_manager(**overrides)
+    mgr._console = MagicMock()
+    mgr._get_merge_method_for_repo = AsyncMock(return_value="merge")  # type: ignore[method-assign]
+    sequence = AsyncMock(
+        side_effect=[
+            first_error,
+            MergeResult(pr_info=_make_pr(number=60), status=MergeStatus.MERGED),
+        ]
+    )
+    mgr._run_merge_sequence = sequence  # type: ignore[method-assign]
+    return mgr, sequence
+
+
+def _printed(mgr: Any) -> str:
+    return "\n".join(
+        str(c.args[0]) for c in mgr._console.print.call_args_list if c.args
+    )
+
+
+class TestRepositorySkipNeedsGenuineRefusal:
+    """Only a genuine 401/403 may skip a PR's siblings unasked.
+
+    A throttled approval 422 once skipped two healthy sibling PRs as
+    "token lacks required permissions" without calling the API.
+    """
+
+    @pytest.mark.asyncio
+    async def test_approval_422_fails_only_its_own_pr(self) -> None:
+        refused = GitHubPermissionError(
+            operation="approve",
+            message="Cannot approve this pull request",
+            status_code=422,
+        )
+        mgr, sequence = _sequenced_manager(refused)
+
+        first = await mgr._merge_single_pr(_make_pr(number=59))
+        assert first.status == MergeStatus.FAILED
+        assert mgr._permission_failed_repos == set()
+
+        second = await mgr._merge_single_pr(_make_pr(number=60))
+        assert second.status == MergeStatus.MERGED
+        assert sequence.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_genuine_403_skip_names_the_refusal(self) -> None:
+        refused = GitHubPermissionError(
+            operation="approve",
+            message="Insufficient permissions to Approve pull requests",
+            status_code=403,
+        )
+        mgr, sequence = _sequenced_manager(refused)
+
+        await mgr._merge_single_pr(_make_pr(number=59))
+        second = await mgr._merge_single_pr(_make_pr(number=60))
+
+        assert second.status == MergeStatus.FAILED
+        assert second.error == (
+            "skipped: an earlier PR in lfreleng-actions/git-commit-message-action "
+            "was refused with HTTP 403 (approve)"
+        )
+        assert sequence.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_rate_limit_403_does_not_skip(self) -> None:
+        refused = GitHubPermissionError(
+            operation="merge", message="Permission denied", status_code=403
+        )
+        refused.__cause__ = SecondaryRateLimitError("Secondary rate limit")
+        mgr, sequence = _sequenced_manager(refused)
+
+        await mgr._merge_single_pr(_make_pr(number=59))
+        second = await mgr._merge_single_pr(_make_pr(number=60))
+
+        assert mgr._permission_failed_repos == set()
+        assert second.status == MergeStatus.MERGED
+        assert sequence.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_403_after_passing_preflight_points_at_the_repository(
+        self,
+    ) -> None:
+        refused = GitHubPermissionError(
+            operation="approve",
+            message="Insufficient permissions to Approve pull requests",
+            status_code=403,
+        )
+        mgr, _sequence = _sequenced_manager(
+            refused, preflight_repository="lfreleng-actions/other-action"
+        )
+
+        await mgr._merge_single_pr(_make_pr(number=59))
+
+        printed = _printed(mgr)
+        assert "pre-flight" in printed
+        assert "lfreleng-actions/other-action" in printed
+        assert "lfreleng-actions/git-commit-message-action" in printed
 
 
 class TestProgressTrackerMergeSkipped:

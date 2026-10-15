@@ -23,6 +23,7 @@ import httpx
 from aiolimiter import AsyncLimiter
 
 if TYPE_CHECKING:
+    from ._content_limiter import ContentLimiter
     from ._errors import PermissionError
     from ._throttling import _Budget, _ResizableSemaphore
 
@@ -43,6 +44,7 @@ class _GitHubAsyncBase:
     graphql_url: str
     semaphore: _ResizableSemaphore
     limiter: AsyncLimiter
+    content_limiter: ContentLimiter
     log: logging.Logger
     on_rate_limited: Callable[[float], None | Awaitable[None]] | None
     on_rate_limit_cleared: Callable[[], None | Awaitable[None]] | None

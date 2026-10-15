@@ -15,7 +15,12 @@ from __future__ import annotations
 from urllib.parse import urlparse
 
 from ._base import _GitHubAsyncBase
-from ._errors import PermissionError
+from ._errors import (
+    PermissionError,
+    _http_status,
+    _is_approval_not_permitted,
+    github_error_detail,
+)
 
 # Permission requirements mapping for operations
 OPERATION_PERMISSIONS = {
@@ -104,6 +109,7 @@ def _unauthorized_permission_error(
             "fine_grained": f"Check token expiration at: https://{host}/settings/personal-access-tokens",
             "fix": f"Run: gh auth refresh -h {host}",
         },
+        status_code=401,
     )
 
 
@@ -146,6 +152,7 @@ def _forbidden_permission_error(
                 "fine_grained": f"Enable: {perms.get('fine_grained', 'Workflows: Read and write')}",
                 "fix": f"Run: gh auth refresh -h {host} -s workflow",
             },
+            status_code=403,
         )
 
     # 2. Fine-grained token repository scope
@@ -158,6 +165,7 @@ def _forbidden_permission_error(
                 "fine_grained": f"Add {owner}/{repo} to the token's repository access list at: https://{host}/settings/tokens",
                 "fix": f"Edit your fine-grained token and add '{owner}/{repo}' to repository access",
             },
+            status_code=403,
         )
 
     # 3. Operation-specific permission errors
@@ -172,6 +180,7 @@ def _forbidden_permission_error(
                 "fine_grained": f"Required permission: {perms.get('fine_grained', 'unknown')}",
                 "fix": f"Update your token permissions at: https://{host}/settings/tokens",
             },
+            status_code=403,
         )
 
     # 4. Generic 403
@@ -183,34 +192,32 @@ def _forbidden_permission_error(
             "fine_grained": "Check that token has appropriate permissions and repository access",
             "fix": f"Review and update token permissions at: https://{host}/settings/tokens",
         },
+        status_code=403,
     )
 
 
 def _approve_unprocessable_permission_error(
-    error_str: str, operation: str
+    detail: str, operation: str
 ) -> PermissionError | None:
-    """Classify a 422 raised by an approval attempt."""
-    if "review cannot be requested from pull request author" in error_str.lower():
-        return PermissionError(
-            operation=operation,
-            message="Cannot approve your own pull request",
-            token_type_guidance={
-                "classic": "GitHub does not allow self-approval of pull requests",
-                "fine_grained": "GitHub does not allow self-approval of pull requests",
-                "fix": "Request review from another team member",
-            },
-        )
-    elif "unprocessable entity" in error_str.lower():
-        return PermissionError(
-            operation=operation,
-            message="Pull request approval failed - repository may have approval restrictions",
-            token_type_guidance={
-                "classic": "Check repository settings for review requirements",
-                "fine_grained": "Check repository settings for review requirements",
-                "fix": "Contact repository administrator to review branch protection rules",
-            },
-        )
-    return None
+    """Classify a 422 raised by an approval attempt.
+
+    Only a body saying the approval is not allowed (self-approval) is a
+    permission problem.  Every other 422 --- including GitHub's
+    content-creation throttle, which answers "was submitted too quickly"
+    --- concerns this one request, so it is left for the caller.
+    """
+    if not _is_approval_not_permitted(detail):
+        return None
+    return PermissionError(
+        operation=operation,
+        message=f"Cannot approve this pull request: {detail}",
+        token_type_guidance={
+            "classic": "GitHub does not allow self-approval of pull requests",
+            "fine_grained": "GitHub does not allow self-approval of pull requests",
+            "fix": "Request review from another team member",
+        },
+        status_code=422,
+    )
 
 
 class _PermissionsMixin(_GitHubAsyncBase):
@@ -236,19 +243,29 @@ class _PermissionsMixin(_GitHubAsyncBase):
         # this client actually addresses.
         host = web_host_for(self.api_url)
 
-        # Check for 401 (unauthorized/expired token)
-        if "401" in error_str or "Unauthorized" in error_str:
+        status = _http_status(error)
+        if status is None:
+            # No response to read, so fall back to the message.  Only
+            # here: httpx puts the request URL in the message, and a
+            # pull request numbered 403 would otherwise read as a 403.
+            if "401" in error_str or "Unauthorized" in error_str:
+                status = 401
+            elif "403" in error_str or "Forbidden" in error_str:
+                status = 403
+            elif "422" in error_str:
+                status = 422
+
+        if status == 401:
             return _unauthorized_permission_error(operation, host)
 
-        # Check for 403 (forbidden/permission denied)
-        if "403" in error_str or "Forbidden" in error_str:
+        if status == 403:
             return _forbidden_permission_error(
                 error, error_str, operation, owner, repo, host
             )
 
-        # Check for 422 (unprocessable entity - often approval restrictions)
-        if "422" in error_str and operation == "approve":
-            return _approve_unprocessable_permission_error(error_str, operation)
+        if status == 422 and operation == "approve":
+            detail = github_error_detail(error) or error_str
+            return _approve_unprocessable_permission_error(detail, operation)
 
         # Not a permission error we recognize
         return None

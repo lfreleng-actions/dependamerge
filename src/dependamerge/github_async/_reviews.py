@@ -26,6 +26,12 @@ import dependamerge.github_async as _pkg
 from ._base import _GitHubAsyncBase
 from ._errors import (
     _APPROVE_MAX_ATTEMPTS,
+    _APPROVE_THROTTLE_MAX_ATTEMPTS,
+    ApprovalError,
+    _http_status,
+    _is_throttled_detail,
+    _retry_after_seconds,
+    github_error_detail,
 )
 
 
@@ -73,19 +79,30 @@ class _ReviewsMixin(_GitHubAsyncBase):
         stacking a duplicate review.  The first attempt skips that check,
         so the common path costs exactly one request.
 
+        A ``422`` is classified by GitHub's response body.  One saying
+        the review was "submitted too quickly" is GitHub's
+        content-creation throttle: it is retried through the same
+        duplicate-safe loop, waiting as GitHub advises for secondary
+        limits.  One saying the approval is not allowed becomes a
+        :class:`PermissionError`; any other is an :class:`ApprovalError`
+        carrying GitHub's message.
+
         Raises:
-            PermissionError: If token lacks required permissions
+            PermissionError: If GitHub says the approval is not permitted
+            ApprovalError: If GitHub refused the approval for another reason
         """
+        target = f"{owner}/{repo}#{number}"
         last_exc: Exception | None = None
-        for attempt in range(_APPROVE_MAX_ATTEMPTS):
-            if attempt and await self._has_own_approval(owner, repo, number):
+        server_failures = 0
+        throttled = 0
+        while True:
+            if last_exc is not None and await self._has_own_approval(
+                owner, repo, number
+            ):
                 self.log.debug(
-                    "Approval for %s/%s#%s already present after a %s; "
+                    "Approval for %s already present after an error; "
                     "treating as success",
-                    owner,
-                    repo,
-                    number,
-                    "transient error",
+                    target,
                 )
                 # Reporting success means the approval landed, so the
                 # memo must go here too --- not only on the path where
@@ -104,19 +121,46 @@ class _ReviewsMixin(_GitHubAsyncBase):
                 perm_error = self._parse_permission_error(e, "approve", owner, repo)
                 if perm_error:
                     raise perm_error from e
+                status = _http_status(e)
+                if status == 422:
+                    detail = github_error_detail(e)
+                    refusal = ApprovalError(target, status, detail)
+                    if not _is_throttled_detail(detail):
+                        raise refusal from e
+                    refusal.__cause__ = e
+                    last_exc = refusal
+                    throttled += 1
+                    if throttled >= _APPROVE_THROTTLE_MAX_ATTEMPTS:
+                        break
+                    retry_after = _retry_after_seconds(e)
+                    self.content_limiter.throttled(retry_after)
+                    delay = (
+                        retry_after
+                        if retry_after is not None
+                        else _pkg._APPROVE_THROTTLE_BASE_DELAY * (2 ** (throttled - 1))
+                    )
+                    self.log.warning(
+                        "GitHub throttled the approval of %s (attempt %d/%d): "
+                        "%s; retrying in %.0fs",
+                        target,
+                        throttled,
+                        _APPROVE_THROTTLE_MAX_ATTEMPTS,
+                        detail,
+                        delay,
+                    )
+                    await asyncio.sleep(delay)
+                    continue
                 if not _pkg._is_transient_server_error(e):
                     raise
                 last_exc = e
-                if attempt == _APPROVE_MAX_ATTEMPTS - 1:
+                server_failures += 1
+                if server_failures >= _APPROVE_MAX_ATTEMPTS:
                     break
-                delay = _pkg._APPROVE_RETRY_BASE_DELAY * (2**attempt)
+                delay = _pkg._APPROVE_RETRY_BASE_DELAY * (2 ** (server_failures - 1))
                 self.log.warning(
-                    "Transient error approving %s/%s#%s (attempt %d/%d); "
-                    "retrying in %.1fs",
-                    owner,
-                    repo,
-                    number,
-                    attempt + 1,
+                    "Transient error approving %s (attempt %d/%d); retrying in %.1fs",
+                    target,
+                    server_failures,
                     _APPROVE_MAX_ATTEMPTS,
                     delay,
                 )
@@ -126,10 +170,8 @@ class _ReviewsMixin(_GitHubAsyncBase):
         # created the review despite reporting failure.
         if await self._has_own_approval(owner, repo, number):
             self.log.info(
-                "Approval for %s/%s#%s landed despite a reported error",
-                owner,
-                repo,
-                number,
+                "Approval for %s landed despite a reported error",
+                target,
             )
             self.invalidate_block_reason(owner, repo, number)
             return

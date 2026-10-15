@@ -23,6 +23,7 @@ from aiolimiter import AsyncLimiter
 
 from ._block_reason import _BlockReasonMixin
 from ._checks import _ChecksMixin
+from ._content_limiter import ContentLimiter, content_budget_from_env
 from ._merge import _MergeMixin
 from ._permission_checks import _PermissionChecksMixin
 from ._permissions import _PermissionsMixin
@@ -80,6 +81,8 @@ class GitHubAsync(
         on_rate_limited: Callable[[float], None | Awaitable[None]] | None = None,
         on_rate_limit_cleared: Callable[[], None | Awaitable[None]] | None = None,
         on_metrics: Callable[[int, float], None | Awaitable[None]] | None = None,
+        content_per_minute: float | None = None,
+        content_per_hour: int | None = None,
     ):
         """
         Initialize the async client.
@@ -97,6 +100,12 @@ class GitHubAsync(
             logger: Optional logger for client messages.
             on_rate_limited: Callback invoked with reset_epoch when primary limit hit.
             on_rate_limit_cleared: Callback invoked when resuming after rate limit.
+            content_per_minute: Budget for content-generating requests a
+                minute.  Defaults to ``DEPENDAMERGE_CONTENT_PER_MINUTE``
+                or 60.
+            content_per_hour: Rolling hourly budget for the same
+                requests.  Defaults to ``DEPENDAMERGE_CONTENT_PER_HOUR``
+                or 450.
         """
         self.token = token or os.getenv("GITHUB_TOKEN")
         if not self.token:
@@ -117,6 +126,13 @@ class GitHubAsync(
         self._base_rps = requests_per_second
         self._current_rps = requests_per_second
         self.limiter = AsyncLimiter(max_rate=self._current_rps, time_period=1.0)
+        # Writes count against GitHub's much smaller content-creation
+        # limit as well, so they pass a second gate; reads never do.
+        env_per_minute, env_per_hour = content_budget_from_env()
+        self.content_limiter = ContentLimiter(
+            per_minute=content_per_minute or env_per_minute,
+            per_hour=content_per_hour or env_per_hour,
+        )
         self.log = logger or logging.getLogger("dependamerge.github_async")
         self._timeout = timeout
 

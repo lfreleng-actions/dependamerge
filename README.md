@@ -384,6 +384,8 @@ when a later step reports those PRs instead.
 | `dry_run`              | `false`               | Assess every PR, merge nothing                                              |
 | `include_repos`        |                       | Owner-wide: act on these repositories alone (comma, space or newline list)  |
 | `exclude_repos`        |                       | Owner-wide: act on every repository except these                            |
+| `include_bots`         |                       | Also act on PRs from these GitHub Apps; `*` for every App                   |
+| `exclude_bots`         |                       | Never act on PRs from these GitHub Apps, built-in ones included             |
 | `merge_method`         | `merge`               | `merge`, `squash` or `rebase`                                               |
 | `force`                | `code-owners`         | `none`, `code-owners`, `protection-rules` or `all`                          |
 | `max_wait`             | `900`                 | Owner-wide: wall-clock ceiling in seconds; `0` arms auto-merge and returns  |
@@ -406,8 +408,9 @@ when a later step reports those PRs instead.
 `config` holds a run's options as one JSON document, so a scheduled caller can
 keep its scope in a repository or organisation variable and change it without
 editing the workflow. Any of `target`, `include_repos`, `exclude_repos`,
-`merge_method`, `force`, `max_wait`, `fix_out_of_date`, `dismiss_copilot` and
-`dry_run` may appear; repository lists may be arrays. An input given
+`include_bots`, `exclude_bots`, `merge_method`, `force`, `max_wait`,
+`fix_out_of_date`, `dismiss_copilot` and `dry_run` may appear; repository and
+App lists may be arrays. An input given
 explicitly wins over the config, and the config over the default. The action
 checks every value before dependamerge runs, and an unknown key stops the run:
 a misspelt `exlude_repos` must not widen it to every repository.

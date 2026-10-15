@@ -13,9 +13,13 @@ sources; this module turns files into those sources.
   They arrive as GraphQL ``Blob`` objects with queries the run makes
   anyway (see :mod:`dependamerge.github_service`), collected as
   :class:`PolicyFiles`.
+- A repository or owner may also hold the same document in its
+  ``DEPENDAMERGE_BOTS`` Actions variable.  At one level the file and the
+  variable combine: each list is the union of both, and an App one
+  includes while the other excludes is an error.
 
-An invalid repository file takes that repository out of scope, because
-it cannot say what should be in scope there.  An invalid owner file
+An invalid repository policy takes that repository out of scope, because
+it cannot say what should be in scope there.  An invalid owner policy
 governs every repository the owner has, so it is returned for the run
 to stop on.
 """
@@ -34,16 +38,21 @@ from .bot_policy import (
     BotPolicyError,
     PolicyLevel,
     PolicySource,
+    app_slug,
     parse_policy_document,
 )
 
 __all__ = [
+    "POLICY_VARIABLE",
     "PolicyFiles",
     "apply_policy_files",
     "load_user_policy",
     "parse_policy_blob",
     "user_config_path",
 ]
+
+#: The Actions variable that may hold a repository's or owner's policy.
+POLICY_VARIABLE = "DEPENDAMERGE_BOTS"
 
 
 def user_config_path(environ: Mapping[str, str] | None = None) -> Path:
@@ -86,16 +95,29 @@ def load_user_policy(path: Path | None = None) -> PolicySource | None:
 
 @dataclass(frozen=True)
 class PolicyFiles:
-    """The repository and owner policy files a run has read.
+    """The repository and owner policy files and variables a run has read.
 
-    Keyed by lower-cased ``owner/name`` and owner login.  Each value is
+    Keyed by lower-cased ``owner/name`` and owner login.  Each file is
     what GraphQL returned for the path: the Blob's ``text``,
     ``byteSize``, ``isTruncated`` and ``isBinary``; ``{}`` when the path
-    is not a file; or ``None`` when nothing is there.
+    is not a file; or ``None`` when nothing is there.  Each variable is
+    the value of :data:`POLICY_VARIABLE`, or ``None`` when there is none.
+    ``variables_refused`` holds the kinds of variable, ``orgs`` or
+    ``repos``, the token proved unable to read, after which the run read
+    no more of that kind: a classic token without ``admin:org`` is
+    refused an organisation's variables yet reads repositories'.
     """
 
     owners: Mapping[str, Mapping[str, Any] | None] = field(default_factory=dict)
     repositories: Mapping[str, Mapping[str, Any] | None] = field(default_factory=dict)
+    owner_variables: Mapping[str, str | None] = field(default_factory=dict)
+    repository_variables: Mapping[str, str | None] = field(default_factory=dict)
+    variables_refused: frozenset[str] = frozenset()
+
+    @property
+    def variables_unreadable(self) -> bool:
+        """Whether the token could not read some kind of variable."""
+        return bool(self.variables_refused)
 
 
 def parse_policy_blob(
@@ -130,25 +152,106 @@ def parse_policy_blob(
     return parse_policy_document(text, label=label, level=level)
 
 
-def _parse_each(
-    blobs: Mapping[str, Mapping[str, Any] | None], level: PolicyLevel, suffix: str
-) -> tuple[dict[str, PolicySource | None], dict[str, BotPolicyError]]:
-    """Parse every file, labelled by its lower-cased key and ``suffix``.
+def _combine(
+    file: PolicySource | None, variable: PolicySource | None, label: str
+) -> PolicySource | None:
+    """One level's source from its file and its variable, either absent.
+
+    Each list is the union of both, labelled by the source that filled
+    it, or by ``label`` when both did.
+
+    Raises:
+        BotPolicyError: Naming every App one includes and the other
+            excludes.
+    """
+    if file is None or variable is None:
+        return file or variable
+    problems = [
+        f"{app_slug(login)} is included by {including.include_label} "
+        f"and excluded by {excluding.exclude_label}"
+        for including, excluding in ((file, variable), (variable, file))
+        for login in sorted(including.include & excluding.exclude)
+    ]
+    if problems:
+        raise BotPolicyError(label, problems)
+    including = [s for s in (file, variable) if s.include or s.include_all]
+    excluding = [s for s in (file, variable) if s.exclude]
+    return PolicySource(
+        level=file.level,
+        include_label=including[0].include_label if len(including) == 1 else label,
+        exclude_label=excluding[0].exclude_label if len(excluding) == 1 else label,
+        include=file.include | variable.include,
+        exclude=file.exclude | variable.exclude,
+        include_all=file.include_all or variable.include_all,
+    )
+
+
+def _level_source(
+    key: str,
+    blob: Mapping[str, Any] | None,
+    value: str | None,
+    level: PolicyLevel,
+    suffix: str,
+) -> tuple[PolicySource | None, list[BotPolicyError]]:
+    """``key``'s source from its file and variable, and why it is invalid.
+
+    The file is labelled by ``key`` and ``suffix``, the variable by
+    ``key`` and :data:`POLICY_VARIABLE`.
+    """
+    file_label = f"{key}{suffix}"
+    variable_label = f"{key} {POLICY_VARIABLE}"
+    errors: list[BotPolicyError] = []
+    file = variable = None
+    try:
+        file = parse_policy_blob(blob, label=file_label, level=level)
+    except BotPolicyError as exc:
+        errors.append(exc)
+    try:
+        if value is not None:
+            variable = parse_policy_document(value, label=variable_label, level=level)
+    except BotPolicyError as exc:
+        errors.append(exc)
+    if errors:
+        return None, errors
+    try:
+        return _combine(file, variable, f"{file_label} and {variable_label}"), []
+    except BotPolicyError as exc:
+        return None, [exc]
+
+
+def _level_sources(
+    blobs: Mapping[str, Mapping[str, Any] | None],
+    variables: Mapping[str, str | None],
+    level: PolicyLevel,
+    suffix: str,
+) -> tuple[dict[str, PolicySource | None], dict[str, list[BotPolicyError]]]:
+    """Every key's source at ``level``, from its file and its variable.
 
     Returns:
         Every key's source, ``None`` where there is none or it is
         invalid, and the invalid keys' errors.
     """
+    blobs = {key.lower(): blob for key, blob in blobs.items()}
+    variables = {key.lower(): value for key, value in variables.items()}
     sources: dict[str, PolicySource | None] = {}
-    errors: dict[str, BotPolicyError] = {}
-    for key, blob in blobs.items():
-        key = key.lower()
-        sources[key] = None
-        try:
-            sources[key] = parse_policy_blob(blob, label=f"{key}{suffix}", level=level)
-        except BotPolicyError as exc:
-            errors[key] = exc
+    errors: dict[str, list[BotPolicyError]] = {}
+    for key in [*blobs, *(key for key in variables if key not in blobs)]:
+        sources[key], problems = _level_source(
+            key, blobs.get(key), variables.get(key), level, suffix
+        )
+        if problems:
+            errors[key] = problems
     return sources, errors
+
+
+def _repository_problem(key: str, errors: list[BotPolicyError]) -> str:
+    """An invalid repository policy's problems, the variable's named as such."""
+    variable_label = f"{key} {POLICY_VARIABLE}"
+    return "; ".join(
+        f"{POLICY_VARIABLE}: {problem}" if error.source == variable_label else problem
+        for error in errors
+        for problem in error.problems
+    )
 
 
 def _merged(
@@ -165,28 +268,36 @@ def apply_policy_files(
     """Return a copy of ``policy`` that also consults ``files``.
 
     Each file is labelled by where it lives: ``acme/widget`` for a
-    repository's, ``acme/.github`` for its owner's.  What ``files``
-    holds for a key replaces whatever ``policy`` held for it.
+    repository's, ``acme/.github`` for its owner's.  Each variable is
+    labelled ``acme/widget DEPENDAMERGE_BOTS`` or ``acme
+    DEPENDAMERGE_BOTS``, and a list both fill by both labels joined with
+    ``and``.  What ``files`` holds for a key, its file and its variable
+    alike, replaces whatever ``policy`` held for it.
 
     Returns:
-        The new policy, recording each invalid repository file in its
-        ``invalid_repositories``, and every invalid owner file's error,
-        which the caller must not ignore.
+        The new policy, recording each invalid repository policy in its
+        ``invalid_repositories``, and every invalid owner policy's
+        errors, which the caller must not ignore.
     """
-    owners, owner_errors = _parse_each(files.owners, PolicyLevel.OWNER, "/.github")
-    repositories, repository_errors = _parse_each(
-        files.repositories, PolicyLevel.REPOSITORY, ""
+    owners, owner_errors = _level_sources(
+        files.owners, files.owner_variables, PolicyLevel.OWNER, "/.github"
+    )
+    repositories, repository_errors = _level_sources(
+        files.repositories, files.repository_variables, PolicyLevel.REPOSITORY, ""
     )
     invalid = {
         key: problems
         for key, problems in policy.invalid_repositories.items()
         if key not in repositories
     }
-    invalid |= {key: "; ".join(exc.problems) for key, exc in repository_errors.items()}
+    invalid |= {
+        key: _repository_problem(key, errors)
+        for key, errors in repository_errors.items()
+    }
     applied = replace(
         policy,
         owners=_merged(policy.owners, owners),
         repositories=_merged(policy.repositories, repositories),
         invalid_repositories=invalid,
     )
-    return applied, list(owner_errors.values())
+    return applied, [error for errors in owner_errors.values() for error in errors]

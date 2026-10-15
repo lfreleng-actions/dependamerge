@@ -216,11 +216,12 @@ class _GitHubQueryMixin:
         return asyncio.run(_run())
 
     def get_policy_files(self, owner: str, repo: str | None = None) -> PolicyFiles:
-        """Read ``owner``'s bot policy file, and ``repo``'s when given.
+        """Read ``owner``'s bot policy file and variable, and ``repo``'s.
 
-        One GraphQL request, the owner profile query, so a run with a
-        single source pull request can apply both files before deciding
-        whether that pull request is in scope.
+        One GraphQL request, the owner profile query, reads both files,
+        and one REST request each ``DEPENDAMERGE_BOTS`` variable, so a
+        run with a single source pull request can apply them all before
+        deciding whether that pull request is in scope.
         """
         from ..github_service import GitHubService
 

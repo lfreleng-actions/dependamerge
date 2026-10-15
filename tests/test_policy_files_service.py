@@ -166,8 +166,12 @@ class TestOwnerProfile:
         assert sent[0][1] == {"owner": "Acme", "repo": "Widget", "withRepo": True}
         assert [query for query, _ in sent] == [OWNER_PROFILE, ORG_REPOS_ONLY]
         # A directory at the path is kept as GitHub returned it: not a file.
+        # The variables were read too, and this fake API holds none.
         assert files == PolicyFiles(
-            owners={"acme": {}}, repositories={"acme/widget": widget}
+            owners={"acme": {}},
+            repositories={"acme/widget": widget},
+            owner_variables={"acme": None},
+            repository_variables={"acme/widget": None},
         )
 
     @pytest.mark.asyncio
@@ -186,7 +190,11 @@ class TestOwnerProfile:
             files = await svc.fetch_policy_files("acme", "nope")
         finally:
             await svc.close()
-        assert files == PolicyFiles(owners={"acme": None})
+        # The owner's variable is read too (absent here); the missing
+        # target repository has neither a file nor a variable read.
+        assert files == PolicyFiles(
+            owners={"acme": None}, owner_variables={"acme": None}
+        )
 
 
 def _pr_page(

@@ -12,9 +12,18 @@ helpers so each stays reviewable.
 
 from __future__ import annotations
 
+from ..bot_identity import is_automation_author
 from ..bot_policy import BotPolicy
 from ..models import ComparisonResult, PullRequestInfo
 from ._base import _GitHubServiceBase
+
+
+def _other_app_pr(source_pr: PullRequestInfo, pr: PullRequestInfo) -> bool:
+    """Whether ``pr`` is an App's, other than ``source_pr`` itself."""
+    return is_automation_author(pr.author) and (
+        pr.number,
+        pr.repository_full_name,
+    ) != (source_pr.number, source_pr.repository_full_name)
 
 
 class _SimilarPullRequestsMixin(_GitHubServiceBase):
@@ -92,37 +101,23 @@ class _SimilarPullRequestsMixin(_GitHubServiceBase):
     ) -> list[tuple[PullRequestInfo, ComparisonResult]]:
         """Compare every open PR of one repository against *source_pr*.
 
-        Candidates are judged with the repository's own bot policy file,
-        which its first page carries; when that file is invalid, nothing
-        there is a candidate.
+        Candidates are judged with the repository's own bot policy (see
+        :meth:`_judged_open_prs`); when that is invalid, nothing there
+        is a candidate.
         """
-        owner_n, name_n = repo_full_name.split("/", 1)
-        first_nodes, page_info = await self._fetch_repo_prs_first_page(owner_n, name_n)
-        policy = self._with_repository_policy(bot_policy or BotPolicy(), repo_full_name)
-        problem = policy.repository_error(repo_full_name)
-        if problem is not None:
-            self.log.warning(
-                "Skipping %s: its bot policy file is invalid (%s)",
-                repo_full_name,
-                problem,
-            )
+        judged = await self._judged_open_prs(
+            repo_full_name,
+            source_pr,
+            only_automation=only_automation,
+            bot_policy=bot_policy or BotPolicy(),
+        )
+        if judged is None:
             return []
-        prs = list(first_nodes)
-        has_next = bool(page_info.get("hasNextPage"))
-        end_cursor = page_info.get("endCursor") or None
-
-        # Include additional pages if present
-        if has_next:
-            async for pr_node in self._iter_repo_open_prs_pages(
-                owner_n, name_n, end_cursor
-            ):
-                prs.append(pr_node)
+        prs, policy = judged
 
         matching_prs_in_repo: list[tuple[PullRequestInfo, ComparisonResult]] = []
 
-        for pr_node in prs:
-            target_pr = self.to_pull_request_info(repo_full_name, pr_node)
-
+        for target_pr in prs:
             if not self._is_similar_pr_candidate(
                 source_pr,
                 target_pr,
@@ -157,6 +152,52 @@ class _SimilarPullRequestsMixin(_GitHubServiceBase):
                         pass
 
         return matching_prs_in_repo
+
+    async def _judged_open_prs(
+        self,
+        repo_full_name: str,
+        source_pr: PullRequestInfo,
+        *,
+        only_automation: bool,
+        bot_policy: BotPolicy,
+    ) -> tuple[list[PullRequestInfo], BotPolicy] | None:
+        """A repository's open PRs, and the policy that judges them.
+
+        The policy also consults the repository's own file, which its
+        first page carries, and its ``DEPENDAMERGE_BOTS`` variable, read
+        when an App's PR there could be a candidate.  ``None`` when that
+        policy is invalid.
+        """
+        owner_n, name_n = repo_full_name.split("/", 1)
+        first_nodes, page_info = await self._fetch_repo_prs_first_page(owner_n, name_n)
+        policy = self._valid_repository_policy(bot_policy, repo_full_name)
+        if policy is None:
+            return None
+        nodes = list(first_nodes)
+        if page_info.get("hasNextPage"):
+            end_cursor = page_info.get("endCursor") or None
+            async for pr_node in self._iter_repo_open_prs_pages(
+                owner_n, name_n, end_cursor
+            ):
+                nodes.append(pr_node)
+        prs = [self.to_pull_request_info(repo_full_name, node) for node in nodes]
+        if only_automation and any(_other_app_pr(source_pr, pr) for pr in prs):
+            await self._read_repository_variable(repo_full_name)
+            policy = self._valid_repository_policy(bot_policy, repo_full_name)
+        return None if policy is None else (prs, policy)
+
+    def _valid_repository_policy(
+        self, bot_policy: BotPolicy, repository: str
+    ) -> BotPolicy | None:
+        """``bot_policy`` with ``repository``'s own; ``None`` when invalid."""
+        policy = self._with_repository_policy(bot_policy, repository)
+        problem = policy.repository_error(repository)
+        if problem is None:
+            return policy
+        self.log.warning(
+            "Skipping %s: its bot policy is invalid (%s)", repository, problem
+        )
+        return None
 
     @staticmethod
     def _is_similar_pr_candidate(

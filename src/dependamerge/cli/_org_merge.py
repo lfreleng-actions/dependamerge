@@ -38,7 +38,7 @@ from ._merge_report import (
     _display_merge_results,
 )
 from ._org_confirm import _handle_org_preview_confirmation
-from ._policy_files import _capture_policy_files, _policy_with_files
+from ._policy_files import _apply_policy_files, _capture_policy_files
 
 
 def _init_org_merge_client(
@@ -117,7 +117,10 @@ def _fetch_owner_prs(
                 selection=ctx.repo_selection,
             )
             # The owner's file came with the account-type query, and each
-            # repository's with its first page of PRs: nothing extra.
+            # repository's with its first page of PRs: nothing extra.  The
+            # variables cost a request each, so only those that can
+            # decide anything are read.
+            await svc.fetch_policy_variables(parsed_org.owner, found[0])
             _capture_policy_files(ctx, svc)
             return found
         finally:
@@ -297,9 +300,7 @@ def _handle_org_merge(
     owner_prs, ctx.scan_errors = _fetch_owner_prs(
         parsed_org, ctx, only_automation=only_automation
     )
-    ctx.bot_policy = _policy_with_files(
-        ctx.bot_policy, ctx.policy_files, ctx.token, ctx.host
-    )
+    _apply_policy_files(ctx)
     _require_selection_matched(parsed_org, ctx)
 
     # Without --no-confirm the first pass is a preview (evaluation) run.

@@ -33,7 +33,7 @@ from ._merge_report import (
     _print_failed_pr_details,
     _print_final_merge_summary,
 )
-from ._policy_files import _capture_policy_files, _policy_with_files
+from ._policy_files import _apply_policy_files, _capture_policy_files
 from ._sha import _generate_continue_sha
 from ._similarity import _format_condensed_similarity
 
@@ -65,6 +65,8 @@ def _scan_and_find_similar(ctx: _MergeContext) -> None:
             progress_tracker=ctx.progress_tracker,
             debug_matching=ctx.debug_matching,
         )
+        # The variables read with the source's are not read again.
+        svc.adopt_policy_variables(ctx.policy_files)
         try:
             assert ctx.github_client is not None
             assert ctx.source_pr is not None
@@ -80,16 +82,16 @@ def _scan_and_find_similar(ctx: _MergeContext) -> None:
                 bot_policy=ctx.bot_policy,
             )
             # Each candidate repository was judged by its own file, read
-            # with its first page of PRs; the merge rechecks with them.
+            # with its first page of PRs, and by its variable where an
+            # App's PR there could be a candidate; the merge rechecks.
             _capture_policy_files(ctx, svc)
             return found
         finally:
             await svc.close()
 
+    refused_before = ctx.policy_files.variables_refused
     ctx.all_similar_prs = asyncio.run(_find_similar())
-    ctx.bot_policy = _policy_with_files(
-        ctx.bot_policy, ctx.policy_files, ctx.token, ctx.host
-    )
+    _apply_policy_files(ctx, refused_before=refused_before)
 
     # Drafts cannot merge; set them aside before anything is evaluated.
     kept = {

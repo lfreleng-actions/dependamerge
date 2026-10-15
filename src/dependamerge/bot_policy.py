@@ -17,8 +17,10 @@ and can come from several sources.  The most specific source that names
 an App decides for it:
 
 1. the run's own ``--include-bots`` / ``--exclude-bots`` flags;
-2. the repository's ``.github/dependamerge/config.json``, if valid;
-3. the same file in the owner's ``.github`` repository;
+2. the repository's ``.github/dependamerge/config.json`` and
+   ``DEPENDAMERGE_BOTS`` Actions variable, combined, if valid;
+3. the same file in the owner's ``.github`` repository, combined with
+   the owner's variable;
 4. the user's ``config.json`` under ``$XDG_CONFIG_HOME/dependamerge``;
 5. the built-in list.
 
@@ -317,8 +319,8 @@ class BotPolicy:
     # Keyed by lower-cased owner login and ``owner/name`` respectively.
     owners: Mapping[str, PolicySource] = field(default_factory=dict)
     repositories: Mapping[str, PolicySource] = field(default_factory=dict)
-    # Repositories whose own file is invalid, with its problems: nothing
-    # there is in scope, since the file cannot say what should be.
+    # Repositories whose own policy is invalid, with its problems: nothing
+    # there is in scope, since the policy cannot say what should be.
     invalid_repositories: Mapping[str, str] = field(default_factory=dict)
 
     def _sources(self, repository: str | None) -> list[PolicySource]:
@@ -334,7 +336,7 @@ class BotPolicy:
         return [source for source in candidates if source is not None]
 
     def repository_error(self, repository: str | None) -> str | None:
-        """Why ``repository``'s own policy file is invalid, if it is.
+        """Why ``repository``'s own policy is invalid, if it is.
 
         Applies to every pull request there, a person's included.
         """
@@ -352,7 +354,7 @@ class BotPolicy:
             return BotDecision(False, "not a GitHub App")
         assert author is not None
         if self.repository_error(repository) is not None:
-            return BotDecision(False, f"{repository}'s bot policy file is invalid")
+            return BotDecision(False, f"{repository}'s bot policy is invalid")
         login = author.lower()
         sources = self._sources(repository)
         for index, source in enumerate(sources):

@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Iterable, Mapping
 from typing import TYPE_CHECKING, Any
 
 from ..github_async import GitHubAsync
@@ -52,6 +52,9 @@ class _GitHubServiceBase:
     _owner_root_cache: dict[str, tuple[str, str]]
     _owner_policy_files: dict[str, dict[str, Any] | None]
     _repository_policy_files: dict[str, dict[str, Any] | None]
+    _owner_policy_variables: dict[str, str | None]
+    _repository_policy_variables: dict[str, str | None]
+    _policy_variables_refused: set[str]
 
     # Implemented by sibling mixins; declared here (type-checking only,
     # so nothing is defined at runtime) for cross-mixin calls.
@@ -84,6 +87,12 @@ class _GitHubServiceBase:
         def _with_repository_policy(
             self, policy: BotPolicy, repository: str
         ) -> BotPolicy: ...
+
+        async def _read_policy_variables(
+            self, owner: str, repositories: Iterable[str] = ()
+        ) -> None: ...
+
+        async def _read_repository_variable(self, repository: str) -> None: ...
 
         async def _fetch_repo_prs_first_page(
             self, owner: str, name: str

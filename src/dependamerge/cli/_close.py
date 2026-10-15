@@ -34,7 +34,11 @@ from ._human_gate import (
     _given_override,
     _refuse_human_source,
 )
-from ._policy_files import _load_source_policy_files
+from ._policy_files import (
+    _capture_policy_files,
+    _load_source_policy_files,
+    _warn_unreadable_variables,
+)
 from ._sha import _generate_continue_sha, _generate_override_sha
 from ._similarity import _format_condensed_similarity
 
@@ -198,21 +202,28 @@ def _find_similar_prs_for_close(
             progress_tracker=ctx.progress_tracker,
             debug_matching=debug_matching,
         )
+        # The variables read with the source's are not read again.
+        svc.adopt_policy_variables(ctx.policy_files)
         try:
             only_automation = ctx.github_client.is_automation_author(
                 ctx.source_pr.author
             )
-            return await svc.find_similar_prs(
+            found = await svc.find_similar_prs(
                 ctx.owner,
                 ctx.source_pr,
                 comparator,
                 only_automation=only_automation,
                 bot_policy=ctx.bot_policy,
             )
+            _capture_policy_files(ctx, svc)
+            return found
         finally:
             await svc.close()
 
-    return asyncio.run(_find_similar())
+    refused_before = ctx.policy_files.variables_refused
+    found: list[tuple[PullRequestInfo, ComparisonResult]] = asyncio.run(_find_similar())
+    _warn_unreadable_variables(ctx, refused_before)
+    return found
 
 
 def _print_close_analysis_summary(

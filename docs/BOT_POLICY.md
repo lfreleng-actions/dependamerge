@@ -62,7 +62,9 @@ Most specific first:
 | --- | --- |
 | Run | `--include-bots` and `--exclude-bots` on `merge` and `close` |
 | Repository | `.github/dependamerge/config.json` in the repository |
+| Repository | The repository's `DEPENDAMERGE_BOTS` Actions variable |
 | Owner | `.github/dependamerge/config.json` in the owner's `.github` repo |
+| Owner | The organisation's `DEPENDAMERGE_BOTS` Actions variable |
 | User | `config.json` in `$XDG_CONFIG_HOME/dependamerge` |
 | Built-in | The defaults above |
 
@@ -136,3 +138,34 @@ on with the other repositories:
 Dependamerge looks up the Apps a file names as it does for the flags. An
 unknown exclusion makes a repository's file invalid, and stops the run
 in the owner's file.
+
+### Actions variables
+
+A repository or organisation can also hold its policy in an Actions
+variable named `DEPENDAMERGE_BOTS`, containing the same JSON document as
+a file. At one level, the file and the variable combine: each list is the
+union of both. An App that one includes and the other excludes makes the
+level's policy invalid, with the same outcome as an invalid file.
+
+GraphQL does not expose variables, so each costs a REST request.
+Dependamerge reads the organisation's variable once, and a repository's
+when that repository holds an App's pull request, since nothing else
+there depends on it. Files cost no requests, so prefer them at scale.
+
+Reading variables needs more than reading code:
+
+| Variable | Classic token | Fine-grained token |
+| --- | --- | --- |
+| Repository | `repo` scope | "Variables" repository permission, read |
+| Organisation | `admin:org` scope | "Variables" organisation permission, read |
+
+A token can lack one and hold the other. When GitHub refuses a kind of
+variable, dependamerge stops reading that kind and says so once. The
+refused variables' inclusions do not apply, and their exclusions cannot
+hold, so keep exclusions that must hold in files:
+
+```text
+⚠️ This token cannot read the organisation's DEPENDAMERGE_BOTS Actions
+variables: their inclusions do not apply and their exclusions cannot
+hold. Keep exclusions that must hold in policy files.
+```

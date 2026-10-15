@@ -26,6 +26,7 @@ from ._fetch import _FetchMixin
 from ._helpers import _chain_callbacks, _unchain_callback
 from ._merge_policy import _MergePolicyMixin
 from ._policy_files import _PolicyFilesMixin
+from ._policy_variables import _PolicyVariablesMixin
 from ._pr_extract import _PullRequestExtractMixin
 from ._pr_nodes import _PullRequestNodeMixin
 from ._repositories import _RepositoriesMixin
@@ -38,6 +39,7 @@ from ._status_stats import _StatusStatsMixin
 class GitHubService(
     _RepositoriesMixin,
     _PolicyFilesMixin,
+    _PolicyVariablesMixin,
     _ScanMixin,
     _PullRequestNodeMixin,
     _PullRequestExtractMixin,
@@ -135,6 +137,11 @@ class GitHubService(
         # and ``owner/name``; see ``policy_files``.
         self._owner_policy_files: dict[str, dict[str, Any] | None] = {}
         self._repository_policy_files: dict[str, dict[str, Any] | None] = {}
+        # The DEPENDAMERGE_BOTS variables read, keyed the same way, and
+        # the kinds (``orgs``, ``repos``) the token proved unable to read.
+        self._owner_policy_variables: dict[str, str | None] = {}
+        self._repository_policy_variables: dict[str, str | None] = {}
+        self._policy_variables_refused: set[str] = set()
         self.log = logging.getLogger("dependamerge.github_service")
 
     def _attach_callbacks(self, client: GitHubAsync) -> None:

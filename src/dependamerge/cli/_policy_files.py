@@ -2,17 +2,21 @@
 # SPDX-FileCopyrightText: 2026 The Linux Foundation
 
 """
-Repository and owner bot policy files, as a run applies them.
+Repository and owner bot policies, as a run applies them.
 
 The files arrive with requests the run makes anyway: an owner's with the
 query that tells an organisation from a user, a repository's with the
-first page of its open pull requests.  A run with a single source pull
-request reads both in one request before deciding whether that pull
-request is in scope.  See ``docs/BOT_POLICY.md``.
+first page of its open pull requests.  The ``DEPENDAMERGE_BOTS``
+variables cost a request each, so a run reads the owner's and those of
+repositories holding an App's pull request, once it knows which.  A run
+with a single source pull request reads its owner's and repository's
+before deciding whether that pull request is in scope.  See
+``docs/BOT_POLICY.md``.
 
-An invalid owner file stops the run before anything merges.  An invalid
-repository file puts none of that repository's pull requests in scope;
-the run reports it and carries on with the others.
+An invalid owner policy stops the run before anything merges.  An
+invalid repository policy puts none of that repository's pull requests
+in scope; the run reports it and carries on with the others.  A token
+that cannot read variables is reported once.
 """
 
 from __future__ import annotations
@@ -21,29 +25,49 @@ from dataclasses import replace
 from typing import Any
 
 from ..bot_policy import BotPolicy, PolicyLevel, app_slug
-from ..bot_policy_files import PolicyFiles, apply_policy_files
+from ..bot_policy_files import POLICY_VARIABLE, PolicyFiles, apply_policy_files
 from ..error_codes import exit_for_configuration_error
 from . import _bot_scope
 from ._app import console
 
 __all__ = [
+    "_apply_policy_files",
     "_capture_policy_files",
     "_load_source_policy_files",
     "_policy_with_files",
+    "_warn_unreadable_variables",
 ]
 
 _FILE_LEVELS = (PolicyLevel.REPOSITORY, PolicyLevel.OWNER)
+
+_KIND_NAMES = {"orgs": "the organisation's", "repos": "repositories'"}
+
+
+def _unreadable_variables_message(kinds: frozenset[str]) -> str:
+    """The one-time warning naming which variables the token cannot read."""
+    which = " or ".join(_KIND_NAMES.get(kind, kind) for kind in sorted(kinds))
+    return (
+        f"⚠️ This token cannot read {which} {POLICY_VARIABLE} Actions "
+        "variables: their inclusions do not apply and their exclusions cannot "
+        "hold. Keep exclusions that must hold in policy files."
+    )
 
 
 def _combined(first: PolicyFiles, second: PolicyFiles) -> PolicyFiles:
     return PolicyFiles(
         owners={**first.owners, **second.owners},
         repositories={**first.repositories, **second.repositories},
+        owner_variables={**first.owner_variables, **second.owner_variables},
+        repository_variables={
+            **first.repository_variables,
+            **second.repository_variables,
+        },
+        variables_refused=first.variables_refused | second.variables_refused,
     )
 
 
 def _capture_policy_files(ctx: Any, svc: Any) -> None:
-    """Keep the policy files a service has read on the run's context."""
+    """Keep what a service has read of the policies on the run's context."""
     files = getattr(svc, "policy_files", None)
     if isinstance(files, PolicyFiles):
         ctx.policy_files = _combined(ctx.policy_files, files)
@@ -86,7 +110,7 @@ def _policy_with_files(
 ) -> BotPolicy:
     """Return ``policy`` also consulting ``files``, checked.
 
-    Exits with a configuration error when an owner's file is invalid.
+    Exits with a configuration error when an owner's policy is invalid.
     """
     applied, owner_errors = apply_policy_files(policy, files)
     if owner_errors:
@@ -101,19 +125,45 @@ def _policy_with_files(
     return _check_file_apps(applied, token, host)
 
 
-def _load_source_policy_files(ctx: Any) -> None:
-    """Apply the owner's and the source repository's files to the run.
+def _warn_unreadable_variables(ctx: Any, refused_before: frozenset[str]) -> None:
+    """Say which variables the token cannot read, unless already said.
 
-    Read in one request before the source pull request's author is
-    judged.  A source repository whose file is invalid has nothing in
-    scope, so the run stops with a configuration error.
+    ``refused_before`` is what the run knew before its latest read, so
+    each kind is reported once.
     """
-    files = ctx.github_client.get_policy_files(ctx.owner, ctx.repo_name)
-    if isinstance(files, PolicyFiles):
-        ctx.policy_files = _combined(ctx.policy_files, files)
+    newly = ctx.policy_files.variables_refused - refused_before
+    if newly:
+        console.print(_unreadable_variables_message(newly))
+
+
+def _apply_policy_files(
+    ctx: Any, *, refused_before: frozenset[str] = frozenset()
+) -> None:
+    """Apply the files and variables the run has read to its policy.
+
+    Says, once per run, that the token cannot read the variables (see
+    :func:`_warn_unreadable_variables`).  Exits with a configuration
+    error when an owner's policy is invalid.
+    """
+    _warn_unreadable_variables(ctx, refused_before)
     ctx.bot_policy = _policy_with_files(
         ctx.bot_policy, ctx.policy_files, ctx.token, ctx.host
     )
+
+
+def _load_source_policy_files(ctx: Any) -> None:
+    """Apply the owner's and the source repository's policies to the run.
+
+    Read before the source pull request's author is judged: both files
+    in one request, and both variables.  A source repository whose
+    policy is invalid has nothing in scope, so the run stops with a
+    configuration error.
+    """
+    refused_before = ctx.policy_files.variables_refused
+    files = ctx.github_client.get_policy_files(ctx.owner, ctx.repo_name)
+    if isinstance(files, PolicyFiles):
+        ctx.policy_files = _combined(ctx.policy_files, files)
+    _apply_policy_files(ctx, refused_before=refused_before)
     repository = f"{ctx.owner}/{ctx.repo_name}"
     problem = ctx.bot_policy.repository_error(repository)
     if problem is not None:

@@ -274,7 +274,7 @@ class TestInvalidRepositoryFile:
         )
         decision = policy.decide("dependabot[bot]", "Acme/Widget")
         assert not decision.in_scope
-        assert decision.reason == "Acme/Widget's bot policy file is invalid"
+        assert decision.reason == "Acme/Widget's bot policy is invalid"
         assert policy.repository_error("ACME/widget") == "not valid JSON"
 
     def test_other_repositories_are_unaffected(self) -> None:

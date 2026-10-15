@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from typing import TYPE_CHECKING, Any
 
 from ..github_async import GitHubAsync
@@ -28,6 +28,9 @@ from ..models import (
     ReviewInfo,
     UnmergeablePR,
 )
+
+if TYPE_CHECKING:
+    from ..bot_policy import BotPolicy
 
 
 class _GitHubServiceBase:
@@ -47,6 +50,8 @@ class _GitHubServiceBase:
     _debug_matching: bool
     _branch_protection_cache: dict[str, dict[str, Any] | None]
     _owner_root_cache: dict[str, tuple[str, str]]
+    _owner_policy_files: dict[str, dict[str, Any] | None]
+    _repository_policy_files: dict[str, dict[str, Any] | None]
 
     # Implemented by sibling mixins; declared here (type-checking only,
     # so nothing is defined at runtime) for cross-mixin calls.
@@ -67,6 +72,18 @@ class _GitHubServiceBase:
         def _iter_repo_open_prs_pages(
             self, owner: str, name: str, cursor: str | None
         ) -> AsyncIterator[dict[str, Any]]: ...
+
+        async def _read_owner_profile(
+            self, owner: str, repo: str | None = None
+        ) -> None: ...
+
+        def _record_repository_policy(
+            self, repository: str, node: Mapping[str, Any] | None
+        ) -> None: ...
+
+        def _with_repository_policy(
+            self, policy: BotPolicy, repository: str
+        ) -> BotPolicy: ...
 
         async def _fetch_repo_prs_first_page(
             self, owner: str, name: str

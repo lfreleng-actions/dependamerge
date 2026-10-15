@@ -36,6 +36,7 @@ from ._merge_report import (
     _conclude_run,
     _display_merge_results,
 )
+from ._policy_files import _capture_policy_files, _policy_with_files
 from ._repo_confirm import _handle_repo_preview_confirmation
 
 
@@ -100,11 +101,16 @@ def _fetch_repo_prs(
             progress_tracker=ctx.progress_tracker,
         )
         try:
-            return await svc.fetch_repo_open_prs(
+            # The owner's file costs one query; the repository's comes
+            # with its first page of PRs.
+            await svc.fetch_policy_files(ctx.owner)
+            found = await svc.fetch_repo_open_prs(
                 ctx.owner,
                 ctx.repo_name,
                 only_automation=only_automation,
             )
+            _capture_policy_files(ctx, svc)
+            return found
         finally:
             await svc.close()
 
@@ -258,6 +264,9 @@ def _handle_repo_merge(
 
     only_automation = not ctx.include_human_prs
     repo_prs = _fetch_repo_prs(ctx, only_automation=only_automation)
+    ctx.bot_policy = _policy_with_files(
+        ctx.bot_policy, ctx.policy_files, ctx.token, ctx.host
+    )
 
     if not repo_prs:
         label = "automation " if only_automation else ""

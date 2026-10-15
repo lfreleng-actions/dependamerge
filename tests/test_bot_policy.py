@@ -14,12 +14,12 @@ from dependamerge.bot_policy import (
     BUILTIN_BOTS,
     BotPolicy,
     BotPolicyError,
+    ListedBot,
     PolicyLevel,
-    load_user_policy,
     parse_policy_document,
     run_policy_source,
-    user_config_path,
 )
+from dependamerge.bot_policy_files import load_user_policy, user_config_path
 
 CODE_MONKEY = "lf-releng-code-monkey-bot[bot]"
 
@@ -31,6 +31,12 @@ def _document(**lists: object) -> str:
 def _owner_source(**lists: object):
     return parse_policy_document(
         _document(**lists), label="acme/.github", level=PolicyLevel.OWNER
+    )
+
+
+def _repository_source(**lists: object):
+    return parse_policy_document(
+        _document(**lists), label="acme/widget", level=PolicyLevel.REPOSITORY
     )
 
 
@@ -187,13 +193,119 @@ class TestPrecedence:
         assert not policy.admits(CODE_MONKEY)
 
 
+class TestOverrides:
+    """A run's flags overrule a repository's or owner's file, and say so."""
+
+    def test_a_flag_against_the_repository_file_names_it(self) -> None:
+        policy = BotPolicy(
+            run=run_policy_source(None, [CODE_MONKEY]),
+            repositories={
+                "acme/widget": _repository_source(include_bots=[CODE_MONKEY])
+            },
+        )
+        decision = policy.decide(CODE_MONKEY, "acme/widget")
+        assert not decision.in_scope
+        assert decision.reason == "excluded by --exclude-bots"
+        assert decision.overrides == "acme/widget"
+
+    def test_a_flag_against_the_owner_file_names_it(self) -> None:
+        policy = BotPolicy(
+            run=run_policy_source([CODE_MONKEY], None),
+            owners={"acme": _owner_source(exclude_bots=[CODE_MONKEY])},
+        )
+        decision = policy.decide(CODE_MONKEY, "acme/widget")
+        assert decision.in_scope
+        assert decision.overrides == "acme/.github"
+
+    def test_an_owner_wildcard_names_every_app(self) -> None:
+        policy = BotPolicy(
+            run=run_policy_source(None, ["renovate"]),
+            owners={"acme": _owner_source(include_bots="*")},
+        )
+        assert policy.decide("renovate[bot]", "acme/w").overrides == "acme/.github"
+
+    @pytest.mark.parametrize(
+        ("run", "repository", "owner", "user"),
+        [
+            # The run agrees with the file that would decide.
+            ([CODE_MONKEY], {"include_bots": [CODE_MONKEY]}, None, None),
+            # Only the owner disagrees, and the repository outranks it.
+            (
+                [CODE_MONKEY],
+                {"include_bots": [CODE_MONKEY]},
+                {"exclude_bots": [CODE_MONKEY]},
+                None,
+            ),
+            # The run does not name the App, so a file decides.
+            (["renovate"], {"include_bots": [CODE_MONKEY]}, None, None),
+            # Overruling the user's own file is not worth a mention.
+            ([CODE_MONKEY], None, None, {"exclude_bots": [CODE_MONKEY]}),
+        ],
+    )
+    def test_nothing_is_overridden_otherwise(
+        self,
+        run: list[str],
+        repository: dict[str, list[str]] | None,
+        owner: dict[str, list[str]] | None,
+        user: dict[str, list[str]] | None,
+    ) -> None:
+        policy = BotPolicy(
+            run=run_policy_source(run, None),
+            repositories=(
+                {"acme/widget": _repository_source(**repository)} if repository else {}
+            ),
+            owners={"acme": _owner_source(**owner)} if owner else {},
+            user=(
+                parse_policy_document(
+                    _document(**user), label="~/x", level=PolicyLevel.USER
+                )
+                if user
+                else None
+            ),
+        )
+        assert policy.decide(CODE_MONKEY, "acme/widget").overrides is None
+
+
+class TestInvalidRepositoryFile:
+    def test_nothing_is_in_scope_there_whatever_the_flags(self) -> None:
+        policy = BotPolicy(
+            run=run_policy_source(["*"], None),
+            invalid_repositories={"acme/widget": "not valid JSON"},
+        )
+        decision = policy.decide("dependabot[bot]", "Acme/Widget")
+        assert not decision.in_scope
+        assert decision.reason == "Acme/Widget's bot policy file is invalid"
+        assert policy.repository_error("ACME/widget") == "not valid JSON"
+
+    def test_other_repositories_are_unaffected(self) -> None:
+        policy = BotPolicy(invalid_repositories={"acme/widget": "not valid JSON"})
+        assert policy.admits("dependabot[bot]", "acme/other")
+        assert policy.repository_error("acme/other") is None
+        assert policy.repository_error(None) is None
+
+
 class TestListed:
-    def test_exclusions_come_first_and_name_their_source(self) -> None:
+    def test_exclusions_come_first_and_each_names_its_source(self) -> None:
         run = run_policy_source(["b"], ["a"])
-        policy = BotPolicy(run=run, owners={"acme": _owner_source(include_bots=["b"])})
+        user = parse_policy_document(
+            _document(include_bots=["b"]), label="~/x", level=PolicyLevel.USER
+        )
+        policy = BotPolicy(
+            run=run,
+            user=user,
+            owners={"acme": _owner_source(include_bots=["b"])},
+            repositories={"acme/widget": _repository_source(exclude_bots=["c"])},
+        )
         assert policy.listed() == [
-            ("a[bot]", True, "--exclude-bots"),
-            ("b[bot]", False, "--include-bots"),
+            ListedBot("a[bot]", True, "--exclude-bots", PolicyLevel.RUN, None),
+            ListedBot(
+                "c[bot]", True, "acme/widget", PolicyLevel.REPOSITORY, "acme/widget"
+            ),
+            ListedBot("b[bot]", False, "--include-bots", PolicyLevel.RUN, None),
+            ListedBot(
+                "b[bot]", False, "acme/.github", PolicyLevel.OWNER, "acme/.github"
+            ),
+            ListedBot("b[bot]", False, "~/x", PolicyLevel.USER, None),
         ]
 
 

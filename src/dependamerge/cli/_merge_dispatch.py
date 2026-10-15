@@ -62,6 +62,7 @@ from ._merge_scan import (
 from ._merge_target import (
     _MergeTarget,
 )
+from ._policy_files import _load_source_policy_files
 from ._pr_display import _print_debug_matching
 
 
@@ -246,6 +247,7 @@ def _run_single_pr_merge(ctx: _MergeContext) -> None:
     """
     _init_github_merge(ctx)
     _fetch_and_validate_source_pr(ctx)
+    _load_source_policy_files(ctx)
     _maybe_check_merge_permissions(ctx)
 
     # Debug matching info for source PR

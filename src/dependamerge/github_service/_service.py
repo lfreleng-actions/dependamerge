@@ -25,6 +25,7 @@ from ._constants import (
 from ._fetch import _FetchMixin
 from ._helpers import _chain_callbacks, _unchain_callback
 from ._merge_policy import _MergePolicyMixin
+from ._policy_files import _PolicyFilesMixin
 from ._pr_extract import _PullRequestExtractMixin
 from ._pr_nodes import _PullRequestNodeMixin
 from ._repositories import _RepositoriesMixin
@@ -36,6 +37,7 @@ from ._status_stats import _StatusStatsMixin
 
 class GitHubService(
     _RepositoriesMixin,
+    _PolicyFilesMixin,
     _ScanMixin,
     _PullRequestNodeMixin,
     _PullRequestExtractMixin,
@@ -129,6 +131,10 @@ class GitHubService(
         # keyed by owner login.  Value is a ``(root_key, query)`` tuple so
         # repeated repository-pagination pages do not re-probe.
         self._owner_root_cache: dict[str, tuple[str, str]] = {}
+        # The bot policy files read along the way, by lower-cased owner
+        # and ``owner/name``; see ``policy_files``.
+        self._owner_policy_files: dict[str, dict[str, Any] | None] = {}
+        self._repository_policy_files: dict[str, dict[str, Any] | None] = {}
         self.log = logging.getLogger("dependamerge.github_service")
 
     def _attach_callbacks(self, client: GitHubAsync) -> None:

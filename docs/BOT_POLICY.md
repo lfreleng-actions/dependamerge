@@ -61,14 +61,22 @@ Most specific first:
 | Level | Source |
 | --- | --- |
 | Run | `--include-bots` and `--exclude-bots` on `merge` and `close` |
+| Repository | `.github/dependamerge/config.json` in the repository |
+| Owner | `.github/dependamerge/config.json` in the owner's `.github` repo |
 | User | `config.json` in `$XDG_CONFIG_HOME/dependamerge` |
 | Built-in | The defaults above |
 
 `$XDG_CONFIG_HOME` defaults to `~/.config` on every platform.
 
-For each App, the most specific source that names it decides. So
-`--include-bots renovate` brings Renovate back into scope for one run
-even when your own file excludes it.
+For each App, the most specific source that names it decides. So an
+owner can include its own bot everywhere while one repository excludes
+it, and `--include-bots renovate` brings Renovate back into scope for one
+run whatever the files say. Your own file never overrules a repository
+or owner; the run's flags can, and the run says when they do:
+
+```text
+ℹ️ This run's flags overrule my-org/.github for renovate[bot]
+```
 
 ### Run flags
 
@@ -96,3 +104,35 @@ Any other key is an error: a misspelt `exlude_bots` must stop the run,
 not leave a bot in scope. So is a file that is not valid JSON, is larger
 than 16 KiB, or names one App in both lists. An invalid file stops the
 run with exit code `2` before dependamerge fetches anything.
+
+### Repository and owner files
+
+The same document, committed as `.github/dependamerge/config.json`:
+
+- in a repository, for its own pull requests;
+- in the owner's `.github` repository, for every repository the
+  organisation or user owns.
+
+Dependamerge reads each file from the repository's default branch, never
+from a pull request, so a pull request cannot change the policy that
+applies to it.
+
+The files cost no requests of their own. The owner's file arrives with
+the query that tells an organisation from a user, which replaces one
+that fetched the first page of repositories twice, and a repository's
+with the first page of its open pull requests. A run against one pull
+request reads the owner's file and its repository's in one request,
+before it judges the pull request's author.
+
+An invalid owner file stops the run with exit code `2` before anything
+merges. An invalid repository file takes none of that repository's pull
+requests into scope, people's included; the run reports it and carries
+on with the other repositories:
+
+```text
+⚠️ Skipped 3 PR(s) in my-org/widget: its bot policy file is invalid
+```
+
+Dependamerge looks up the Apps a file names as it does for the flags. An
+unknown exclusion makes a repository's file invalid, and stops the run
+in the owner's file.

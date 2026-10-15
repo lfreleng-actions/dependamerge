@@ -33,6 +33,7 @@ from ._merge_report import (
     _print_failed_pr_details,
     _print_final_merge_summary,
 )
+from ._policy_files import _capture_policy_files, _policy_with_files
 from ._sha import _generate_continue_sha
 from ._similarity import _format_condensed_similarity
 
@@ -71,17 +72,24 @@ def _scan_and_find_similar(ctx: _MergeContext) -> None:
             only_automation = ctx.github_client.is_automation_author(
                 ctx.source_pr.author
             )
-            return await svc.find_similar_prs(
+            found = await svc.find_similar_prs(
                 ctx.owner,
                 ctx.source_pr,
                 ctx.comparator,
                 only_automation=only_automation,
                 bot_policy=ctx.bot_policy,
             )
+            # Each candidate repository was judged by its own file, read
+            # with its first page of PRs; the merge rechecks with them.
+            _capture_policy_files(ctx, svc)
+            return found
         finally:
             await svc.close()
 
     ctx.all_similar_prs = asyncio.run(_find_similar())
+    ctx.bot_policy = _policy_with_files(
+        ctx.bot_policy, ctx.policy_files, ctx.token, ctx.host
+    )
 
     # Drafts cannot merge; set them aside before anything is evaluated.
     kept = {

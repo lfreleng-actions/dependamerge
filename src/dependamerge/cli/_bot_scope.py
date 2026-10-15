@@ -29,9 +29,9 @@ from ..bot_policy import (
     BotPolicy,
     BotPolicyError,
     app_slug,
-    load_user_policy,
     run_policy_source,
 )
+from ..bot_policy_files import load_user_policy
 from ..error_codes import exit_for_configuration_error
 from ..models import PullRequestInfo
 from ..url_parser import default_github_host, derive_api_urls
@@ -137,17 +137,17 @@ def _check_listed_bots(policy: BotPolicy, token: str | None, host: str) -> None:
     listed = policy.listed()
     if not listed:
         return
-    found = _lookup_apps(sorted({login for login, _, _ in listed}), token, host)
+    found = _lookup_apps(sorted({item.login for item in listed}), token, host)
     unknown_exclusions = []
-    for login, excluded, label in listed:
-        if found.get(login) is not False:
+    for item in listed:
+        if found.get(item.login) is not False:
             continue
-        if excluded:
-            unknown_exclusions.append(f"{app_slug(login)} (in {label})")
+        if item.excluded:
+            unknown_exclusions.append(f"{app_slug(item.login)} (in {item.label})")
         else:
             console.print(
-                f"⚠️ No GitHub App is named {app_slug(login)}; "
-                f"its inclusion in {label} has no effect"
+                f"⚠️ No GitHub App is named {app_slug(item.login)}; "
+                f"its inclusion in {item.label} has no effect"
             )
     if unknown_exclusions:
         exit_for_configuration_error(
@@ -175,19 +175,37 @@ def _remove_out_of_scope_bots(
 
     The removed pull requests are listed, grouped by App and reason, so
     an App that needs including is visible rather than silently skipped.
-    People are left in place: whether their pull requests are acted on
-    is decided separately.
+    People are left in place, since whether their pull requests are acted
+    on is decided separately, unless their repository's policy file is
+    invalid: such a repository has nothing in scope.  Where the run's own
+    flags overrule a repository's or owner's file, the run says so.
     """
     kept: list[PullRequestInfo] = []
     skipped: Counter[tuple[str, str]] = Counter()
+    invalid: Counter[tuple[str, str]] = Counter()
+    overrides: set[tuple[str, str]] = set()
     for pr in prs:
+        repository = pr.repository_full_name
+        problem = policy.repository_error(repository)
+        if problem is not None:
+            invalid[(repository, problem)] += 1
+            continue
         if is_automation_author(pr.author):
-            decision = policy.decide(pr.author, pr.repository_full_name)
+            decision = policy.decide(pr.author, repository)
+            if decision.overrides is not None:
+                overrides.add((pr.author, decision.overrides))
             if not decision.in_scope:
                 skipped[(pr.author, decision.reason)] += 1
                 continue
         kept.append(pr)
 
+    for (repository, problem), count in sorted(invalid.items()):
+        console.print(
+            f"⚠️ Skipped {count} PR(s) in {repository}: its bot policy file "
+            f"is invalid ({problem})"
+        )
+    for author, label in sorted(overrides):
+        console.print(f"ℹ️ This run's flags overrule {label} for {author}")
     if skipped:
         console.print(f"🚫 Bot PRs out of scope: {sum(skipped.values())}")
         for (author, reason), count in sorted(skipped.items()):

@@ -38,6 +38,7 @@ from ._merge_report import (
     _display_merge_results,
 )
 from ._org_confirm import _handle_org_preview_confirmation
+from ._policy_files import _capture_policy_files, _policy_with_files
 
 
 def _init_org_merge_client(
@@ -110,11 +111,15 @@ def _fetch_owner_prs(
             progress_tracker=ctx.progress_tracker,
         )
         try:
-            return await svc.fetch_owner_open_prs(
+            found = await svc.fetch_owner_open_prs(
                 parsed_org.owner,
                 only_automation=only_automation,
                 selection=ctx.repo_selection,
             )
+            # The owner's file came with the account-type query, and each
+            # repository's with its first page of PRs: nothing extra.
+            _capture_policy_files(ctx, svc)
+            return found
         finally:
             await svc.close()
 
@@ -291,6 +296,9 @@ def _handle_org_merge(
     only_automation = not ctx.include_human_prs
     owner_prs, ctx.scan_errors = _fetch_owner_prs(
         parsed_org, ctx, only_automation=only_automation
+    )
+    ctx.bot_policy = _policy_with_files(
+        ctx.bot_policy, ctx.policy_files, ctx.token, ctx.host
     )
     _require_selection_matched(parsed_org, ctx)
 

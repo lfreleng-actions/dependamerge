@@ -17,13 +17,14 @@ and can come from several sources.  The most specific source that names
 an App decides for it:
 
 1. the run's own ``--include-bots`` / ``--exclude-bots`` flags;
-2. the repository's policy file (added in a later change);
-3. the owner's policy file (likewise);
+2. the repository's ``.github/dependamerge/config.json``, if valid;
+3. the same file in the owner's ``.github`` repository;
 4. the user's ``config.json`` under ``$XDG_CONFIG_HOME/dependamerge``;
 5. the built-in list.
 
 Personal defaults therefore never override what a repository or owner
-declares; only a run's explicit flags can.
+declares; only a run's explicit flags can.  Reading the files is
+:mod:`dependamerge.bot_policy_files`' concern.
 
 Authors reach this module in canonical form (see
 :mod:`dependamerge.bot_identity`), where every App, and nothing else,
@@ -34,13 +35,11 @@ human-authored pull request may be acted on is a separate decision.
 from __future__ import annotations
 
 import json
-import os
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from enum import IntEnum
-from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from .bot_identity import BOT_SUFFIX, is_automation_author
 
@@ -50,13 +49,12 @@ __all__ = [
     "BotDecision",
     "BotPolicy",
     "BotPolicyError",
+    "ListedBot",
     "PolicyLevel",
     "PolicySource",
     "app_slug",
-    "load_user_policy",
     "parse_policy_document",
     "run_policy_source",
-    "user_config_path",
 ]
 
 #: The Apps in scope unless a policy excludes them: third-party tools
@@ -124,10 +122,26 @@ class PolicySource:
 
 @dataclass(frozen=True)
 class BotDecision:
-    """Whether an author is in scope, and the reason, for reporting."""
+    """Whether an author is in scope, and the reason, for reporting.
+
+    ``overrides`` names the repository or owner file that the run's own
+    flags overrule for this App, so the run can say it contradicts one.
+    """
 
     in_scope: bool
     reason: str
+    overrides: str | None = None
+
+
+class ListedBot(NamedTuple):
+    """An App that one source names, and where."""
+
+    login: str
+    excluded: bool
+    label: str
+    level: PolicyLevel
+    # The repository holding the file; ``None`` for flags and the user.
+    repository: str | None
 
 
 def app_slug(login: str) -> str:
@@ -281,42 +295,13 @@ def parse_policy_document(text: str, *, label: str, level: PolicyLevel) -> Polic
     )
 
 
-def user_config_path(environ: Mapping[str, str] | None = None) -> Path:
-    """Return the user's policy file path.
-
-    ``$XDG_CONFIG_HOME/dependamerge/config.json``, defaulting to
-    ``~/.config/dependamerge/config.json`` on every platform.
-    """
-    env = os.environ if environ is None else environ
-    base = env.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
-    return Path(base) / "dependamerge" / "config.json"
-
-
-def _display_path(path: Path) -> str:
-    try:
-        return f"~/{path.relative_to(Path.home())}"
-    except ValueError:
-        return str(path)
-
-
-def load_user_policy(path: Path | None = None) -> PolicySource | None:
-    """Load the user's policy file, if there is one.
-
-    Returns:
-        The source, or ``None`` when the file does not exist.
-
-    Raises:
-        BotPolicyError: When the file cannot be read or is invalid.
-    """
-    path = path or user_config_path()
-    label = _display_path(path)
-    try:
-        text = path.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        return None
-    except (OSError, UnicodeDecodeError) as exc:
-        raise BotPolicyError(label, [f"cannot be read ({exc})"]) from None
-    return parse_policy_document(text, label=label, level=PolicyLevel.USER)
+def _verdict(source: PolicySource, login: str) -> bool | None:
+    """Whether ``source`` includes ``login``; ``None`` when it does not name it."""
+    if login in source.exclude:
+        return False
+    if login in source.include or source.include_all:
+        return True
+    return None
 
 
 @dataclass(frozen=True)
@@ -332,6 +317,9 @@ class BotPolicy:
     # Keyed by lower-cased owner login and ``owner/name`` respectively.
     owners: Mapping[str, PolicySource] = field(default_factory=dict)
     repositories: Mapping[str, PolicySource] = field(default_factory=dict)
+    # Repositories whose own file is invalid, with its problems: nothing
+    # there is in scope, since the file cannot say what should be.
+    invalid_repositories: Mapping[str, str] = field(default_factory=dict)
 
     def _sources(self, repository: str | None) -> list[PolicySource]:
         """The sources that apply to ``repository``, most specific first."""
@@ -345,6 +333,13 @@ class BotPolicy:
         )
         return [source for source in candidates if source is not None]
 
+    def repository_error(self, repository: str | None) -> str | None:
+        """Why ``repository``'s own policy file is invalid, if it is.
+
+        Applies to every pull request there, a person's included.
+        """
+        return self.invalid_repositories.get((repository or "").lower())
+
     def decide(self, author: str | None, repository: str | None = None) -> BotDecision:
         """Decide whether ``author`` is in scope in ``repository``.
 
@@ -356,44 +351,83 @@ class BotPolicy:
         if not is_automation_author(author):
             return BotDecision(False, "not a GitHub App")
         assert author is not None
+        if self.repository_error(repository) is not None:
+            return BotDecision(False, f"{repository}'s bot policy file is invalid")
         login = author.lower()
-        for source in self._sources(repository):
-            if login in source.exclude:
-                return BotDecision(False, f"excluded by {source.exclude_label}")
-            if login in source.include or source.include_all:
-                return BotDecision(True, f"included by {source.include_label}")
+        sources = self._sources(repository)
+        for index, source in enumerate(sources):
+            verdict = _verdict(source, login)
+            if verdict is None:
+                continue
+            if verdict:
+                reason = f"included by {source.include_label}"
+            else:
+                reason = f"excluded by {source.exclude_label}"
+            overrides = None
+            if source.level is PolicyLevel.RUN:
+                overrides = self._overruled_file(login, verdict, sources[index + 1 :])
+            return BotDecision(verdict, reason, overrides)
         if login in BUILTIN_BOTS:
             return BotDecision(True, "built-in")
         return BotDecision(False, "not included by any policy")
+
+    @staticmethod
+    def _overruled_file(
+        login: str, verdict: bool, rest: list[PolicySource]
+    ) -> str | None:
+        """The file that would have decided ``login`` the other way, if any.
+
+        Only the file that would decide without the run's flags counts: a
+        repository file that agrees with them already outranks its owner's.
+        """
+        for source in rest:
+            if source.level not in (PolicyLevel.REPOSITORY, PolicyLevel.OWNER):
+                continue
+            named = _verdict(source, login)
+            if named is None:
+                continue
+            if named == verdict:
+                return None
+            return source.include_label if named else source.exclude_label
+        return None
 
     def admits(self, author: str | None, repository: str | None = None) -> bool:
         """Whether ``author`` is an App in scope in ``repository``."""
         return self.decide(author, repository).in_scope
 
-    def listed(self) -> list[tuple[str, bool, str]]:
-        """Every App a source names, for checking that each one exists.
+    def _labelled_sources(self) -> Iterator[tuple[PolicySource, str | None]]:
+        """Every source, most specific first, with the repository holding it."""
+        if self.run is not None:
+            yield self.run, None
+        for repository, source in self.repositories.items():
+            yield source, repository
+        for owner, source in self.owners.items():
+            yield source, f"{owner}/.github"
+        if self.user is not None:
+            yield self.user, None
+
+    def listed(self) -> list[ListedBot]:
+        """Every App each source names, for checking that each one exists.
 
         Returns:
-            ``(login, excluded, label)`` triples, exclusions first, one
-            per App and list, in a stable order.
+            One entry per App, list and source, exclusions first, then by
+            login and from the most specific source, in a stable order.
         """
-        seen: dict[tuple[str, bool], str] = {}
-        sources = [
-            source
-            for source in (
-                self.run,
-                *self.repositories.values(),
-                *self.owners.values(),
-                self.user,
+        listed = [
+            ListedBot(login, excluded, label, source.level, repository)
+            for source, repository in self._labelled_sources()
+            for excluded, logins, label in (
+                (True, source.exclude, source.exclude_label),
+                (False, source.include, source.include_label),
             )
-            if source is not None
+            for login in logins
         ]
-        for source in sources:
-            for login in source.exclude:
-                seen.setdefault((login, True), source.exclude_label)
-            for login in source.include:
-                seen.setdefault((login, False), source.include_label)
         return sorted(
-            ((login, excluded, label) for (login, excluded), label in seen.items()),
-            key=lambda item: (not item[1], item[0]),
+            listed,
+            key=lambda item: (
+                not item.excluded,
+                item.login,
+                item.level,
+                item.repository or "",
+            ),
         )

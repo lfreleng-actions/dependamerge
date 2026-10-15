@@ -5,6 +5,7 @@
 
 import hashlib
 import re
+from typing import Any
 from unittest.mock import Mock, patch
 
 import pytest
@@ -13,6 +14,7 @@ from typer.testing import CliRunner
 from dependamerge.cli import app
 from dependamerge.cli._human_gate import _human_set_override
 from dependamerge.error_codes import ExitCode
+from dependamerge.github_graphql import ORG_REPOS_ONLY, OWNER_PROFILE, USER_REPOS_ONLY
 from dependamerge.github_service import GitHubService
 from dependamerge.models import FileChange, PullRequestInfo
 from dependamerge.url_parser import (
@@ -710,66 +712,62 @@ class TestFetchOwnerOpenPrs:
             await svc.fetch_owner_open_prs("acme")
         await svc.close()
 
-    @pytest.mark.asyncio
-    async def test_resolve_owner_root_org(self):
-        svc = GitHubService(token="test_token")
+    @staticmethod
+    def _answer_profile(svc, owner_node):
+        """Answer every query as the owner profile; return the calls made."""
+        calls: list[tuple[str, dict[str, Any], dict[str, Any]]] = []
 
-        async def fake_graphql(query, variables):
-            return {"organization": {"repositories": {"nodes": []}}}
-
-        svc._api.graphql = fake_graphql  # type: ignore[assignment]
-
-        root_key, _query = await svc._resolve_owner_root("acme")
-        await svc.close()
-        assert root_key == "organization"
-
-    @pytest.mark.asyncio
-    async def test_resolve_owner_root_user_fallback(self):
-        svc = GitHubService(token="test_token")
-
-        async def fake_graphql(query, variables):
-            # organization root is null -> owner is a user account
-            return {"organization": None}
+        async def fake_graphql(query, variables, **kwargs):
+            calls.append((query, variables, kwargs))
+            return {"repositoryOwner": owner_node}
 
         svc._api.graphql = fake_graphql  # type: ignore[assignment]
-
-        root_key, _query = await svc._resolve_owner_root("someuser")
-        await svc.close()
-        assert root_key == "user"
+        return calls
 
     @pytest.mark.asyncio
-    async def test_resolve_owner_root_user_fallback_on_not_found_error(self):
-        # Against real GitHub, organization(login: <user>) returns a
-        # NOT_FOUND GraphQL error (data.organization = null), which
-        # GitHubAsync.graphql surfaces as GraphQLError.  That must be
-        # treated as "not an org" and fall back to the user root.
+    @pytest.mark.parametrize(
+        ("owner_node", "root_key", "query"),
+        [
+            (
+                {"__typename": "Organization", "dotgithub": None},
+                "organization",
+                ORG_REPOS_ONLY,
+            ),
+            ({"__typename": "User", "dotgithub": None}, "user", USER_REPOS_ONLY),
+            # An unknown login is null, without an error; listing it as a
+            # user reports it, as the old fallback did.
+            (None, "user", USER_REPOS_ONLY),
+        ],
+    )
+    async def test_resolve_owner_root_asks_the_owner_profile(
+        self, owner_node, root_key, query
+    ):
+        svc = GitHubService(token="test_token")
+        calls = self._answer_profile(svc, owner_node)
+
+        resolved = await svc._resolve_owner_root("acme")
+        await svc.close()
+
+        assert resolved == (root_key, query)
+        [(sent, variables, kwargs)] = calls
+        assert sent == OWNER_PROFILE
+        assert variables == {"owner": "acme", "repo": "", "withRepo": False}
+        # Only a missing ``.github`` (or target) repository is an answer;
+        # every other GraphQL error still raises.
+        assert set(kwargs["allow_not_found"]) == {
+            ("repositoryOwner", "dotgithub"),
+            ("repositoryOwner", "target"),
+        }
+
+    @pytest.mark.asyncio
+    async def test_resolve_owner_root_propagates_graphql_errors(self):
+        # An error the transport does not tolerate must propagate rather
+        # than be silently downgraded to a user fallback.
         from dependamerge.github_async import GraphQLError
 
         svc = GitHubService(token="test_token")
 
-        async def fake_graphql(query, variables):
-            raise GraphQLError(
-                '[{"type": "NOT_FOUND", "path": ["organization"], '
-                '"message": "Could not resolve to an Organization with '
-                "the login of 'someuser'.\"}]"
-            )
-
-        svc._api.graphql = fake_graphql  # type: ignore[assignment]
-
-        root_key, _query = await svc._resolve_owner_root("someuser")
-        await svc.close()
-        assert root_key == "user"
-
-    @pytest.mark.asyncio
-    async def test_resolve_owner_root_propagates_unrelated_graphql_error(self):
-        # A GraphQL error that is *not* the not-an-organization NOT_FOUND
-        # must propagate rather than be silently downgraded to a user
-        # fallback.
-        from dependamerge.github_async import GraphQLError
-
-        svc = GitHubService(token="test_token")
-
-        async def fake_graphql(query, variables):
+        async def fake_graphql(query, variables, **kwargs):
             raise GraphQLError(
                 '[{"type": "FORBIDDEN", "message": "Resource not accessible"}]'
             )
@@ -781,44 +779,17 @@ class TestFetchOwnerOpenPrs:
         await svc.close()
 
     @pytest.mark.asyncio
-    async def test_resolve_owner_root_propagates_nested_not_found(self):
-        # A NOT_FOUND on a *nested* field under the organization root
-        # (path longer than ["organization"]) means the org resolved but a
-        # sub-field failed; it must NOT be downgraded to a user fallback.
-        # Only an exact top-level ["organization"] NOT_FOUND counts.
-        from dependamerge.github_async import GraphQLError
-
-        svc = GitHubService(token="test_token")
-
-        async def fake_graphql(query, variables):
-            raise GraphQLError(
-                '[{"type": "NOT_FOUND", "path": ["organization", "repositories"], '
-                '"message": "Could not resolve organization repositories."}]'
-            )
-
-        svc._api.graphql = fake_graphql  # type: ignore[assignment]
-
-        with pytest.raises(GraphQLError):
-            await svc._resolve_owner_root("someuser")
-        await svc.close()
-
-    @pytest.mark.asyncio
     async def test_resolve_owner_root_cached(self):
         svc = GitHubService(token="test_token")
-        calls = 0
-
-        async def fake_graphql(query, variables):
-            nonlocal calls
-            calls += 1
-            return {"organization": {"repositories": {"nodes": []}}}
-
-        svc._api.graphql = fake_graphql  # type: ignore[assignment]
+        calls = self._answer_profile(
+            svc, {"__typename": "Organization", "dotgithub": None}
+        )
 
         await svc._resolve_owner_root("acme")
         await svc._resolve_owner_root("acme")
         await svc.close()
         # Second call served from cache; only one probe.
-        assert calls == 1
+        assert len(calls) == 1
 
     @pytest.mark.asyncio
     async def test_fetch_repo_open_prs_reports_result_count_to_progress(self):
@@ -889,7 +860,9 @@ class TestFetchOwnerOpenPrs:
             }
         }
 
-        async def fake_graphql(query, variables):
+        async def fake_graphql(query, variables, **kwargs):
+            if query == OWNER_PROFILE:
+                return {"repositoryOwner": {"__typename": "Organization"}}
             return page
 
         svc._api.graphql = fake_graphql  # type: ignore[assignment]

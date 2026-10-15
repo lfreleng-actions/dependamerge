@@ -32,6 +32,7 @@ from .pull_requests import (
 )
 from .repos import (
     ORG_REPOS_ONLY,
+    OWNER_PROFILE,
     USER_REPOS_ONLY,
 )
 from .reviews import (
@@ -42,6 +43,7 @@ from .reviews import (
 __all__ = [
     "ORG_REPOS_ONLY",
     "USER_REPOS_ONLY",
+    "OWNER_PROFILE",
     "ORG_REPOS_WITH_OPEN_PRS",
     "REPO_OPEN_PRS_PAGE",
     "ENABLE_AUTO_MERGE",

@@ -90,9 +90,23 @@ class _SimilarPullRequestsMixin(_GitHubServiceBase):
         only_automation: bool,
         bot_policy: BotPolicy | None = None,
     ) -> list[tuple[PullRequestInfo, ComparisonResult]]:
-        """Compare every open PR of one repository against *source_pr*."""
+        """Compare every open PR of one repository against *source_pr*.
+
+        Candidates are judged with the repository's own bot policy file,
+        which its first page carries; when that file is invalid, nothing
+        there is a candidate.
+        """
         owner_n, name_n = repo_full_name.split("/", 1)
         first_nodes, page_info = await self._fetch_repo_prs_first_page(owner_n, name_n)
+        policy = self._with_repository_policy(bot_policy or BotPolicy(), repo_full_name)
+        problem = policy.repository_error(repo_full_name)
+        if problem is not None:
+            self.log.warning(
+                "Skipping %s: its bot policy file is invalid (%s)",
+                repo_full_name,
+                problem,
+            )
+            return []
         prs = list(first_nodes)
         has_next = bool(page_info.get("hasNextPage"))
         end_cursor = page_info.get("endCursor") or None
@@ -113,7 +127,7 @@ class _SimilarPullRequestsMixin(_GitHubServiceBase):
                 source_pr,
                 target_pr,
                 only_automation=only_automation,
-                bot_policy=bot_policy,
+                bot_policy=policy,
             ):
                 continue
 

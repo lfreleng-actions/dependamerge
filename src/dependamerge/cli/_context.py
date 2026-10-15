@@ -18,6 +18,7 @@ from pathlib import Path
 import dependamerge.cli as _pkg
 
 from ..bot_policy import BotPolicy
+from ..bot_policy_files import PolicyFiles
 from ..merge_manager import MergeResult
 from ..models import ComparisonResult, PullRequestInfo
 from ..progress_tracker import MergeProgressTracker
@@ -76,6 +77,8 @@ class _MergeContext:
     # Drafts set aside when the run's scope was settled, recorded as
     # skipped so the results document reports them.
     draft_results: list[MergeResult] = field(default_factory=list)
+    # The repository and owner bot policy files the run has read.
+    policy_files: PolicyFiles = field(default_factory=PolicyFiles)
 
     # Derived / mutable state
     github_client: _pkg.GitHubClient | None = None

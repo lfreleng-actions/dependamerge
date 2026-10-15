@@ -30,6 +30,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from ..bot_identity import rest_author_login
+from ..bot_policy_files import PolicyFiles
 from ..models import (
     FileChange,
     OrganizationScanResult,
@@ -211,6 +212,22 @@ class _GitHubQueryMixin:
                         if msg:
                             messages.append(msg)
             return messages
+
+        return asyncio.run(_run())
+
+    def get_policy_files(self, owner: str, repo: str | None = None) -> PolicyFiles:
+        """Read ``owner``'s bot policy file, and ``repo``'s when given.
+
+        One GraphQL request, the owner profile query, so a run with a
+        single source pull request can apply both files before deciding
+        whether that pull request is in scope.
+        """
+        from ..github_service import GitHubService
+
+        async def _run() -> PolicyFiles:
+            async with self._new_async() as api:
+                svc = GitHubService(client=api)
+                return await svc.fetch_policy_files(owner, repo)
 
         return asyncio.run(_run())
 

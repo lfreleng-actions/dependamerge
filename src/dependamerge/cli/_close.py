@@ -22,6 +22,7 @@ import typer
 import dependamerge.cli as _pkg
 
 from ..bot_policy import BotPolicy
+from ..bot_policy_files import PolicyFiles
 from ..close_manager import CloseResult
 from ..error_codes import ExitCode, exit_for_pr_state_error, exit_with_error
 from ..models import ComparisonResult, PullRequestInfo
@@ -33,6 +34,7 @@ from ._human_gate import (
     _given_override,
     _refuse_human_source,
 )
+from ._policy_files import _load_source_policy_files
 from ._sha import _generate_continue_sha, _generate_override_sha
 from ._similarity import _format_condensed_similarity
 
@@ -56,6 +58,8 @@ class _CloseContext:
     # The GitHub Apps this run may act on; without any flags or user
     # config, only the built-in Apps.
     bot_policy: BotPolicy = field(default_factory=BotPolicy)
+    # The repository and owner bot policy files the run has read.
+    policy_files: PolicyFiles = field(default_factory=PolicyFiles)
 
 
 def _run_close_parallel(
@@ -137,6 +141,8 @@ def _validate_close_authorization(
                 "for review first. Nothing was scanned or closed"
             ),
         )
+    # The owner's and repository's files decide which Apps are in scope.
+    _load_source_policy_files(ctx)
     if ctx.github_client.is_automation_author(author):
         decision = ctx.bot_policy.decide(author, ctx.source_pr.repository_full_name)
         if not decision.in_scope:

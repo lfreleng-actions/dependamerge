@@ -12,11 +12,26 @@ from __future__ import annotations
 
 import asyncio
 
+from ..github_async._content_limiter import ContentLimiter
 from ._base import _MergeManagerBase
 
 
 class _StatusTickerMixin(_MergeManagerBase):
     """Rendering the periodic waiting-PR status line."""
+
+    def _content_limit_message(self) -> str:
+        """Say so while GitHub's hourly content limit holds the run back.
+
+        Without this a run pacing its writes under the hourly budget
+        shows nothing for minutes on end and looks stalled.
+        """
+        limiter = getattr(self._github_client, "content_limiter", None)
+        if not isinstance(limiter, ContentLimiter):
+            return ""
+        remaining = limiter.hourly_wait_remaining()
+        if remaining <= 0:
+            return ""
+        return f"⏳ Waiting on GitHub's content-creation limit [{int(remaining)}s]"
 
     async def _wait_status_ticker(self) -> None:
         """Update the progress display while PRs wait for required checks.
@@ -61,7 +76,8 @@ class _StatusTickerMixin(_MergeManagerBase):
                 async with self._waiting_lock:
                     snapshot = dict(self._waiting_prs)
 
-                if snapshot:
+                message = self._content_limit_message()
+                if not message and snapshot:
                     now = asyncio.get_running_loop().time()
                     remaining = max(
                         0.0,
@@ -73,8 +89,6 @@ class _StatusTickerMixin(_MergeManagerBase):
                         f"⏳ Waiting for {count} {noun} "
                         f"to complete checks [{int(remaining)}s]"
                     )
-                else:
-                    message = ""
 
                 if message != last_message:
                     try:
@@ -112,7 +126,18 @@ class _StatusTickerMixin(_MergeManagerBase):
                 async with self._waiting_lock:
                     snapshot = dict(self._waiting_prs)
 
-                if snapshot:
+                content_message = self._content_limit_message()
+                if content_message:
+                    now = asyncio.get_running_loop().time()
+                    if now - last_emit >= 15.0:
+                        try:
+                            self._console.print(content_message)
+                        except Exception:
+                            # Console output is best-effort; ignore
+                            # write errors on unusual terminals.
+                            pass
+                        last_emit = now
+                elif snapshot:
                     now = asyncio.get_running_loop().time()
                     if now - last_emit >= 15.0:
                         remaining = max(0.0, max(snapshot.values()) - now)

@@ -37,6 +37,7 @@ from tenacity import (
 import dependamerge.github_async as _pkg
 
 from ._base import _GitHubAsyncBase
+from ._content_limiter import is_content_request
 from ._errors import (
     _TENACITY_MAX_BACKOFF,
     GraphQLError,
@@ -139,6 +140,10 @@ class _TransportMixin(_GitHubAsyncBase):
         decoding can happen inside the retried scope without nesting two
         policies or duplicating one.
         """
+        # Wait for the content budget before taking a concurrency slot,
+        # so a paused write does not hold one that a read could use.
+        if is_content_request(method, url, self.graphql_url, kwargs.get("json")):
+            await self.content_limiter.acquire()
         async with self.semaphore:
             async with self.limiter:
                 r = await self._client.request(method, url, **kwargs)

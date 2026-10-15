@@ -1165,6 +1165,30 @@ dependamerge merge https://github.com/owner/repo/pull/123 \
   --token your_github_token
 ```
 
+### Pacing of Write Requests
+
+GitHub limits content-generating requests, such as reviews, comments,
+merges, branch updates and GraphQL mutations, to 80 a minute and 500
+an hour
+([secondary rate limits](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api#about-secondary-rate-limits)).
+A bulk merge approves and merges every pull request, so 300 pull
+requests exceed the per-hour figure. Dependamerge paces these requests
+to 60 a minute and 450 in any rolling hour by default, leaving
+headroom for your other activity. Reads are not affected.
+
+When GitHub signals a throttle, the tool halves that rate, pauses
+writes for the advised time (at least a minute), and recovers
+gradually once GitHub stops signalling. While the per-hour budget
+holds the run back, the progress display reports a wait on GitHub's
+content-creation limit.
+
+To change the budget, set these environment variables:
+
+```bash
+export DEPENDAMERGE_CONTENT_PER_MINUTE=40
+export DEPENDAMERGE_CONTENT_PER_HOUR=300
+```
+
 ### Command Options
 
 #### Status Command Options

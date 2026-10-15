@@ -133,6 +133,7 @@ class _ReviewsMixin(_GitHubAsyncBase):
                     if throttled >= _APPROVE_THROTTLE_MAX_ATTEMPTS:
                         break
                     retry_after = _retry_after_seconds(e)
+                    self.content_limiter.throttled(retry_after)
                     delay = (
                         retry_after
                         if retry_after is not None

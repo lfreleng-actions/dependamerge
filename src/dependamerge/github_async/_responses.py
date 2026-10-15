@@ -47,6 +47,7 @@ async def _handle_secondary_rate_limit(api: _TransportMixin, r: httpx.Response) 
             delay = None
     # Track error for adaptive throttling
     api._track_error("secondary_rate_limit")
+    api.content_limiter.throttled(delay)
     if delay is not None:
         # GitHub told us exactly how long to wait.  Sleeping
         # here *and* letting tenacity back off on top would
@@ -144,14 +145,18 @@ async def _handle_retryable_status(api: _TransportMixin, r: httpx.Response) -> N
     Always raises :class:`RetryableError`.
     """
     retry_after = r.headers.get("Retry-After")
+    retry_after_delay: float | None = None
     if retry_after:
-        retry_after_delay = None
         try:
             retry_after_delay = float(retry_after)
         except (TypeError, ValueError):
             # Retry-After was not a numeric delay; fall through
             # to the standard retry handling.
             retry_after_delay = None
+    if r.status_code == 429:
+        # GitHub also answers a secondary limit with 429.
+        api.content_limiter.throttled(retry_after_delay)
+    if retry_after:
         if retry_after_delay is not None:
             api._last_retry_after = retry_after_delay
             api.log.debug(

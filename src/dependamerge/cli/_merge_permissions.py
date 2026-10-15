@@ -147,6 +147,7 @@ def _check_merge_permissions(ctx: _MergeContext) -> None:
         if missing_perms:
             _report_missing_permissions(missing_perms, perm_results)
         console.print("✅ Token has required permissions")
+        ctx.preflight_repository = f"{ctx.owner}/{ctx.repo_name}"
     except GitHubPermissionError as e:
         console.print(f"\n❌ Permission check failed: {e}")
         raise typer.Exit(code=3) from e

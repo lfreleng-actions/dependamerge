@@ -79,6 +79,9 @@ class _MergeContext:
     owner: str = ""
     repo_name: str = ""
     pr_number: int = 0
+    # ``owner/repo`` the token pre-flight check passed against, or
+    # ``None`` when it did not run or did not pass.
+    preflight_repository: str | None = None
     comparator: _pkg.PRComparator | None = None
     # Worker count for the owner-wide striped merge, derived from the
     # number of distinct repositories in scope.  Carried on the context so

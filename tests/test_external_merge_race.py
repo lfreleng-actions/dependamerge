@@ -267,7 +267,7 @@ class TestPermissionErrorFastFail:
         result = await mgr._merge_single_pr(pr)
 
         assert result.status == MergeStatus.FAILED
-        assert "token lacks required permissions" in (result.error or "")
+        assert "skipped: an earlier PR" in (result.error or "")
         # No API call should have been made; the short-circuit
         # runs before any await on the client.
         client.get.assert_not_called()
@@ -308,7 +308,6 @@ class TestRepositorySkipNeedsGenuineRefusal:
     "token lacks required permissions" without calling the API.
     """
 
-    @pytest.mark.xfail(strict=True, reason="any PermissionError skips siblings")
     @pytest.mark.asyncio
     async def test_approval_422_fails_only_its_own_pr(self) -> None:
         refused = GitHubPermissionError(
@@ -326,7 +325,6 @@ class TestRepositorySkipNeedsGenuineRefusal:
         assert second.status == MergeStatus.MERGED
         assert sequence.await_count == 2
 
-    @pytest.mark.xfail(strict=True, reason="skip text blames the token")
     @pytest.mark.asyncio
     async def test_genuine_403_skip_names_the_refusal(self) -> None:
         refused = GitHubPermissionError(
@@ -346,7 +344,6 @@ class TestRepositorySkipNeedsGenuineRefusal:
         )
         assert sequence.await_count == 1
 
-    @pytest.mark.xfail(strict=True, reason="a rate-limit 403 skips siblings")
     @pytest.mark.asyncio
     async def test_rate_limit_403_does_not_skip(self) -> None:
         refused = GitHubPermissionError(
@@ -362,7 +359,6 @@ class TestRepositorySkipNeedsGenuineRefusal:
         assert second.status == MergeStatus.MERGED
         assert sequence.await_count == 2
 
-    @pytest.mark.xfail(strict=True, reason="the pre-flight result is not known")
     @pytest.mark.asyncio
     async def test_403_after_passing_preflight_points_at_the_repository(
         self,

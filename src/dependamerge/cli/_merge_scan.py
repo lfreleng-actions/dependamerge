@@ -182,6 +182,7 @@ def _run_parallel_merge(
             # (owner/user-wide) runs; single-PR and single-repository
             # merges keep the uncapped per-PR ``merge_timeout`` behaviour.
             max_wait=ctx.max_wait if stripe else None,
+            preflight_repository=ctx.preflight_repository,
         ) as merge_manager:
             if not preview:
                 prefix = "\n" if leading_blank else ""

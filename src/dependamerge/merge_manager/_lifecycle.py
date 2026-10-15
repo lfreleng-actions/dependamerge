@@ -60,6 +60,7 @@ class _LifecycleMixin(_MergeManagerBase):
         max_wait: float | None = None,
         fix_semantic_title: bool = True,
         host: str | None = None,
+        preflight_repository: str | None = None,
     ):
         # Resolved through the package at call time rather than bound at
         # import time, so that a test rebinding the constant on
@@ -216,13 +217,18 @@ class _LifecycleMixin(_MergeManagerBase):
         # Track PRs that were just approved (for post-approval merge retry)
         self._recently_approved: set[str] = set()
 
-        # Track repositories where the token has already failed a
-        # permission check during this run.  Subsequent PRs in the
-        # same repository are short-circuited with a clean skip
-        # message rather than triggering another round-trip to
-        # GitHub that will fail identically and emit another
-        # screenful of guidance.
+        # Track repositories that refused the token with a genuine 401
+        # or 403 during this run.  Subsequent PRs in the same
+        # repository are short-circuited with a clean skip message,
+        # naming that refusal, rather than triggering another
+        # round-trip to GitHub that will fail identically and emit
+        # another screenful of guidance.
         self._permission_failed_repos: set[str] = set()
+        self._permission_failure_reasons: dict[str, str] = {}
+        # The repository the CLI's token pre-flight check passed
+        # against, if it ran.  A later 401/403 elsewhere contradicts
+        # it, which changes what the guidance should point at.
+        self._preflight_repository = preflight_repository
 
         # Track PRs where auto-merge has been enabled so that
         # post-timeout merge attempts can be skipped gracefully.

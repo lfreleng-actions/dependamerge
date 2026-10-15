@@ -11,6 +11,8 @@ import pytest
 from typer.testing import CliRunner
 
 from dependamerge.cli import app
+from dependamerge.cli._human_gate import _human_set_override
+from dependamerge.error_codes import ExitCode
 from dependamerge.models import FileChange, PullRequestInfo
 from dependamerge.url_parser import (
     ChangeSource,
@@ -450,12 +452,55 @@ class TestMergeRepoUrl:
                 "--token",
                 "test_token",
                 "--include-human-prs",
+                "--override",
+                _human_set_override("owner/repo", [human_pr]),
             ],
         )
 
-        assert result.exit_code == 0
+        assert result.exit_code == 0, result.stdout
         # Should show human PRs warning
         assert "Repository mode" in result.stdout
+
+    @patch("dependamerge.cli.GitHubClient")
+    @patch("dependamerge.cli.asyncio.run")
+    def test_repo_merge_unconfirmed_human_prs_exit_9(
+        self, mock_asyncio_run, mock_client_class
+    ):
+        """Without the override, the run prints it and merges nothing."""
+        human_pr = _make_pr(2, author="jsmith", title="Fix README typo")
+
+        mock_client = Mock()
+        mock_client.token = "test_token"
+        mock_client.is_automation_author.side_effect = lambda a: a.endswith("[bot]")
+        mock_client_class.return_value = mock_client
+
+        mock_asyncio_run.side_effect = _mock_asyncio_run(
+            [
+                # permissions check, then the fetch
+                {
+                    "approve": {"has_permission": True},
+                    "merge": {"has_permission": True},
+                    "branch_protection": {"has_permission": True},
+                },
+                [human_pr],
+            ]
+        )
+
+        result = self.runner.invoke(
+            app,
+            [
+                "merge",
+                "https://github.com/owner/repo",
+                "--token",
+                "test_token",
+                "--include-human-prs",
+                "--no-confirm",
+            ],
+        )
+
+        assert result.exit_code == ExitCode.OVERRIDE_REQUIRED, result.stdout
+        expected = _human_set_override("owner/repo", [human_pr])
+        assert f"--override {expected}" in _strip_ansi(result.stdout)
 
     @patch("dependamerge.cli.GitHubClient")
     @patch("dependamerge.cli.asyncio.run")
@@ -601,10 +646,12 @@ class TestMergeRepoUrl:
                 "--token",
                 "test_token",
                 "--include-human-prs",
+                "--override",
+                _human_set_override("owner/repo", [human_pr]),
             ],
         )
 
-        assert result.exit_code == 0
+        assert result.exit_code == 0, result.stdout
         # Should show counts
         assert "Automation PRs:" in result.stdout
         assert "Human PRs:" in result.stdout

@@ -33,6 +33,7 @@ Dependamerge uses semantic exit codes for different failure types:
 | 6    | PR_STATE_ERROR      | Pull request in invalid state                   |
 | 7    | MERGE_ERROR         | Pull requests or Gerrit changes left unmerged   |
 | 8    | VALIDATION_ERROR    | Input validation failed                         |
+| 9    | OVERRIDE_REQUIRED   | The run needs an `--override` confirmation      |
 
 ### When a merge run exits 7
 
@@ -46,6 +47,20 @@ a re-run, **auto-merge pending** completes on GitHub's side, and
 **skipped** or **closed** PRs leave nothing to follow up. A preview or
 `--dry-run` predicts outcomes rather than producing them, so it exits
 `0` whatever it predicts.
+
+### When a run exits 9
+
+`--include-human-prs` brings human-authored pull requests into scope,
+and `--override` confirms which ones. A `merge` or `close` run
+given the flag but not the override stops before acting on anything,
+prints the `--override` value that confirms the PRs it found, and exits
+`9`. Run it again with both. A `--dry-run` prints the value without
+requiring it.
+
+The neighbouring refusals have codes of their own: a human-authored
+source PR without `--include-human-prs` exits `8`, as does an
+`--override` that does not match, and `--override` without
+`--include-human-prs` exits `2`.
 
 ## Error Messages
 

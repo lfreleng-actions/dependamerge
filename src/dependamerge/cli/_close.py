@@ -23,10 +23,16 @@ import dependamerge.cli as _pkg
 
 from ..bot_policy import BotPolicy
 from ..close_manager import CloseResult
+from ..error_codes import ExitCode, exit_with_error
 from ..models import ComparisonResult, PullRequestInfo
 from ..progress_tracker import MergeProgressTracker
 from ._app import console
 from ._bot_scope import _out_of_scope_hint
+from ._human_gate import (
+    _confirm_human_override,
+    _given_override,
+    _refuse_human_source,
+)
 from ._sha import _generate_continue_sha, _generate_override_sha
 from ._similarity import _format_condensed_similarity
 
@@ -105,57 +111,52 @@ def _print_close_debug_matching(
 def _validate_close_authorization(
     ctx: _CloseContext,
     override: str | None,
-) -> bool:
-    """Gate non-automation source PRs behind the override SHA.
+    *,
+    include_human_prs: bool,
+    dry_run: bool,
+) -> None:
+    """Gate the source PR on who wrote it, as ``merge`` does.
 
-    Returns True when the close may proceed; False when the caller
-    should stop (the reason has already been printed).
+    An App the bot policy admits passes.  A person's PR needs
+    ``--include-human-prs`` and the ``--override`` that confirms it.
+    Every refusal exits non-zero; returning without closing anything
+    used to exit 0, which a script could not tell from success.
+
+    Raises:
+        SystemExit: ``VALIDATION_ERROR`` for an App outside the policy, a
+            human source without the flag, or a wrong override;
+            ``OVERRIDE_REQUIRED`` when only the override is missing.
     """
-    if ctx.github_client.is_automation_author(ctx.source_pr.author):
-        decision = ctx.bot_policy.decide(
-            ctx.source_pr.author, ctx.source_pr.repository_full_name
-        )
-        if decision.in_scope:
-            return True
-        console.print(
-            f"Source PR author {ctx.source_pr.author} is not in this run's "
-            f"scope ({decision.reason})."
-        )
-        console.print(_out_of_scope_hint(ctx.source_pr.author))
-        return False
+    author = ctx.source_pr.author
+    if ctx.github_client.is_automation_author(author):
+        decision = ctx.bot_policy.decide(author, ctx.source_pr.repository_full_name)
+        if not decision.in_scope:
+            exit_with_error(
+                ExitCode.VALIDATION_ERROR,
+                message=(
+                    f"❌ Source PR author {author} is not in this run's scope "
+                    f"({decision.reason})"
+                ),
+                details=_out_of_scope_hint(author),
+            )
+        return
+
+    if not include_human_prs:
+        _refuse_human_source(author)
 
     commit_messages = ctx.github_client.get_pull_request_commits(
         ctx.owner, ctx.repo_name, ctx.pr_number
     )
     first_commit_line = commit_messages[0].split("\n")[0] if commit_messages else ""
-
-    # Generate expected SHA
-    expected_sha = _generate_override_sha(ctx.source_pr, first_commit_line)
-
-    if not override:
-        console.print("Source PR is not from a recognized automation tool.")
-        console.print(
-            f"To close this and similar PRs, run again with: --override {expected_sha}"
-        )
-        console.print(
-            f"This SHA is based on the author '{ctx.source_pr.author}' and commit message '{first_commit_line[:50]}...'",
-            style="dim",
-        )
-        return False
-
-    if override != expected_sha:
-        console.print(
-            f"Error: Invalid override SHA. Expected: {expected_sha}",
-            style="bold red",
-        )
-        console.print(
-            "This prevents accidental bulk operations on non-automation PRs.",
-            style="dim",
-        )
-        return False
-
-    console.print("Override SHA validated. Proceeding with non-automation PR close.")
-    return True
+    _confirm_human_override(
+        _given_override(override),
+        _generate_override_sha(ctx.source_pr, first_commit_line),
+        dry_run=dry_run,
+        subject=(
+            f"closing {ctx.source_pr.html_url} by {author} and the PRs similar to it"
+        ),
+        derivation="the PR's author and first commit message",
+    )
 
 
 def _find_similar_prs_for_close(

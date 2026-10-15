@@ -39,6 +39,7 @@ from ..url_parser import (
     ParsedGerritTopicUrl,
     ParsedUrl,
 )
+from ._human_gate import _confirm_human_override, _given_override
 from ._sha import _generate_gerrit_override_sha
 from ._similarity import _display_change_info
 
@@ -203,50 +204,51 @@ def _resolve_gerrit_only_automation(
     comparator: GerritChangeComparator,
     override: str | None,
     console: Console,
+    *,
+    include_human_prs: bool = False,
+    dry_run: bool = False,
 ) -> bool:
-    """Decide whether the batch is automation-only, honouring --override.
+    """Decide whether the batch is automation-only, gating everything else.
 
-    Automation source changes match only other automation changes. A
-    non-automation source requires a matching override SHA to proceed
-    and then widens matching beyond automation.
+    Automation source changes match only other automation changes.  Any
+    other source needs ``--include-human-prs`` and the ``--override`` that
+    confirms it, as a human-authored GitHub PR does, and then widens
+    matching beyond automation.
 
     Returns:
         True when only automation changes should be matched.
 
     Raises:
-        SystemExit: When the source is a non-automation change without a
-            valid override SHA.
+        SystemExit: ``VALIDATION_ERROR`` without ``--include-human-prs``
+            or with a wrong override; ``OVERRIDE_REQUIRED`` when only the
+            override is missing.  Each used to exit 0, which a script
+            could not tell from success.
     """
     if comparator.is_automation_change(source_change):
         return True
 
-    expected_sha = _generate_gerrit_override_sha(source_change)
-    if not override:
-        owner = source_change.owner.strip()
-        subject = source_change.subject.strip()
-        subject_preview = subject if len(subject) <= 50 else f"{subject[:50]}..."
-        console.print("Source change is not from a recognized automation tool.")
-        console.print(
-            "To submit this and similar changes, run again with: "
-            f"--override {expected_sha}"
-        )
-        console.print(
-            f"This SHA is based on the owner '{owner}' and subject '{subject_preview}'",
-            style="dim",
-        )
-        raise typer.Exit(0)
-
-    if override.strip().lower() != expected_sha:
+    owner = source_change.owner.strip()
+    if not include_human_prs:
         exit_with_error(
             ExitCode.VALIDATION_ERROR,
-            message="❌ Invalid override SHA provided",
+            message=(
+                f"❌ Source change {source_change.number} (owner {owner}) is "
+                "not from a recognized automation tool"
+            ),
             details=(
-                f"Expected SHA for this change and owner: --override {expected_sha}"
+                "To submit it and similar changes, run again with "
+                "--include-human-prs; the run then prints the --override "
+                "value that confirms them."
             ),
         )
-
-    console.print(
-        "Override SHA validated. Proceeding with non-automation change merge."
+    _confirm_human_override(
+        _given_override(override),
+        _generate_gerrit_override_sha(source_change),
+        dry_run=dry_run,
+        subject=(
+            f"change {source_change.number} by {owner} and the changes similar to it"
+        ),
+        derivation="the change's owner and subject",
     )
     return False
 

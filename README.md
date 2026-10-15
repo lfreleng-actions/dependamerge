@@ -49,7 +49,9 @@ Copilot's coding agent or an organisation's own bots, and acts on them when a
 [bot policy](docs/BOT_POLICY.md) includes that App. Use `--include-bots` and
 `--exclude-bots` for one run, or a policy file to set it once.
 
-Also works for individual GitHub users when provided with an override flag.
+Also works for human-authored pull requests, with `--include-human-prs` and the
+`--override` value that confirms them; see
+[Human-Authored PRs](#human-authored-prs).
 
 Matches pull requests based on a heuristic that considers the criteria:
 
@@ -104,9 +106,10 @@ GitHub organisation. Works with the same automation tools as merge:
 - Dependabot
 - pre-commit.ci
 - Renovate
-- GitHub Copilot
+- Other GitHub Apps a [bot policy](docs/BOT_POLICY.md) includes
 
-Also works for individual GitHub users when provided with an override flag.
+Also works for human-authored pull requests, with `--include-human-prs` and the
+`--override` value that confirms them.
 
 Uses the same matching heuristic as merge to find similar PRs. Unlike merge,
 it requires PRs to be in the open state (no mergeable state checks needed).
@@ -213,8 +216,9 @@ or user account in one command.
 - **Grouped Preview**: The preview lists candidate PRs grouped by repository
   for readability, then prompts for a confirmation token before merging
 - **Human PR Safety**: The run excludes human-authored PRs by default;
-  passing `--include-human-prs` brings them into scope behind an explicit
-  confirmation prompt covering the entire owner
+  `--include-human-prs` brings them into scope, and `--override` confirms
+  the ones the run lists. Without the override the run prints its
+  value and exits `9`, having merged nothing
 
 > **Note**: Owner-wide merging works against `github.com` and against
 > any GitHub Enterprise Server host you declare. See
@@ -889,8 +893,10 @@ dependamerge close https://github.com/myorg/repo1/pull/45 --no-confirm
 # Close with custom similarity threshold
 dependamerge close https://github.com/myorg/repo1/pull/45 --threshold 0.9
 
-# Close user-generated PRs with override SHA
-dependamerge close https://github.com/myorg/repo1/pull/45 --override a1b2c3d4e5f6g7h8
+# Close human-authored PRs: --include-human-prs, plus the --override value a
+# run without it prints
+dependamerge close https://github.com/myorg/repo1/pull/45 \
+  --include-human-prs --override a1b2c3d4e5f6g7h8
 ```
 
 The close command will:
@@ -985,20 +991,39 @@ dependamerge merge \
   https://gerrit.linuxfoundation.org/infra/c/releng/lftools/+/12345
 ```
 
-### Optional Security Validation
+### Human-Authored PRs
 
-For extra security, you can use the --override flag with SHA-based validation:
+Dependamerge acts on automation by default. Acting on a person's pull
+requests takes two flags, the same for `merge` and `close`, and for pull
+request, repository, owner and Gerrit targets:
+
+1. `--include-human-prs` brings human-authored PRs into scope.
+2. `--override` confirms which ones, with a value derived from them.
+
+A run with the first flag alone prints that value and exits `9`, so you can
+review what it found, then run again with both:
 
 ```bash
+dependamerge merge https://github.com/owner/repo/pull/123 --include-human-prs
+# ...
+# Run again with: --include-human-prs --override a1b2c3d4e5f6g7h8
+
 dependamerge merge https://github.com/owner/repo/pull/123 \
-  --override a1b2c3d4e5f6g7h8
+  --include-human-prs --override a1b2c3d4e5f6g7h8
 ```
 
-The SHA hash derives from:
+For a source pull request, or a Gerrit change, the value derives from its
+author and the first line of its commit message. For a repository or owner,
+it derives from the target and each human-authored PR's number and head
+commit, so a new push or another PR changes it. A dry run prints the value
+without requiring it.
 
-- The PR author's GitHub username
-- The first line of the commit message
-- This provides an extra layer of validation for sensitive operations
+| Situation | Exit code |
+| --- | --- |
+| Human-authored source without `--include-human-prs` | `8` |
+| `--include-human-prs` without `--override` | `9` |
+| `--override` that does not match | `8` |
+| `--override` without `--include-human-prs` | `2` |
 
 ### Interactive Preview Mode
 
@@ -1261,7 +1286,10 @@ export DEPENDAMERGE_CONTENT_PER_HOUR=300
   `code-owners`, `protection-rules`, or `all`. See [Force Override System](docs/FORCE_OVERRIDE_SYSTEM.md)
   for detailed documentation
 - `--token TEXT`: GitHub token (alternative to GITHUB_TOKEN env var)
-- `--override TEXT`: SHA hash for extra security validation
+- `--include-human-prs`: Act on human-authored PRs too. Needs a matching
+  `--override`; see [Human-Authored PRs](#human-authored-prs)
+- `--override TEXT`: Confirms the human-authored PRs `--include-human-prs`
+  brings into scope, with the value a run without it prints
 - `--include-bots NAMES`: Act on PRs from these GitHub Apps as well as the
   built-in Dependabot, Renovate and pre-commit.ci.
   Comma-separated and/or repeatable; each entry is `name`, `name[bot]` or
@@ -1319,7 +1347,8 @@ Fallback variables:
   progress)
 - `--debug-matching`: Show detailed scoring information for PR matching
 - `--token TEXT`: GitHub token (alternative to GITHUB_TOKEN env var)
-- `--override TEXT`: SHA hash to override non-automation PR restriction
+- `--include-human-prs` / `--override TEXT`: Act on human-authored PRs, as for
+  `merge`; see [Human-Authored PRs](#human-authored-prs)
 - `--include-bots NAMES` / `--exclude-bots NAMES`: Which GitHub Apps' PRs to
   act on, as for `merge`. See [Bot Policy](docs/BOT_POLICY.md)
 
@@ -1336,8 +1365,8 @@ Fallback variables:
    - Title similarity (normalized to remove version numbers)
    - File change patterns
    - Author matching
-5. **Optional Validation**: If `--override` provided, validates SHA for extra
-   security
+5. **Human Gate**: A human-authored source needs `--include-human-prs` and
+   the `--override` value that confirms it
 6. **Approval & Merge**: For matching PRs above the threshold:
    - Adds an approval review
    - Merges the pull request
@@ -1400,12 +1429,13 @@ dependamerge merge https://github.com/myorg/repo1/pull/45
 dependamerge merge https://github.com/myorg/repo1/pull/12 --threshold 0.85
 ```
 
-#### Feature PR with Security Validation
+#### Human-Authored Feature PR
 
 ```bash
-# Merge with optional security validation
+# Merge a person's PR and the PRs like it, once a run has printed the
+# confirming value
 dependamerge merge https://github.com/myorg/repo1/pull/89 \
-  --override f1a2b3c4d5e6f7g8
+  --include-human-prs --override f1a2b3c4d5e6f7g8
 ```
 
 ### Example: Gerrit Merge

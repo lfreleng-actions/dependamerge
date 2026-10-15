@@ -54,6 +54,11 @@ from ._close import (
     _validate_close_authorization,
 )
 from ._github_host import apply_gerrit_host, apply_github_host
+from ._human_gate import (
+    INCLUDE_HUMAN_PRS_OPTION,
+    OVERRIDE_OPTION,
+    _require_override_pairing,
+)
 from ._pr_display import _display_pr_info
 
 
@@ -112,9 +117,8 @@ def close(
             "declared as GitHub being treated as Gerrit."
         ),
     ),
-    override: str | None = typer.Option(
-        None, "--override", help="SHA hash to override non-automation PR restriction"
-    ),
+    override: str | None = OVERRIDE_OPTION,
+    include_human_prs: bool = INCLUDE_HUMAN_PRS_OPTION,
     include_bots: list[str] | None = INCLUDE_BOTS_OPTION,
     exclude_bots: list[str] | None = EXCLUDE_BOTS_OPTION,
     show_progress: bool = typer.Option(
@@ -152,13 +156,15 @@ def close(
 
     Closes similar PRs from the same automation tool (dependabot, pre-commit.ci).
 
-    For user generated bulk PRs, use the --override flag with SHA hash.
+    For human-authored PRs, add --include-human-prs; the run then prints
+    the --override value that confirms them.
     """
     # Applied before anything parses a target: the flag sets both
     # the host a shorthand resolves against and the set of hosts
     # permitted at all.
     apply_github_host(github_host)
     apply_gerrit_host(gerrit_host)
+    _require_override_pairing(override, include_human_prs)
     bot_policy = _build_bot_policy(include_bots, exclude_bots)
 
     progress_tracker = None
@@ -205,8 +211,9 @@ def close(
             _print_close_debug_matching(ctx, comparator, similarity_threshold)
 
         # Check if source PR is from automation or has valid override
-        if not _validate_close_authorization(ctx, override):
-            return
+        _validate_close_authorization(
+            ctx, override, include_human_prs=include_human_prs is True, dry_run=dry_run
+        )
 
         # Find similar PRs across the owner (organization or user)
         all_similar_prs = _find_similar_prs_for_close(ctx, comparator, debug_matching)

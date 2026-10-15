@@ -11,8 +11,6 @@ not forced into avoidable rebases.
 
 import asyncio
 
-import typer
-
 # Names substituted at ``dependamerge.cli.<name>`` are read from
 # the package at call time, so one substitution reaches every
 # caller rather than only the module that bound the name.
@@ -31,6 +29,7 @@ from ..url_parser import (
 from ._app import console
 from ._bot_scope import _remove_out_of_scope_bots
 from ._context import _MergeContext
+from ._human_gate import _confirm_human_prs_in_scope
 from ._merge_order import _repo_merge_order
 from ._merge_permissions import _maybe_check_merge_permissions
 from ._merge_report import (
@@ -171,61 +170,16 @@ def _partition_repo_prs(
 
 def _confirm_repo_human_prs(
     ctx: _MergeContext,
-    repo_prs: list[PullRequestInfo],
-    automation_prs: list[PullRequestInfo],
+    parsed_repo: ParsedRepoUrl,
     human_prs: list[PullRequestInfo],
-) -> list[PullRequestInfo] | None:
-    """Resolve which PRs stay in scope when human-authored PRs are present.
+) -> None:
+    """Require the override confirming the human-authored PRs found.
 
-    Args:
-        ctx: Shared merge context populated with CLI parameters.
-        repo_prs: Every open PR in the repository, in merge order.
-        automation_prs: The automation-authored subset.
-        human_prs: The human-authored subset.
-
-    Returns:
-        The PRs to merge, or ``None`` when the operator cancelled or no
-        automation PRs remain after excluding the human ones.
+    They reach this point only under ``--include-human-prs``; the fetch
+    leaves them out otherwise.  The value derives from exactly the PRs
+    listed, so ``--no-confirm`` cannot merge any nobody confirmed.
     """
-    # Only prompt when human PRs are actually in scope, not merely
-    # because --include-human-prs was supplied.  A dry run never prompts;
-    # it mirrors the safe default (exclude human PRs) so the preview
-    # matches a real run where the operator presses Enter at the prompt.
-    needs_human_confirm = bool(human_prs) and not ctx.no_confirm and not ctx.dry_run
-    if needs_human_confirm:
-        console.print("\n⚠️ Human-authored PRs are included in this merge operation.")
-        console.print("   Review the list above carefully before proceeding.")
-        try:
-            user_input = (
-                typer.prompt(
-                    "Type 'yes' to include human PRs, or press Enter to skip them",
-                    default="",
-                    show_default=False,
-                )
-                .strip()
-                .lower()
-            )
-            if user_input != "yes":
-                console.print("ℹ️ Excluding human PRs from merge.")
-                repo_prs = automation_prs
-                if not repo_prs:
-                    console.print("❌ No automation PRs remain to merge.")
-                    return None
-        except (KeyboardInterrupt, EOFError, typer.Abort):
-            console.print("\n❌ Merge cancelled by user.")
-            return None
-    elif human_prs and ctx.dry_run:
-        # Human PRs only reach this branch when --include-human-prs was
-        # supplied (otherwise they are filtered out at fetch time).  A dry
-        # run performs no writes, so keep them in the preview to faithfully
-        # mirror what a real --include-human-prs run would attempt; a real
-        # run would prompt for confirmation first (unless --no-confirm).
-        console.print(
-            "\nℹ️ Dry run: human-authored PRs are kept in this preview "
-            "(a real run would prompt before merging them)."
-        )
-
-    return repo_prs
+    _confirm_human_prs_in_scope(ctx, parsed_repo.project, human_prs)
 
 
 def _run_repo_merge_pass(
@@ -319,21 +273,13 @@ def _handle_repo_merge(
     # identically; the preview list below is derived from this order too.
     repo_prs = _repo_merge_order(repo_prs)
 
-    repo_prs, automation_prs, human_prs = _partition_repo_prs(
-        parsed_repo, repo_prs, ctx.bot_policy
-    )
+    repo_prs, _, human_prs = _partition_repo_prs(parsed_repo, repo_prs, ctx.bot_policy)
     if not repo_prs:
         console.print(f"❌ No open PRs in scope in {parsed_repo.project}")
         _conclude_run(ctx, [], preview=ctx.dry_run or not ctx.no_confirm)
         return
 
-    selected = _confirm_repo_human_prs(ctx, repo_prs, automation_prs, human_prs)
-    if selected is None:
-        # Declined, cancelled or left with nothing to merge: still a
-        # finished run, so it leaves a record like any other.
-        _conclude_run(ctx, [], preview=ctx.dry_run or not ctx.no_confirm)
-        return
-    repo_prs = selected
+    _confirm_repo_human_prs(ctx, parsed_repo, human_prs)
 
     all_prs_to_merge: list[tuple[PullRequestInfo, ComparisonResult | None]] = [
         (pr, None) for pr in repo_prs

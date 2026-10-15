@@ -170,6 +170,7 @@ def _dispatch_gerrit(
         netrc_optional=ctx.netrc_optional,
         dry_run=ctx.dry_run,
         override=ctx.override,
+        include_human_prs=ctx.include_human_prs,
         topic=topic,
         show_progress=ctx.show_progress,
     )

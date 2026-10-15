@@ -11,6 +11,8 @@ import pytest
 from typer.testing import CliRunner
 
 from dependamerge.cli import app
+from dependamerge.cli._human_gate import _human_set_override
+from dependamerge.error_codes import ExitCode
 from dependamerge.github_service import GitHubService
 from dependamerge.models import FileChange, PullRequestInfo
 from dependamerge.url_parser import (
@@ -417,15 +419,13 @@ class TestMergeOrgUrl:
     @patch("dependamerge.cli._check_merge_permissions")
     @patch("dependamerge.cli.GitHubClient")
     @patch("dependamerge.cli.asyncio.run")
-    def test_permission_check_samples_repo_that_survives_the_prompt(
+    def test_permission_check_samples_repo_the_run_touches(
         self, mock_asyncio_run, mock_client_class, mock_check_perms
     ):
-        # Regression (#427): with --include-human-prs the probe must
-        # sample a repository the run will actually touch.  Probing
-        # before the prompt sampled the *unfiltered* set, so a
-        # repository holding only human PRs could gate the run and then
-        # be dropped -- rejecting a fine-grained token scoped to exactly
-        # the automation repositories the operator meant to merge.
+        # Regression (#427): the probe must sample a repository the run
+        # will actually touch.  Once --override confirms the human PRs
+        # they stay in scope, so the busiest repository, holding only
+        # human PRs, is the one the run touches first.
         #
         # _owner_merge_order puts the repository with the most PRs
         # first, so two human PRs in "chatter" outrank the single
@@ -459,27 +459,25 @@ class TestMergeOrgUrl:
                 "--token",
                 "test_token",
                 "--include-human-prs",
+                "--override",
+                _human_set_override("acme", human_prs),
             ],
-            # Enter at the prompt: skip the human PRs, leaving only
-            # acme/widget in scope.
-            input="\n",
         )
 
         assert result.exit_code == 0, f"CLI failed: {result.stdout}"
-        assert "Excluding human PRs" in _strip_ansi(result.stdout)
+        assert "--override confirms" in _strip_ansi(result.stdout)
         mock_check_perms.assert_called_once()
-        assert captured["repo_name"] == "widget"
+        assert captured["repo_name"] == "chatter"
 
     @patch("dependamerge.cli._check_merge_permissions")
     @patch("dependamerge.cli.GitHubClient")
     @patch("dependamerge.cli.asyncio.run")
-    def test_permission_check_skipped_when_prompt_empties_the_run(
+    def test_unconfirmed_human_prs_stop_before_the_permission_check(
         self, mock_asyncio_run, mock_client_class, mock_check_perms
     ):
-        # The complement of the case above: when every in-scope PR is
-        # human-authored and the operator skips them, nothing is left to
-        # merge.  There is no repository the run will touch, so probing
-        # permissions at all would be gating on a phantom.
+        # Without the override the run stops at the human gate, before
+        # it probes permissions or merges anything, and prints the value
+        # that confirms exactly the PRs it listed.
         human_prs = [
             _make_pr(1, author="a-person", repo="acme/chatter"),
             _make_pr(2, author="a-person", repo="acme/chatter"),
@@ -499,12 +497,14 @@ class TestMergeOrgUrl:
                 "--token",
                 "test_token",
                 "--include-human-prs",
+                "--no-confirm",
             ],
-            input="\n",
         )
 
-        assert result.exit_code == 0, f"CLI failed: {result.stdout}"
-        assert "No automation PRs remain" in _strip_ansi(result.stdout)
+        assert result.exit_code == ExitCode.OVERRIDE_REQUIRED, result.stdout
+        assert f"--override {_human_set_override('acme', human_prs)}" in (
+            _strip_ansi(result.stdout)
+        )
         mock_check_perms.assert_not_called()
 
     def test_ghe_owner_url_surfaces_owner_wide_message(self):

@@ -11,8 +11,6 @@ same repository at once.
 
 import asyncio
 
-import typer
-
 # Names substituted at ``dependamerge.cli.<name>`` are read from
 # the package at call time, so one substitution reaches every
 # caller rather than only the module that bound the name.
@@ -32,6 +30,7 @@ from ..url_parser import (
 from ._app import console
 from ._bot_scope import _remove_out_of_scope_bots
 from ._context import _MergeContext
+from ._human_gate import _confirm_human_prs_in_scope
 from ._merge_order import _owner_merge_order, _print_prs_grouped_by_repo
 from ._merge_permissions import _maybe_check_merge_permissions
 from ._merge_report import (
@@ -211,61 +210,15 @@ def _partition_owner_prs(
 def _confirm_owner_human_prs(
     ctx: _MergeContext,
     parsed_org: ParsedOrgUrl,
-    owner_prs: list[PullRequestInfo],
-    automation_prs: list[PullRequestInfo],
     human_prs: list[PullRequestInfo],
-) -> list[PullRequestInfo] | None:
-    """Resolve which PRs stay in scope when human-authored PRs are present.
+) -> None:
+    """Require the override confirming the human-authored PRs found.
 
-    Args:
-        ctx: Shared merge context populated with CLI parameters.
-        parsed_org: Parsed owner URL, named in the warning.
-        owner_prs: Every in-scope open PR, in merge order.
-        automation_prs: The automation-authored subset.
-        human_prs: The human-authored subset.
-
-    Returns:
-        The PRs to merge, or ``None`` when the operator cancelled or no
-        automation PRs remain after excluding the human ones.
+    They reach this point only under ``--include-human-prs``; the fetch
+    leaves them out otherwise.  The value derives from exactly the PRs
+    listed, so ``--no-confirm`` cannot merge any nobody confirmed.
     """
-    needs_human_confirm = bool(human_prs) and not ctx.no_confirm and not ctx.dry_run
-    if needs_human_confirm:
-        console.print(
-            "\n⚠️ Human-authored PRs across the entire owner "
-            f"'{parsed_org.owner}' are included in this merge operation."
-        )
-        console.print("   Review the list above carefully before proceeding.")
-        try:
-            user_input = (
-                typer.prompt(
-                    "Type 'yes' to include human PRs, or press Enter to skip them",
-                    default="",
-                    show_default=False,
-                )
-                .strip()
-                .lower()
-            )
-            if user_input != "yes":
-                console.print("ℹ️ Excluding human PRs from merge.")
-                owner_prs = automation_prs
-                if not owner_prs:
-                    console.print("❌ No automation PRs remain to merge.")
-                    return None
-        except (KeyboardInterrupt, EOFError, typer.Abort):
-            console.print("\n❌ Merge cancelled by user.")
-            return None
-    elif human_prs and ctx.dry_run:
-        # Human PRs only reach this branch when --include-human-prs was
-        # supplied (otherwise they are filtered out at fetch time).  A dry
-        # run performs no writes, so keep them in the preview to faithfully
-        # mirror what a real --include-human-prs run would attempt; a real
-        # run would prompt for confirmation first (unless --no-confirm).
-        console.print(
-            "\nℹ️ Dry run: human-authored PRs are kept in this preview "
-            "(a real run would prompt before merging them)."
-        )
-
-    return owner_prs
+    _confirm_human_prs_in_scope(ctx, parsed_org.owner, human_prs)
 
 
 def _run_owner_merge_pass(
@@ -353,7 +306,7 @@ def _handle_org_merge(
     # Both the grouped listing and the merge list derive from this order.
     owner_prs = _owner_merge_order(owner_prs)
 
-    owner_prs, automation_prs, human_prs = _partition_owner_prs(
+    owner_prs, _, human_prs = _partition_owner_prs(
         parsed_org, owner_prs, ctx.bot_policy
     )
     if not owner_prs:
@@ -361,32 +314,21 @@ def _handle_org_merge(
         _conclude_run(ctx, [], preview=preview_run)
         return
 
-    selected = _confirm_owner_human_prs(
-        ctx, parsed_org, owner_prs, automation_prs, human_prs
-    )
-    if selected is None:
-        # Declined, cancelled or left with nothing to merge: still a
-        # finished run, so it leaves a record like any other.
-        _conclude_run(ctx, [], preview=preview_run)
-        return
-    owner_prs = selected
+    _confirm_owner_human_prs(ctx, parsed_org, human_prs)
 
     # Deferred until the final set is known: the helper needs a concrete
     # repo to probe, so point it at the first PR the run will actually
-    # merge as a representative sample.  Probing before the prompt would
-    # sample the unfiltered set, and under --include-human-prs the first
-    # PR there can belong to a repository holding only human-authored
-    # PRs --- which the operator then drops by pressing Enter.  A token
-    # scoped to exactly the automation repositories would be rejected on
-    # the strength of a repository the run never touches.
+    # merge as a representative sample.  Probing before the bot policy and
+    # the human gate have settled the set could sample a repository the
+    # run never touches, rejecting a token scoped to exactly the
+    # repositories it does.
     #
     # Sampling one repo remains sufficient: the common failure modes
     # (expired/invalid token, no write access) fail identically on any
     # repo, and genuine per-repo permission variance with fine-grained
     # tokens is caught at merge time by the scheduler's per-repository
     # error isolation.  ``owner_prs`` is non-empty here --- it was
-    # checked above, and _confirm_owner_human_prs returns None rather
-    # than an empty selection.
+    # checked above.
     ctx.repo_name = owner_prs[0].repository_full_name.split("/", 1)[-1]
     _maybe_check_merge_permissions(ctx)
 

@@ -517,11 +517,13 @@ class TestCLI:
                     "--token",
                     "test_token",
                     "--include-human-prs",
+                    "--override",
+                    _generate_override_sha(mock_pr, "Fix bug"),
                 ],
             )
 
         assert result.exit_code == ExitCode.SUCCESS
-        assert "--include-human-prs was supplied" in result.stdout
+        assert "--override confirms" in result.stdout
 
     @patch("dependamerge.cli.GitHubClient")
     def test_merge_command_non_automation_pr_invalid_override(self, mock_client_class):
@@ -561,13 +563,31 @@ class TestCLI:
                 "https://github.com/owner/repo/pull/22",
                 "--token",
                 "test_token",
+                "--include-human-prs",
                 "--override",
                 "wrongsha",
             ],
         )
 
         assert result.exit_code == 8
-        assert "Invalid override SHA" in result.stdout
+        assert "does not confirm" in result.stdout
+
+    def test_merge_command_override_without_include_flag_is_refused(self):
+        """--override alone confirms nothing, so it stops the run up front."""
+        result = self.runner.invoke(
+            app,
+            [
+                "merge",
+                "https://github.com/owner/repo/pull/22",
+                "--token",
+                "test_token",
+                "--override",
+                "0123456789abcdef",
+            ],
+        )
+
+        assert result.exit_code == ExitCode.CONFIGURATION_ERROR
+        assert "--override needs --include-human-prs" in result.stdout
 
     @patch("dependamerge.cli.GitHubClient")
     @patch("dependamerge.cli.PRComparator")
@@ -635,13 +655,14 @@ class TestCLI:
                 "https://github.com/owner/repo/pull/22",
                 "--token",
                 "test_token",
+                "--include-human-prs",
                 "--override",
                 expected_sha,
             ],
         )
 
         assert result.exit_code == 0
-        assert "Override SHA validated" in result.stdout
+        assert "--override confirms" in result.stdout
 
     def test_generate_override_sha(self):
         """Test SHA generation functionality."""
@@ -757,8 +778,15 @@ class TestCLI:
         mock_resolve_credentials,
         mock_create_service,
         mock_create_comparator,
+        capsys,
     ):
-        """Test Gerrit human-authored changes require an override."""
+        """A non-automation change without --include-human-prs is refused.
+
+        It exits non-zero and names the flag, without offering an
+        override: the override confirms an inclusion, it is not one.
+        It used to print the override and exit 0, which a script could
+        not tell from success.
+        """
         change = self._human_gerrit_change()
         credentials = Mock(is_valid=True, username="user", password="pass")
         credentials.auth_method_display.return_value = ".netrc file"
@@ -773,7 +801,7 @@ class TestCLI:
         mock_create_comparator.return_value = comparator
 
         console = Console(record=True, width=120)
-        with pytest.raises(typer.Exit) as exc_info:
+        with pytest.raises(SystemExit) as exc_info:
             _handle_gerrit_merge(
                 parsed_url=self._gerrit_parsed_url(),
                 no_confirm=True,
@@ -782,14 +810,52 @@ class TestCLI:
                 console=console,
             )
 
-        assert exc_info.value.exit_code == 0
-        output = console.export_text()
-        assert "Source change is not from a recognized automation tool" in output
-        assert "--override" in output
+        assert exc_info.value.code == ExitCode.VALIDATION_ERROR
+        output = capsys.readouterr().out
+        assert "not from a recognized automation tool" in output
+        assert "--include-human-prs" in output
         assert "human-user" in output
         assert "' human-user '" not in output
-        assert "'CI: Bump github2gerrit workflow to v1.4.3'" in output
-        assert "'CI: Bump github2gerrit workflow to v1.4.3...'" not in output
+        assert _generate_gerrit_override_sha(change) not in output
+        service.find_similar_changes.assert_not_called()
+
+    @patch("dependamerge.cli.create_gerrit_comparator")
+    @patch("dependamerge.cli.create_gerrit_service")
+    @patch("dependamerge.cli.resolve_gerrit_credentials")
+    def test_gerrit_merge_included_change_without_override_exits_9(
+        self,
+        mock_resolve_credentials,
+        mock_create_service,
+        mock_create_comparator,
+        capsys,
+    ):
+        """--include-human-prs alone prints the value and exits 9."""
+        change = self._human_gerrit_change()
+        credentials = Mock(is_valid=True, username="user", password="pass")
+        credentials.auth_method_display.return_value = ".netrc file"
+        mock_resolve_credentials.return_value = credentials
+
+        service = Mock(is_authenticated=True)
+        service.get_change_info.return_value = change
+        mock_create_service.return_value = service
+
+        comparator = Mock()
+        comparator.is_automation_change.return_value = False
+        mock_create_comparator.return_value = comparator
+
+        with pytest.raises(SystemExit) as exc_info:
+            _handle_gerrit_merge(
+                parsed_url=self._gerrit_parsed_url(),
+                no_confirm=True,
+                similarity_threshold=0.8,
+                verbose=False,
+                console=Console(record=True, width=120),
+                include_human_prs=True,
+            )
+
+        assert exc_info.value.code == ExitCode.OVERRIDE_REQUIRED
+        output = capsys.readouterr().out
+        assert f"--override {_generate_gerrit_override_sha(change)}" in output
         service.find_similar_changes.assert_not_called()
 
     @patch("dependamerge.cli.create_gerrit_comparator")
@@ -800,6 +866,7 @@ class TestCLI:
         mock_resolve_credentials,
         mock_create_service,
         mock_create_comparator,
+        capsys,
     ):
         """Test valid Gerrit override disables the automation-only scan."""
         change = self._human_gerrit_change()
@@ -824,11 +891,11 @@ class TestCLI:
             verbose=False,
             console=console,
             dry_run=True,
+            include_human_prs=True,
             override=f" {_generate_gerrit_override_sha(change).upper()} ",
         )
 
-        output = console.export_text()
-        assert "Override SHA validated" in output
+        assert "--override confirms" in capsys.readouterr().out
         service.find_similar_changes.assert_called_once_with(
             change,
             comparator,
@@ -867,6 +934,7 @@ class TestCLI:
                 similarity_threshold=0.8,
                 verbose=False,
                 console=console,
+                include_human_prs=True,
                 override="wrongsha",
             )
 
@@ -1441,7 +1509,64 @@ class TestCLI:
 
     @patch("dependamerge.cli.GitHubClient")
     def test_close_command_non_automation_pr_no_override(self, mock_client_class):
-        """Test that close command for non-automation PR without override shows SHA."""
+        """A human source without the flag is refused, and exits non-zero.
+
+        It used to print the override and exit 0, which a script could not
+        tell from a close that succeeded.
+        """
+        mock_client = self._human_close_client(mock_client_class)
+
+        result = self.runner.invoke(
+            app,
+            ["close", "https://github.com/owner/repo/pull/22", "--token", "test_token"],
+        )
+
+        assert result.exit_code == ExitCode.VALIDATION_ERROR
+        assert "human-authored" in result.stdout
+        assert "--include-human-prs" in result.stdout
+        mock_client.get_pull_request_commits.assert_not_called()
+
+    @patch("dependamerge.cli.GitHubClient")
+    def test_close_command_included_human_pr_needs_the_override(
+        self, mock_client_class
+    ):
+        """With the flag alone, close prints the value and exits 9."""
+        mock_client = self._human_close_client(mock_client_class)
+        expected = _generate_override_sha(
+            mock_client.get_pull_request_info.return_value, "Manual update"
+        )
+
+        result = self.runner.invoke(
+            app,
+            [
+                "close",
+                "https://github.com/owner/repo/pull/22",
+                "--token",
+                "test_token",
+                "--include-human-prs",
+            ],
+        )
+
+        assert result.exit_code == ExitCode.OVERRIDE_REQUIRED
+        assert f"--override {expected}" in result.stdout
+
+    def test_close_command_override_without_include_flag_is_refused(self):
+        result = self.runner.invoke(
+            app,
+            [
+                "close",
+                "https://github.com/owner/repo/pull/22",
+                "--token",
+                "test_token",
+                "--override",
+                "0123456789abcdef",
+            ],
+        )
+
+        assert result.exit_code == ExitCode.CONFIGURATION_ERROR
+
+    @staticmethod
+    def _human_close_client(mock_client_class) -> Mock:
         mock_client = Mock()
         mock_client_class.return_value = mock_client
 
@@ -1467,15 +1592,7 @@ class TestCLI:
         mock_client.get_pull_request_info.return_value = mock_pr
         mock_client.get_pull_request_commits.return_value = ["Manual update"]
         mock_client.get_pr_status_details.return_value = "Ready"
-
-        result = self.runner.invoke(
-            app,
-            ["close", "https://github.com/owner/repo/pull/22", "--token", "test_token"],
-        )
-
-        assert result.exit_code == 0
-        assert "not from a recognized automation tool" in result.stdout
-        assert "--override" in result.stdout
+        return mock_client
 
 
 class TestFormatFailureReason:

@@ -580,9 +580,10 @@ class TestGitHubClient:
 
         # Mock PR objects with different states
         class MockPR:
-            def __init__(self, mergeable, mergeable_state):
+            def __init__(self, mergeable, mergeable_state, is_draft=False):
                 self.mergeable = mergeable
                 self.mergeable_state = mergeable_state
+                self.is_draft = is_draft
 
         # Test cases: (mergeable, mergeable_state, expected_result)
         test_cases = [
@@ -603,3 +604,10 @@ class TestGitHubClient:
             assert result == expected, (
                 f"Failed for mergeable={mergeable}, mergeable_state={mergeable_state}"
             )
+
+        # GitHub reports a draft's state as ``blocked`` (or ``dirty``), never
+        # ``draft``: only the draft flag says not to merge it, whatever
+        # ``mergeable`` reads (Copilot review on #567).
+        for mergeable in (True, False, None):
+            draft = MockPR(mergeable, "blocked", True)
+            assert client._should_attempt_merge(draft) is False, mergeable

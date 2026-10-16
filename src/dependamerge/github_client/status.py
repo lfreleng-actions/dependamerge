@@ -51,7 +51,7 @@ class _GitHubStatusMixin:
         if pr_info.state != "open":
             return f"Closed ({pr_info.state})"
 
-        if pr_info.mergeable_state == "draft":
+        if pr_info.is_draft or pr_info.mergeable_state == "draft":
             return "Draft PR"
 
         # Handle blocked state - need to determine why it's blocked
@@ -121,6 +121,10 @@ class _GitHubStatusMixin:
 
         Returns True if merge should be attempted, False otherwise.
         """
+        # A draft cannot merge whatever its merge state or mergeability says
+        if pr.is_draft:
+            return False
+
         # If mergeable is explicitly False, only attempt merge for blocked state
         # where branch protection might resolve after approval
         if pr.mergeable is False:

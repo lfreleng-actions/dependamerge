@@ -12,50 +12,27 @@ GitHub returns a ``NOT_FOUND`` error, which aborted the whole scan with::
     Could not resolve to an Organization with the login of '<user>'.
 
 The merge command never hit this because it enumerates repositories via
-:meth:`GitHubService._iter_owner_repositories`, which probes
-``organization`` first and falls back to ``user``.  These tests lock in
-the fix that routes the read commands through the same owner-aware
-enumeration, so a regression that re-introduces the org-only assumption
-fails fast in CI rather than in production.
+:meth:`GitHubService._iter_owner_repositories`, which asks the owner's
+profile whether the login is an organization or a user.  These tests
+lock in the fix that routes the read commands through the same
+owner-aware enumeration, so a regression that re-introduces the
+org-only assumption fails fast in CI rather than in production.
 
-The GraphQL transport is mocked to emulate the org→user fallback, so no
-network access or token is required.
+The GraphQL transport is mocked to answer as a user account, and to
+refuse any organization listing, so no network access or token is
+required.
 """
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
 import pytest
 
-from dependamerge.github_async import GraphQLError
 from dependamerge.github_service import GitHubService
 from dependamerge.models import PullRequestInfo
 
-
-def _not_an_org_error(login: str) -> GraphQLError:
-    """Build the GraphQL error GitHub returns for a user login.
-
-    Mirrors the structured ``errors`` payload that
-    ``GitHubAsync.graphql`` re-raises as a ``GraphQLError`` whose string
-    form is the JSON-encoded array.
-    """
-    return GraphQLError(
-        json.dumps(
-            [
-                {
-                    "type": "NOT_FOUND",
-                    "path": ["organization"],
-                    "locations": [{"line": 3, "column": 3}],
-                    "message": (
-                        "Could not resolve to an Organization with the "
-                        f"login of '{login}'."
-                    ),
-                }
-            ]
-        )
-    )
+_USER_PROFILE = {"repositoryOwner": {"__typename": "User", "dotgithub": None}}
 
 
 def _repos_connection(nodes: list[dict[str, Any]]) -> dict[str, Any]:
@@ -69,14 +46,18 @@ def _repos_connection(nodes: list[dict[str, Any]]) -> dict[str, Any]:
 def _make_user_account_graphql(login: str, repo_nodes: list[dict[str, Any]]):
     """Return an async ``graphql`` stub that behaves like a user account.
 
-    The ``organization(login:)`` probe raises ``NOT_FOUND`` (as GitHub
-    does for a user login); the ``user(login:)`` query returns the
-    supplied repositories.  Anything else returns an empty payload.
+    The owner profile says ``User``; the ``user(login:)`` query returns
+    the supplied repositories, and an ``organization(login:)`` listing
+    fails the test.  Anything else returns an empty payload.
     """
 
-    async def _graphql(query: str, variables: dict[str, Any] | None = None):
+    async def _graphql(
+        query: str, variables: dict[str, Any] | None = None, **kwargs: Any
+    ):
+        if "repositoryOwner(login:" in query:
+            return _USER_PROFILE
         if "organization(login:" in query:
-            raise _not_an_org_error(login)
+            raise AssertionError(f"{login} is a user, not an organization")
         if "user(login:" in query:
             return {"user": {"repositories": _repos_connection(repo_nodes)}}
         return {}
@@ -91,9 +72,13 @@ def _make_affiliation_sensitive_user_graphql(
 ):
     """Return collaborator repositories unless the query asks for OWNER only."""
 
-    async def _graphql(query: str, variables: dict[str, Any] | None = None):
+    async def _graphql(
+        query: str, variables: dict[str, Any] | None = None, **kwargs: Any
+    ):
+        if "repositoryOwner(login:" in query:
+            return _USER_PROFILE
         if "organization(login:" in query:
-            raise _not_an_org_error(login)
+            raise AssertionError(f"{login} is a user, not an organization")
         if "user(login:" in query:
             nodes = list(owned_nodes)
             if "ownerAffiliations: OWNER" not in query:
@@ -163,7 +148,7 @@ class TestIterReposUserFallback:
             assert read_repos == ["auser/own", "auser/forked"]
 
             # Reset the cached owner-root verdict so the second pass
-            # re-probes cleanly with a fresh stub.
+            # asks the profile again with a fresh stub.
             service._owner_root_cache.clear()
             mocker.patch.object(
                 service._api,
@@ -287,7 +272,7 @@ class TestBlockedUserAccount:
                 side_effect=_make_user_account_graphql("auser", repo_nodes),
             )
             # No open PRs in the repo: the scan should complete cleanly
-            # rather than aborting with NOT_FOUND.
+            # rather than aborting or listing the user as an organization.
             mocker.patch.object(
                 service,
                 "_fetch_repo_prs_first_page",
@@ -351,7 +336,7 @@ class TestFindSimilarUserAccount:
             )
 
             # No candidates in the user's single empty repo, but crucially
-            # the owner-wide scan completed without a NOT_FOUND error.
+            # the owner-wide scan listed the user's repositories.
             assert result == []
         finally:
             await service.close()

@@ -192,6 +192,7 @@ def _handle_gerrit_merge(
     override: str | None = None,
     topic: str | None = None,
     show_progress: bool = True,
+    include_human_prs: bool = False,
 ) -> None:
     """
     Handle merge operation for a Gerrit change or topic search URL.
@@ -208,13 +209,16 @@ def _handle_gerrit_merge(
         netrc_optional: If True, don't fail if netrc not found.
         dry_run: If True, preview only and never review or submit any
             change, even when ``no_confirm`` is also set.
-        override: SHA hash to override non-automation change restriction.
+        override: Confirms a non-automation source change, with the value
+            a run without it prints; needs ``include_human_prs``.
         topic: Explicit topic to scope the similar-change search to.
             When omitted, the topic is taken from the search URL (if
             given) or from the source change itself.
         show_progress: If True, drive a live Rich progress tracker
             during submission (in-place counters, matching the GitHub
             merge path) instead of printing per-change status lines.
+        include_human_prs: Bring a non-automation source change, and the
+            changes similar to it, into scope once ``override`` confirms.
     """
     credentials = _resolve_gerrit_credentials_or_exit(
         parsed_url, no_netrc, netrc_file, verbose, console
@@ -241,11 +245,16 @@ def _handle_gerrit_merge(
             similarity_threshold=similarity_threshold
         )
         only_automation = _resolve_gerrit_only_automation(
-            source_change, comparator, override, console
+            source_change,
+            comparator,
+            override,
+            console,
+            include_human_prs=include_human_prs,
+            dry_run=dry_run,
         )
 
         source_change = _maybe_rebase_gerrit_change(
-            service, source_change, credentials, console
+            service, source_change, credentials, console, dry_run=dry_run
         )
 
         candidates = _resolve_gerrit_candidates(

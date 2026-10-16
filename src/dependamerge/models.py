@@ -59,6 +59,10 @@ class PullRequestInfo(BaseModel):
     state: str
     mergeable: bool | None
     mergeable_state: str | None  # Additional state information from GitHub
+    # Whether the author has marked the PR not ready.  Neither API's merge
+    # state reports this any more (GitHub retired the ``DRAFT`` state in
+    # favour of ``isDraft``), so it is carried on its own.
+    is_draft: bool = False
     behind_by: int | None  # Number of commits behind the base branch
     files_changed: list[FileChange]
     repository_full_name: str

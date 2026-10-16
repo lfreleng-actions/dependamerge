@@ -748,6 +748,8 @@ class TestMergeSinglePrRecreateIntegration:
                 "mergeable_state": "blocked",
                 "head": {"sha": "a4355a87"},
                 "state": "open",
+                # REST always reports it; an approval needs it to be False.
+                "draft": False,
             }
         )
         client.approve_pull_request = AsyncMock()
@@ -812,6 +814,8 @@ class TestMergeSinglePrRecreateIntegration:
                 "mergeable_state": "blocked",
                 "head": {"sha": "abc123"},
                 "state": "open",
+                # REST always reports it; an approval needs it to be False.
+                "draft": False,
             }
         )
         client.approve_pull_request = AsyncMock()
@@ -854,6 +858,8 @@ class TestMergeSinglePrRecreateIntegration:
                 "mergeable_state": "blocked",
                 "head": {"sha": "abc123"},
                 "state": "open",
+                # REST always reports it; an approval needs it to be False.
+                "draft": False,
             }
         )
         client.check_user_can_bypass_protection = AsyncMock(
@@ -891,6 +897,8 @@ class TestMergeSinglePrRecreateIntegration:
                 "mergeable_state": "blocked",
                 "head": {"sha": "abc123"},
                 "state": "open",
+                # REST always reports it; an approval needs it to be False.
+                "draft": False,
             }
         )
         client.approve_pull_request = AsyncMock()
@@ -940,6 +948,8 @@ class TestMergeSinglePrRecreateIntegration:
                 "mergeable_state": "blocked",
                 "head": {"sha": "abc123"},
                 "state": "open",
+                # REST always reports it; an approval needs it to be False.
+                "draft": False,
             }
         )
         client.approve_pull_request = AsyncMock()

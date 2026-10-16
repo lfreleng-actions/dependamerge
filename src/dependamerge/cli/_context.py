@@ -17,6 +17,9 @@ from pathlib import Path
 # caller rather than only the module that bound the name.
 import dependamerge.cli as _pkg
 
+from ..bot_policy import BotPolicy
+from ..bot_policy_files import PolicyFiles
+from ..merge_manager import MergeResult
 from ..models import ComparisonResult, PullRequestInfo
 from ..progress_tracker import MergeProgressTracker
 from ..repo_selection import RepoSelection
@@ -67,6 +70,15 @@ class _MergeContext:
     # What the target names: ``owner``, ``repository`` or ``pull_request``.
     # Recorded for the results document, which a CI step renders.
     scope: str = ""
+    # The GitHub Apps this run may act on, from --include-bots,
+    # --exclude-bots and the user's config.json; without any, only the
+    # built-in Apps.
+    bot_policy: BotPolicy = field(default_factory=BotPolicy)
+    # Drafts set aside when the run's scope was settled, recorded as
+    # skipped so the results document reports them.
+    draft_results: list[MergeResult] = field(default_factory=list)
+    # The repository and owner bot policy files the run has read.
+    policy_files: PolicyFiles = field(default_factory=PolicyFiles)
 
     # Derived / mutable state
     github_client: _pkg.GitHubClient | None = None

@@ -48,6 +48,18 @@ inputs:
       or newline separated)
     required: false
     default: ""
+  include_bots:
+    description: >-
+      Act on PRs from these GitHub Apps as well as Dependabot, Renovate and
+      pre-commit.ci (comma, space or newline separated; '*' for every App)
+    required: false
+    default: ""
+  exclude_bots:
+    description: >-
+      Never act on PRs from these GitHub Apps, built-in ones included
+      (comma, space or newline separated)
+    required: false
+    default: ""
   merge_method:
     description: "merge, squash or rebase (default merge)"
     required: false
@@ -229,6 +241,8 @@ runs:
         INPUT_DRY_RUN: ${{ inputs.dry_run }}
         INPUT_INCLUDE_REPOS: ${{ inputs.include_repos }}
         INPUT_EXCLUDE_REPOS: ${{ inputs.exclude_repos }}
+        INPUT_INCLUDE_BOTS: ${{ inputs.include_bots }}
+        INPUT_EXCLUDE_BOTS: ${{ inputs.exclude_bots }}
         INPUT_MERGE_METHOD: ${{ inputs.merge_method }}
         INPUT_FORCE: ${{ inputs.force }}
         INPUT_MAX_WAIT: ${{ inputs.max_wait }}
@@ -289,6 +303,8 @@ runs:
         OPT_DRY_RUN: ${{ steps.options.outputs.dry_run }}
         OPT_INCLUDE_REPOS: ${{ steps.options.outputs.include_repos }}
         OPT_EXCLUDE_REPOS: ${{ steps.options.outputs.exclude_repos }}
+        OPT_INCLUDE_BOTS: ${{ steps.options.outputs.include_bots }}
+        OPT_EXCLUDE_BOTS: ${{ steps.options.outputs.exclude_bots }}
         OPT_MERGE_METHOD: ${{ steps.options.outputs.merge_method }}
         OPT_FORCE: ${{ steps.options.outputs.force }}
         OPT_MAX_WAIT: ${{ steps.options.outputs.max_wait }}
@@ -353,6 +369,12 @@ runs:
         fi
         if [ -n "$OPT_EXCLUDE_REPOS" ]; then
           args+=(--exclude-repos "$OPT_EXCLUDE_REPOS")
+        fi
+        if [ -n "$OPT_INCLUDE_BOTS" ]; then
+          args+=(--include-bots "$OPT_INCLUDE_BOTS")
+        fi
+        if [ -n "$OPT_EXCLUDE_BOTS" ]; then
+          args+=(--exclude-bots "$OPT_EXCLUDE_BOTS")
         fi
         if [ "$OPT_FIX_OUT_OF_DATE" = "false" ]; then
           args+=(--no-fix)

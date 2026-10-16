@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Collection
 from typing import (
     Any,
     TypeVar,
@@ -45,6 +45,7 @@ from ._errors import (
     SecondaryRateLimitError,
     _is_retryable_status,
     _is_transient_graphql_error,
+    _only_allowed_not_found,
 )
 from ._json_body import decode_json_body, require_json_object
 from ._responses import (
@@ -260,13 +261,25 @@ class _TransportMixin(_GitHubAsyncBase):
         return await self._fetch_object("PATCH", f"{self.api_url}{path}", json=json)
 
     async def graphql(
-        self, query: str, variables: dict[str, Any] | None = None
+        self,
+        query: str,
+        variables: dict[str, Any] | None = None,
+        *,
+        allow_not_found: Collection[tuple[str, ...]] = (),
     ) -> dict[str, Any]:
         """
         Execute a GraphQL query with retry for transient GraphQL errors.
 
         Note: HTTP-level issues are handled by _request's retry. Here we add
         retry for 200 OK responses that include GraphQL-level transient errors.
+
+        Args:
+            query: The GraphQL document.
+            variables: Its variables.
+            allow_not_found: Field paths, such as ``("repositoryOwner",
+                "dotgithub")``, where a missing object is an answer.  When
+                every error is a ``NOT_FOUND`` at one of them, the data is
+                returned with ``null`` there; any other error still raises.
         """
         payload = {"query": query, "variables": variables or {}}
 
@@ -288,6 +301,12 @@ class _TransportMixin(_GitHubAsyncBase):
                     self.log.debug("GraphQL response was not an object; retrying")
                     raise _GraphQLRetry("Malformed GraphQL response")
                 if "errors" in data and data["errors"]:
+                    # Checked first: a login such as "timeout-org" in an
+                    # expected NOT_FOUND message must not read as transient.
+                    if _only_allowed_not_found(
+                        data["errors"], allow_not_found
+                    ) and isinstance(data.get("data"), dict):
+                        return data["data"]  # type: ignore[no-any-return]
                     # Retry on transient errors, otherwise raise
                     if _is_transient_graphql_error(data["errors"]):
                         self.log.debug(

@@ -118,10 +118,16 @@ query($org: String!, $reposCursor: String) {
 
 # Paginate open PRs for a specific repository when there are more than 50.
 # Provide the repository owner/name and the PR cursor returned by previous pages.
+# The first page also asks for the repository's bot policy file, on its
+# default branch, which rides along at no extra cost (``$withPolicy``);
+# see OWNER_PROFILE in :mod:`.repos` for the shape of ``policy``.
 REPO_OPEN_PRS_PAGE = """
-query($owner: String!, $name: String!, $prsCursor: String, $prsPageSize: Int!, $filesPageSize: Int!, $commentsPageSize: Int!, $contextsPageSize: Int!) {
+query($owner: String!, $name: String!, $prsCursor: String, $prsPageSize: Int!, $filesPageSize: Int!, $commentsPageSize: Int!, $contextsPageSize: Int!, $withPolicy: Boolean!) {
   repository(owner: $owner, name: $name) {
     nameWithOwner
+    policy: object(expression: "HEAD:.github/dependamerge/config.json") @include(if: $withPolicy) {
+      ... on Blob { text byteSize isTruncated isBinary }
+    }
     pullRequests(
       states: OPEN
       first: $prsPageSize

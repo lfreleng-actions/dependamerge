@@ -53,6 +53,13 @@ class ExitCode(IntEnum):
     VALIDATION_ERROR = 8
     """Input validation failed."""
 
+    OVERRIDE_REQUIRED = 9
+    """The operation needs an ``--override`` confirmation that was not given.
+
+    Printed alongside the exact value to supply, so a scripted caller can
+    tell "confirm and run again" apart from a refusal.
+    """
+
 
 # Error message templates
 ERROR_MESSAGES = {
@@ -73,6 +80,9 @@ ERROR_MESSAGES = {
         "❌ Merge or submission failed; check the summary for each reason"
     ),
     ExitCode.VALIDATION_ERROR: ("❌ Input validation failed; check parameter values"),
+    ExitCode.OVERRIDE_REQUIRED: (
+        "❌ This operation needs an --override confirmation; run again with it"
+    ),
     ExitCode.GENERAL_ERROR: "❌ Operation failed; check logs for details",
 }
 

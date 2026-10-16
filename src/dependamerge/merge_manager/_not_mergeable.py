@@ -328,12 +328,12 @@ class _NotMergeableMixin(_LiveBlockerMixin):
                 detailed_status = f"Blocked (state: {pr_info.mergeable_state})"
         else:
             # For non-blocked states, provide basic status
-            if pr_info.mergeable_state == "dirty":
+            if pr_info.is_draft or pr_info.mergeable_state == "draft":
+                detailed_status = "Draft PR"
+            elif pr_info.mergeable_state == "dirty":
                 detailed_status = "Merge conflicts"
             elif pr_info.mergeable_state == "behind":
                 detailed_status = "Rebase required (out of date)"
-            elif pr_info.mergeable_state == "draft":
-                detailed_status = "Draft PR"
             else:
                 detailed_status = f"Not mergeable (state: {pr_info.mergeable_state})"
 

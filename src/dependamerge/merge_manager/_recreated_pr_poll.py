@@ -6,13 +6,16 @@ Reading a recreated pull request's state and classifying it.
 
 Split from :mod:`._recreated_pr`, which orchestrates the wait; this
 module holds the per-poll reading, the terminal classification of a
-closed replacement, and the changed-files fetch.
+closed replacement, the stop at a replacement marked draft, and the
+changed-files fetch.
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from ..bot_identity import rest_author_login
+from ..merge_signals import DraftPullRequestError, PullRequestStopSignal
 from ..models import PullRequestInfo
 from ._base import _MergeManagerBase
 from ._types import RecreateOutcome, RecreateResult, _merged_from_payload
@@ -81,6 +84,7 @@ class _RecreatedPollMixin(_MergeManagerBase):
                 return self._closed_recreated_pr(
                     full_name, new_number, html_url, refreshed
                 )
+            self._stop_at_a_draft_replacement(full_name, new_number, refreshed)
 
             # ``mergeable_state == "clean"`` alone is enough; the second
             # test covers "unstable", where non-required checks are still
@@ -100,13 +104,14 @@ class _RecreatedPollMixin(_MergeManagerBase):
                         node_id=refreshed.get("node_id"),
                         title=refreshed.get("title", ""),
                         body=refreshed.get("body"),
-                        author=((refreshed.get("user") or {}).get("login", "")),
+                        author=rest_author_login(refreshed.get("user")),
                         head_sha=((refreshed.get("head") or {}).get("sha", "")),
                         base_branch=((refreshed.get("base") or {}).get("ref", "")),
                         head_branch=((refreshed.get("head") or {}).get("ref", "")),
                         state=refreshed.get("state", "open"),
                         mergeable=mergeable,
                         mergeable_state=mergeable_state,
+                        is_draft=refreshed.get("draft") is True,
                         behind_by=None,
                         files_changed=files_changed,
                         repository_full_name=full_name,
@@ -143,6 +148,8 @@ class _RecreatedPollMixin(_MergeManagerBase):
                     (check_attempt + 1) * self._merge_recheck_interval,
                 )
 
+        except PullRequestStopSignal:
+            raise
         except Exception as e:
             self.log.debug(
                 "Error polling recreated PR %s#%s: %s",
@@ -151,6 +158,27 @@ class _RecreatedPollMixin(_MergeManagerBase):
                 e,
             )
         return None
+
+    def _stop_at_a_draft_replacement(
+        self, full_name: str, new_number: int, refreshed: dict[str, Any]
+    ) -> None:
+        """Stop the wait at a replacement marked draft, naming it.
+
+        No check makes a draft mergeable: waiting on would end as auto-merge
+        pending, and a conflicted draft would be abandoned as blocked.  The
+        signal names the replacement, so the result reports it skipped.
+
+        Raises:
+            DraftPullRequestError: When ``refreshed`` says it is a draft.
+        """
+        if refreshed.get("draft") is not True:
+            return
+        repo_owner, repo_name = full_name.split("/", 1)
+        signal = DraftPullRequestError(f"{full_name}#{new_number}")
+        signal.pull_request = self._recreated_pr_stub(
+            repo_owner, repo_name, new_number, refreshed
+        )
+        raise signal
 
     def _closed_recreated_pr(
         self,
@@ -171,13 +199,14 @@ class _RecreatedPollMixin(_MergeManagerBase):
             node_id=refreshed.get("node_id"),
             title=refreshed.get("title", ""),
             body=refreshed.get("body"),
-            author=((refreshed.get("user") or {}).get("login", "")),
+            author=rest_author_login(refreshed.get("user")),
             head_sha=((refreshed.get("head") or {}).get("sha", "")),
             base_branch=((refreshed.get("base") or {}).get("ref", "")),
             head_branch=((refreshed.get("head") or {}).get("ref", "")),
             state="closed",
             mergeable=refreshed.get("mergeable"),
             mergeable_state=refreshed.get("mergeable_state"),
+            is_draft=refreshed.get("draft") is True,
             behind_by=None,
             files_changed=[],
             repository_full_name=full_name,

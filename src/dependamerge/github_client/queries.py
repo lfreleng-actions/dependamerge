@@ -29,6 +29,8 @@ from collections.abc import Callable
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
+from ..bot_identity import rest_author_login
+from ..bot_policy_files import PolicyFiles
 from ..models import (
     FileChange,
     OrganizationScanResult,
@@ -127,13 +129,14 @@ def _build_pull_request_info(
         node_id=pr.get("node_id"),  # REST API uses "node_id" key
         title=pr.get("title") or "",
         body=pr.get("body"),
-        author=((pr.get("user") or {}).get("login") or ""),
+        author=rest_author_login(pr.get("user")),
         head_sha=((pr.get("head") or {}).get("sha") or ""),
         base_branch=((pr.get("base") or {}).get("ref") or ""),
         head_branch=((pr.get("head") or {}).get("ref") or ""),
         state=pr.get("state") or "open",
         mergeable=pr.get("mergeable"),
         mergeable_state=pr.get("mergeable_state"),
+        is_draft=pr.get("draft") is True,
         behind_by=None,
         files_changed=files_changed,
         repository_full_name=f"{owner}/{repo}",
@@ -209,6 +212,23 @@ class _GitHubQueryMixin:
                         if msg:
                             messages.append(msg)
             return messages
+
+        return asyncio.run(_run())
+
+    def get_policy_files(self, owner: str, repo: str | None = None) -> PolicyFiles:
+        """Read ``owner``'s bot policy file and variable, and ``repo``'s.
+
+        One GraphQL request, the owner profile query, reads both files,
+        and one REST request each ``DEPENDAMERGE_BOTS`` variable, so a
+        run with a single source pull request can apply them all before
+        deciding whether that pull request is in scope.
+        """
+        from ..github_service import GitHubService
+
+        async def _run() -> PolicyFiles:
+            async with self._new_async() as api:
+                svc = GitHubService(client=api)
+                return await svc.fetch_policy_files(owner, repo)
 
         return asyncio.run(_run())
 

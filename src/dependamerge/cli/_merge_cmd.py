@@ -20,8 +20,19 @@ from ..merge_manager import (
     DEFAULT_MERGE_TIMEOUT,
 )
 from ._app import DEFAULT_MAX_WAIT, app
+from ._bot_scope import (
+    EXCLUDE_BOTS_OPTION,
+    INCLUDE_BOTS_OPTION,
+    _build_bot_policy,
+    _check_listed_bots,
+)
 from ._context import _MergeContext
 from ._github_host import apply_gerrit_host, apply_github_host
+from ._human_gate import (
+    INCLUDE_HUMAN_PRS_OPTION,
+    OVERRIDE_OPTION,
+    _require_override_pairing,
+)
 from ._merge_dispatch import (
     _dispatch_gerrit,
     _normalise_topic,
@@ -84,14 +95,7 @@ def merge(
             "declared as GitHub being treated as Gerrit."
         ),
     ),
-    override: str | None = typer.Option(
-        None,
-        "--override",
-        help=(
-            "SHA hash authorizing a single non-automation PR/change. "
-            "Prefer --include-human-prs; this remains supported"
-        ),
-    ),
+    override: str | None = OVERRIDE_OPTION,
     no_fix: bool = typer.Option(
         False,
         "--no-fix",
@@ -202,15 +206,9 @@ def merge(
         "--ignore-github2gerrit",
         help="Ignore GitHub2Gerrit comments and merge PRs in GitHub as normal",
     ),
-    include_human_prs: bool = typer.Option(
-        False,
-        "--include-human-prs",
-        help=(
-            "Authorize human-authored PRs. Required when the source PR is "
-            "human-authored, and includes human-authored PRs in the similar-PR "
-            "set (prompting for confirmation unless --no-confirm)"
-        ),
-    ),
+    include_human_prs: bool = INCLUDE_HUMAN_PRS_OPTION,
+    include_bots: list[str] | None = INCLUDE_BOTS_OPTION,
+    exclude_bots: list[str] | None = EXCLUDE_BOTS_OPTION,
     include_repos: list[str] | None = typer.Option(
         None,
         "--include-repos",
@@ -318,7 +316,8 @@ def merge(
 
     Merges similar PRs/changes from the same automation tool.
 
-    For user generated bulk PRs, use the --override flag with SHA hash.
+    For human-authored PRs, add --include-human-prs; the run then prints
+    the --override value that confirms them.
 
     GitHub2Gerrit handling:
     By default, PRs with GitHub2Gerrit mapping comments are detected and
@@ -354,6 +353,7 @@ def merge(
         verbose,
     )
     _validate_max_wait(max_wait)
+    _require_override_pairing(override, include_human_prs)
     topic = _normalise_topic(topic)
 
     pr_url = _resolve_target_url(pr_url)
@@ -391,6 +391,10 @@ def merge(
     if gerrit_target is not None:
         _dispatch_gerrit(gerrit_target, ctx, topic)
         return
+
+    # Bot policy is GitHub's: Gerrit changes have owners, not Apps.
+    ctx.bot_policy = _build_bot_policy(include_bots, exclude_bots)
+    _check_listed_bots(ctx.bot_policy, ctx.token, ctx.host)
 
     if target.org is not None:
         org = target.org

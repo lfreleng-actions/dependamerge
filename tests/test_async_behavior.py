@@ -196,13 +196,15 @@ class TestGitHubServiceAsync:
             with patch.object(service._api, "graphql") as mock_graphql:
                 # Mock empty organization response
                 mock_graphql.return_value = {
+                    # Answers the owner profile and the listing alike.
+                    "repositoryOwner": {"__typename": "Organization"},
                     "organization": {
                         "repositories": {
                             "totalCount": 0,
                             "pageInfo": {"hasNextPage": False, "endCursor": None},
                             "nodes": [],
                         }
-                    }
+                    },
                 }
 
                 result = await service.scan_organization("empty-org")
@@ -254,13 +256,15 @@ class TestGitHubServiceAsync:
             # Mock the GraphQL response for organization scan
             with patch.object(service._api, "graphql") as mock_graphql:
                 mock_graphql.return_value = {
+                    # Answers the owner profile and the listing alike.
+                    "repositoryOwner": {"__typename": "Organization"},
                     "organization": {
                         "repositories": {
                             "totalCount": 0,
                             "pageInfo": {"hasNextPage": False, "endCursor": None},
                             "nodes": [],
                         }
-                    }
+                    },
                 }
 
                 similar_prs = await service.find_similar_prs(
@@ -298,13 +302,15 @@ class TestGitHubServiceAsync:
             with patch.object(service._api, "graphql") as mock_graphql:
                 # Mock organization repositories response
                 mock_graphql.return_value = {
+                    # Answers the owner profile and the listing alike.
+                    "repositoryOwner": {"__typename": "Organization"},
                     "organization": {
                         "repositories": {
                             "totalCount": 3,
                             "pageInfo": {"hasNextPage": False, "endCursor": None},
                             "nodes": repo_nodes,
                         }
-                    }
+                    },
                 }
 
                 # Mock the repository processing function

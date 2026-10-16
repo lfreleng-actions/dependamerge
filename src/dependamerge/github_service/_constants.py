@@ -10,12 +10,13 @@ DEFAULT_FILES_PAGE_SIZE = 50  # Files per pull request
 DEFAULT_COMMENTS_PAGE_SIZE = 10  # Comments per pull request
 DEFAULT_CONTEXTS_PAGE_SIZE = 20  # Status contexts per pull request
 
-# Automation tools recognized for PR categorization
+# Automation tools recognized for PR categorization.  The first three are
+# the built-in bots a merge acts on by default (``bot_policy.BUILTIN_BOTS``);
+# any other App counts as automation in reports, but a merge acts on its
+# PRs only when a bot policy includes it.
 AUTOMATION_TOOLS = [
     "dependabot",
     "renovate",
     "pre-commit",
-    "github-actions",
-    "copilot",
     "[bot]",
 ]

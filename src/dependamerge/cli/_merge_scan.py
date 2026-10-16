@@ -26,11 +26,17 @@ from ..models import ComparisonResult, PullRequestInfo
 from ..progress_tracker import MergeProgressTracker
 from ._app import MAX_RETRIES, console
 from ._context import _MergeContext
+from ._drafts import _set_aside_drafts
 from ._merge_report import (
     _conclude_run,
     _confirmed_run_results,
     _print_failed_pr_details,
     _print_final_merge_summary,
+)
+from ._policy_files import (
+    _apply_policy_files,
+    _capture_policy_files,
+    _keep_admitted_candidates,
 )
 from ._sha import _generate_continue_sha
 from ._similarity import _format_condensed_similarity
@@ -62,7 +68,10 @@ def _scan_and_find_similar(ctx: _MergeContext) -> None:
             host=ctx.host,
             progress_tracker=ctx.progress_tracker,
             debug_matching=ctx.debug_matching,
+            read_policies=True,
         )
+        # The variables read with the source's are not read again.
+        svc.adopt_policy_variables(ctx.policy_files)
         try:
             assert ctx.github_client is not None
             assert ctx.source_pr is not None
@@ -70,16 +79,35 @@ def _scan_and_find_similar(ctx: _MergeContext) -> None:
             only_automation = ctx.github_client.is_automation_author(
                 ctx.source_pr.author
             )
-            return await svc.find_similar_prs(
+            found = await svc.find_similar_prs(
                 ctx.owner,
                 ctx.source_pr,
                 ctx.comparator,
                 only_automation=only_automation,
+                bot_policy=ctx.bot_policy,
             )
+            # Each candidate repository was judged by its own file, read
+            # with its first page of PRs, and by its variable where an
+            # App's PR there could be a candidate; the merge rechecks.
+            _capture_policy_files(ctx, svc)
+            return found
         finally:
             await svc.close()
 
+    refused_before = ctx.policy_files.variables_refused
     ctx.all_similar_prs = asyncio.run(_find_similar())
+    _apply_policy_files(ctx, refused_before=refused_before)
+    # Checking the files can still invalidate a candidate's repository
+    # (an exclusion naming no App), so filter against the checked policy.
+    ctx.all_similar_prs = _keep_admitted_candidates(ctx.bot_policy, ctx.all_similar_prs)
+
+    # Drafts cannot merge; set them aside before anything is evaluated.
+    kept = {
+        id(pr) for pr in _set_aside_drafts(ctx, [pr for pr, _ in ctx.all_similar_prs])
+    }
+    ctx.all_similar_prs = [
+        entry for entry in ctx.all_similar_prs if id(entry[0]) in kept
+    ]
 
     if ctx.progress_tracker:
         ctx.progress_tracker.stop()
@@ -183,6 +211,7 @@ def _run_parallel_merge(
             # merges keep the uncapped per-PR ``merge_timeout`` behaviour.
             max_wait=ctx.max_wait if stripe else None,
             preflight_repository=ctx.preflight_repository,
+            bot_policy=ctx.bot_policy,
         ) as merge_manager:
             if not preview:
                 prefix = "\n" if leading_blank else ""

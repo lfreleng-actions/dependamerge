@@ -11,6 +11,7 @@ import asyncio
 from enum import Enum
 
 from ..github_async import PermissionError as GitHubPermissionError
+from ..merge_signals import PullRequestStopSignal
 from ..models import PullRequestInfo
 from ._stale_head import _says_head_is_stale, _StaleHeadRecoveryMixin
 from ._types import _merge_already_in_progress
@@ -91,6 +92,10 @@ class _MergeRetryMixin(_StaleHeadRecoveryMixin):
                 # batch.  Retrying or breaking silently here would
                 # downgrade the failure into a generic
                 # "merge failed: clean" reason that misleads users.
+                raise
+            except PullRequestStopSignal:
+                # A draft, or draft state unknown: the single-PR handler
+                # decides the outcome; retrying would dispatch again.
                 raise
             except Exception as exc:
                 decision = await self._handle_merge_exception(

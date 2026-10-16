@@ -515,9 +515,11 @@ class TestCliPublishesResults:
 
     @patch("dependamerge.cli.GitHubClient")
     @patch("dependamerge.cli.asyncio.run")
-    def test_declined_human_prs_still_publish_owner_wide(
+    def test_unconfirmed_human_prs_still_publish_owner_wide(
         self, mock_asyncio_run, mock_client_class, actions_env
     ):
+        # A run the human gate stops is still a finished run: it leaves
+        # a record, then exits asking for the override.
         human = _make_pr(1).model_copy(update={"author": "alice"})
         mock_client_class.return_value = Mock(token="test_token")
         mock_asyncio_run.side_effect = _closing_run([([human], [])])
@@ -525,17 +527,16 @@ class TestCliPublishesResults:
         result = self.runner.invoke(
             app,
             ["merge", "acme", "--token", "t", "--include-human-prs", "--no-progress"],
-            input="\n",
         )
 
-        assert result.exit_code == 0, result.stdout
+        assert result.exit_code == ExitCode.OVERRIDE_REQUIRED, result.stdout
         document = self._published(actions_env)
         assert document["results"] == []
         assert document["preview"] is True
 
     @patch("dependamerge.cli.GitHubClient")
     @patch("dependamerge.cli.asyncio.run")
-    def test_declined_human_prs_still_publish_for_a_repository(
+    def test_unconfirmed_human_prs_still_publish_for_a_repository(
         self, mock_asyncio_run, mock_client_class, actions_env
     ):
         human = _make_pr(1).model_copy(update={"author": "alice"})
@@ -554,10 +555,9 @@ class TestCliPublishesResults:
                 "--include-human-prs",
                 "--no-progress",
             ],
-            input="\n",
         )
 
-        assert result.exit_code == 0, result.stdout
+        assert result.exit_code == ExitCode.OVERRIDE_REQUIRED, result.stdout
         document = self._published(actions_env)
         assert document["scope"] == "repository"
         assert document["results"] == []

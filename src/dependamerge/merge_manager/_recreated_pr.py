@@ -10,7 +10,9 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING, Any
 
+from ..bot_identity import rest_author_login
 from ..github_async import PermissionError as GitHubPermissionError
+from ..merge_signals import PullRequestStopSignal
 from ..models import PullRequestInfo
 from ..url_parser import pull_request_url_for
 from ._base import _MergeManagerBase
@@ -150,13 +152,14 @@ class _RecreatedPullRequestMixin(_MergeManagerBase):
             node_id=pr_data.get("node_id"),
             title=pr_data.get("title", ""),
             body=pr_data.get("body"),
-            author=((pr_data.get("user") or {}).get("login", "")),
+            author=rest_author_login(pr_data.get("user")),
             head_sha=((pr_data.get("head") or {}).get("sha", "")),
             base_branch=((pr_data.get("base") or {}).get("ref", "")),
             head_branch=((pr_data.get("head") or {}).get("ref", "")),
             state="open",
             mergeable=None,
             mergeable_state=None,
+            is_draft=pr_data.get("draft") is True,
             behind_by=None,
             files_changed=[],
             repository_full_name=full_name,
@@ -240,6 +243,11 @@ class _RecreatedPullRequestMixin(_MergeManagerBase):
             )
             approved = True
         except GitHubPermissionError:
+            raise
+        except PullRequestStopSignal as signal:
+            # A draft, or draft state unknown: never arm auto-merge.  The
+            # outcome concerns the replacement, which the signal names.
+            signal.pull_request = replacement
             raise
         except Exception as exc:
             self.log.warning(

@@ -33,6 +33,8 @@ from __future__ import annotations
 import logging
 import time
 
+from ..bot_identity import is_automation_author
+from ..bot_policy import BotPolicy
 from ..github_async import PermissionError as GitHubPermissionError
 from ..github_async import (
     RateLimitError,
@@ -40,6 +42,11 @@ from ..github_async import (
     _is_primary_rate_limited,
     _is_secondary_rate_limited,
     github_error_detail,
+)
+from ..merge_signals import (
+    DraftPullRequestError,
+    DraftStateUnknownError,
+    PullRequestStopSignal,
 )
 from ..models import PullRequestInfo
 from ._base import _MergeManagerBase
@@ -63,6 +70,11 @@ class _SinglePullRequestMixin(
     # Established by ``_LifecycleMixin.__init__``; only read here.
     _permission_failure_reasons: dict[str, str]
     _preflight_repository: str | None
+    # Which GitHub Apps this run may act on.  Callers decide scope before
+    # handing PRs over; checking again on entry means a PR reaching the
+    # manager by another route cannot widen it.  Without a policy, only
+    # the built-in Apps qualify.
+    bot_policy: BotPolicy
 
     async def _merge_single_pr_impl(self, pr_info: PullRequestInfo) -> MergeResult:
         """
@@ -85,6 +97,30 @@ class _SinglePullRequestMixin(
         if pr_info.repository_full_name in self._permission_failed_repos:
             return self._permission_fast_fail(pr_info, start_time)
 
+        # Scope is the caller's decision, but a PR can reach the manager
+        # by more than one route; one whose App author the run's bot
+        # policy does not admit is never acted on, whatever brought it,
+        # and nor is any PR in a repository whose own policy is invalid.
+        problem = self.bot_policy.repository_error(pr_info.repository_full_name)
+        if problem is not None:
+            return self._entry_skip(
+                pr_info,
+                f"the repository's bot policy is invalid ({problem})",
+                start_time,
+            )
+        if is_automation_author(pr_info.author):
+            scope = self.bot_policy.decide(pr_info.author, pr_info.repository_full_name)
+            if not scope.in_scope:
+                return self._entry_skip(
+                    pr_info,
+                    f"{pr_info.author} is not in this run's scope ({scope.reason})",
+                    start_time,
+                )
+        # A draft cannot merge until its author marks it ready, so every
+        # attempt would only produce a refusal.
+        if pr_info.is_draft:
+            return self._entry_skip(pr_info, "draft PR", start_time)
+
         # Early determination of merge method based on repository settings
         merge_method = await self._get_merge_method_for_repo(repo_owner, repo_name)
 
@@ -102,6 +138,22 @@ class _SinglePullRequestMixin(
 
         try:
             outcome = await self._run_merge_sequence(flow)
+        except DraftPullRequestError as signal:
+            # Marked not ready since the scan: neither approved nor merged.
+            stopped = self._stopped_pr(result, signal)
+            result.status = MergeStatus.SKIPPED
+            result.error = "draft PR"
+            self._pr_status(
+                f"⏭️ Skipped: {stopped.html_url} [now a draft PR]", level="warning"
+            )
+        except DraftStateUnknownError as signal:
+            # Not approved without knowing it is no draft; a re-run retries.
+            stopped = self._stopped_pr(result, signal)
+            result.status = MergeStatus.FAILED
+            result.error = "could not confirm the PR is not a draft; not approved"
+            self._pr_status(
+                f"❌ Failed: {stopped.html_url} [{result.error}]", level="error"
+            )
         except GitHubPermissionError as e:
             self._report_permission_error(flow, e)
         except Exception as e:
@@ -155,6 +207,34 @@ class _SinglePullRequestMixin(
             return early
         return flow.result
 
+    @staticmethod
+    def _stopped_pr(
+        result: MergeResult, signal: PullRequestStopSignal
+    ) -> PullRequestInfo:
+        """The PR a stop signal ended, recorded as the one ``result`` is about.
+
+        The PR the merge began with, unless the signal names another:
+        dependabot's replacement, raised while arming it.  The original
+        is closed by then, so a failure confirmed against it would read
+        as closed, with nothing to follow up.
+        """
+        if signal.pull_request is not None:
+            result.pr_info = signal.pull_request
+        return result.pr_info
+
+    def _entry_skip(
+        self, pr_info: PullRequestInfo, reason: str, start_time: float
+    ) -> MergeResult:
+        """Skip a PR the run must not act on, before any API call."""
+        result = MergeResult(pr_info=pr_info, status=MergeStatus.SKIPPED)
+        result.error = reason
+        self._pr_status(
+            f"⏭️ Skipped: {pr_info.html_url} [{reason}]",
+            level="warning",
+        )
+        result.duration = time.time() - start_time
+        return result
+
     def _permission_fast_fail(
         self, pr_info: PullRequestInfo, start_time: float
     ) -> MergeResult:
@@ -206,7 +286,9 @@ class _SinglePullRequestMixin(
         the verbose guidance block only the first time.  Any other
         refusal fails this PR alone; its siblings are attempted normally.
         """
-        pr_info = flow.pr_info
+        # The result's PR: dependabot's replacement, when acting on it
+        # raised.  Both live in the same repository.
+        pr_info = flow.result.pr_info
         repository = pr_info.repository_full_name
         result = flow.result
         result.status = MergeStatus.FAILED
@@ -273,7 +355,7 @@ class _SinglePullRequestMixin(
         uniform (e.g. token without the required scope) that a single
         clean line already conveys.
         """
-        pr_info = flow.pr_info
+        pr_info = flow.result.pr_info
         flow.result.status = MergeStatus.FAILED
         flow.result.error = str(e)
 

@@ -18,7 +18,9 @@ from unittest.mock import AsyncMock, patch
 import httpx
 import pytest
 
-from dependamerge.merge_manager import AsyncMergeManager
+from dependamerge.merge_manager import AsyncMergeManager, MergeResult, MergeStatus
+from dependamerge.merge_manager._single_pr_context import _MergeFlow
+from dependamerge.merge_signals import DraftPullRequestError
 from dependamerge.models import PullRequestInfo
 from tests.conftest import make_merge_manager
 
@@ -377,6 +379,34 @@ class TestTransient405Retry:
         assert client.merge_pull_request.call_count == 2
 
     @pytest.mark.asyncio
+    async def test_a_blocked_405_refresh_stops_at_a_new_draft(self):
+        """The post-approval refresh skips a PR marked draft meanwhile.
+
+        It read only the merge state, so the PR stopped as a failed merge
+        rather than a skip (found alongside the Copilot review on #567).
+        """
+        pr = _make_pr_info(mergeable_state="blocked", mergeable=True)
+
+        mgr, client = make_merge_manager(
+            merge_method="merge",
+            max_retries=2,
+            concurrency=1,
+        )
+        mgr._pr_merge_methods["org/repo"] = "merge"
+        mgr._recently_approved.add("org/repo#39")
+        client.merge_pull_request = AsyncMock(side_effect=[_make_405_exception(), True])
+        client.get = AsyncMock(
+            return_value={"state": "open", "draft": True, "mergeable_state": "blocked"}
+        )
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            with pytest.raises(DraftPullRequestError):
+                await mgr._merge_pr_with_retry(pr, "org", "repo")
+
+        assert client.merge_pull_request.call_count == 1
+        assert pr.is_draft is True
+
+    @pytest.mark.asyncio
     async def test_405_base_branch_modified_retries_and_succeeds(self):
         """A "Base branch was modified" 405 is a transient race: retry.
 
@@ -416,6 +446,42 @@ class TestTransient405Retry:
 
         assert result is True
         assert client.merge_pull_request.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_405_base_branch_modified_then_a_draft_is_skipped(self):
+        """A PR marked draft before the retry is skipped, not merged again.
+
+        The read before a retry heeded only closure, so a PR its author
+        marked draft was sent a second merge, and GitHub's refusal then
+        failed it rather than skipping it (Copilot review on #567).
+        """
+        pr = _make_pr_info(mergeable_state="behind", mergeable=True)
+
+        mgr, client = make_merge_manager(
+            merge_method="merge",
+            max_retries=2,
+            concurrency=1,
+            fix_out_of_date=False,
+        )
+        mgr._get_merge_method_for_repo = AsyncMock(return_value="merge")  # type: ignore[method-assign]
+        client.merge_pull_request = AsyncMock(
+            side_effect=[_make_405_base_modified_exception(), True]
+        )
+        client.get = AsyncMock(
+            return_value={"state": "open", "draft": True, "mergeable_state": "blocked"}
+        )
+
+        async def sequence(flow: _MergeFlow) -> MergeResult:
+            await mgr._merge_pr_with_retry(flow.pr_info, "org", "repo")
+            return flow.result
+
+        mgr._run_merge_sequence = sequence  # type: ignore[method-assign]
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            result = await mgr._merge_single_pr(pr)
+
+        assert result.status is MergeStatus.SKIPPED
+        assert client.merge_pull_request.call_count == 1
+        assert pr.is_draft is True
 
     @pytest.mark.asyncio
     async def test_405_base_branch_modified_exhausts_retries(self):

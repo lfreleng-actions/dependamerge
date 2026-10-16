@@ -53,6 +53,14 @@ on:
         description: 'Owner-wide: act on every repository except these'
         type: string
         default: ''
+      include_bots:
+        description: 'Also act on PRs from these GitHub Apps'
+        type: string
+        default: ''
+      exclude_bots:
+        description: 'Never act on PRs from these GitHub Apps'
+        type: string
+        default: ''
       dry_run:
         # Boolean for callers' convenience, so it cannot say "unset":
         # true forces a dry run, false leaves config to decide.
@@ -226,6 +234,8 @@ jobs:
           target: ${{ inputs.target }}
           include_repos: ${{ inputs.include_repos }}
           exclude_repos: ${{ inputs.exclude_repos }}
+          include_bots: ${{ inputs.include_bots }}
+          exclude_bots: ${{ inputs.exclude_bots }}
           dry_run: ${{ inputs.dry_run && 'true' || '' }}
           merge_method: ${{ inputs.merge_method }}
           force: ${{ inputs.force }}

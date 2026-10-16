@@ -6,16 +6,10 @@
 
 from __future__ import annotations
 
-import json
 from collections.abc import AsyncIterator
 from typing import Any
 
-from ..github_async import GraphQLError
-from ..github_graphql import (
-    ORG_REPOS_ONLY,
-    REPO_OPEN_PRS_PAGE,
-    USER_REPOS_ONLY,
-)
+from ..github_graphql import REPO_OPEN_PRS_PAGE
 from ._base import _GitHubServiceBase
 from ._constants import (
     DEFAULT_COMMENTS_PAGE_SIZE,
@@ -68,80 +62,21 @@ class _RepositoriesMixin(_GitHubServiceBase):
     async def _resolve_owner_root(self, owner: str) -> tuple[str, str]:
         """Resolve whether ``owner`` is an organization or a user account.
 
-        Probes the ``organization(login:)`` repositories query first; if
-        that root resolves to null (the login is not an org), falls back
-        to the ``user(login:)`` query.  The verdict is cached so repeated
-        pagination pages do not re-probe.
+        One inexpensive profile query answers, and brings the owner's
+        bot policy file with it (see :meth:`_read_owner_profile`), so
+        the first page of repositories is fetched only once, to list
+        them.  An owner that does not resolve falls back to the user
+        root.  The verdict is cached so repeated pagination pages do
+        not re-probe.
 
         Returns:
             A ``(root_key, query)`` tuple where ``root_key`` is the
             top-level GraphQL field (``"organization"`` or ``"user"``)
             and ``query`` is the matching query document.
         """
-        cached = self._owner_root_cache.get(owner)
-        if cached is not None:
-            return cached
-
-        variables = {"org": owner, "reposCursor": None}
-        # GitHub answers ``organization(login:)`` for a *user* login with
-        # ``data.organization = null`` AND a NOT_FOUND error in the
-        # ``errors`` array ("Could not resolve to an Organization ...").
-        # ``GitHubAsync.graphql`` raises ``GraphQLError`` on any non-transient
-        # ``errors`` payload, so the null-organization case never reaches the
-        # ``data`` check below — it surfaces as an exception instead.  Treat a
-        # NOT_FOUND-on-organization error as "not an org" and fall back to the
-        # user root; re-raise anything else (e.g. genuine transport or schema
-        # errors).
-        try:
-            data = await self._api.graphql(ORG_REPOS_ONLY, variables)
-            is_org = (data or {}).get("organization") is not None
-        except GraphQLError as exc:
-            if not self._is_not_an_organization_error(exc):
-                raise
-            is_org = False
-
-        if is_org:
-            resolved = ("organization", ORG_REPOS_ONLY)
-        else:
-            resolved = ("user", USER_REPOS_ONLY)
-        self._owner_root_cache[owner] = resolved
-        return resolved
-
-    @staticmethod
-    def _is_not_an_organization_error(exc: GraphQLError) -> bool:
-        """Return True when a GraphQL error means "login is not an org".
-
-        ``GitHubAsync.graphql`` raises ``GraphQLError(json.dumps(errors))``,
-        so the exception text is the structured GraphQL ``errors`` array.
-        Parse it and match only a ``NOT_FOUND`` error reported against the
-        top-level ``organization`` field (``path == ["organization"]``),
-        so an unrelated ``NOT_FOUND`` on a nested field that merely mentions
-        "organization" cannot trigger the user-account fallback.
-
-        If the payload is not the expected JSON shape (e.g. the
-        retries-exhausted sentinel), fall back to the conservative
-        substring heuristic so a genuinely-missing org still falls back
-        rather than aborting.
-        """
-        try:
-            errors = json.loads(str(exc))
-        except (ValueError, TypeError):
-            errors = None
-
-        if isinstance(errors, list):
-            for error in errors:
-                if not isinstance(error, dict):
-                    continue
-                if str(error.get("type", "")).upper() != "NOT_FOUND":
-                    continue
-                path = error.get("path")
-                if path == ["organization"]:
-                    return True
-            return False
-
-        # Payload was not the structured errors array; degrade gracefully.
-        msg = str(exc).lower()
-        return "not_found" in msg and "organization" in msg
+        if owner not in self._owner_root_cache:
+            await self._read_owner_profile(owner)
+        return self._owner_root_cache[owner]
 
     async def _iter_owner_repositories(
         self, owner: str, *, skip_forks: bool = True
@@ -194,6 +129,35 @@ class _RepositoriesMixin(_GitHubServiceBase):
                 break
             cursor = page_info.get("endCursor")
 
+    def _open_prs_page_variables(
+        self, owner: str, name: str, cursor: str | None, *, with_policy: bool
+    ) -> dict[str, Any]:
+        """Variables for one ``REPO_OPEN_PRS_PAGE`` request.
+
+        Page sizes halve while rate limited.  ``with_policy`` also asks
+        for the repository's bot policy file, which only the first page
+        needs.
+        """
+        prs_size = DEFAULT_PRS_PAGE_SIZE
+        files_size = DEFAULT_FILES_PAGE_SIZE
+        comments_size = DEFAULT_COMMENTS_PAGE_SIZE
+        contexts_size = DEFAULT_CONTEXTS_PAGE_SIZE
+        if getattr(self, "_rate_limited", False):
+            prs_size = max(10, prs_size // 2)
+            files_size = max(20, files_size // 2)
+            comments_size = max(5, comments_size // 2)
+            contexts_size = max(10, contexts_size // 2)
+        return {
+            "owner": owner,
+            "name": name,
+            "prsCursor": cursor,
+            "prsPageSize": prs_size,
+            "filesPageSize": files_size,
+            "commentsPageSize": comments_size,
+            "contextsPageSize": contexts_size,
+            "withPolicy": with_policy,
+        }
+
     async def _iter_repo_open_prs_pages(
         self, owner: str, name: str, cursor: str | None
     ) -> AsyncIterator[dict[str, Any]]:
@@ -202,24 +166,9 @@ class _RepositoriesMixin(_GitHubServiceBase):
         """
         prs_cursor = cursor
         while prs_cursor:
-            prs_size = DEFAULT_PRS_PAGE_SIZE
-            files_size = DEFAULT_FILES_PAGE_SIZE
-            comments_size = DEFAULT_COMMENTS_PAGE_SIZE
-            contexts_size = DEFAULT_CONTEXTS_PAGE_SIZE
-            if getattr(self, "_rate_limited", False):
-                prs_size = max(10, prs_size // 2)
-                files_size = max(20, files_size // 2)
-                comments_size = max(5, comments_size // 2)
-                contexts_size = max(10, contexts_size // 2)
-            variables = {
-                "owner": owner,
-                "name": name,
-                "prsCursor": prs_cursor,
-                "prsPageSize": prs_size,
-                "filesPageSize": files_size,
-                "commentsPageSize": comments_size,
-                "contextsPageSize": contexts_size,
-            }
+            variables = self._open_prs_page_variables(
+                owner, name, prs_cursor, with_policy=False
+            )
             async with self._page_semaphore:
                 data = await self._api.graphql(REPO_OPEN_PRS_PAGE, variables)
             repo = (data or {}).get("repository") or {}
@@ -239,28 +188,17 @@ class _RepositoriesMixin(_GitHubServiceBase):
         """
         Fetch the first page of open PRs for a repository using GraphQL.
         Returns a tuple of (nodes, pageInfo).
+
+        The repository's bot policy file comes with it when the service
+        reads policy, and is kept for ``policy_files``.
         """
-        prs_size = DEFAULT_PRS_PAGE_SIZE
-        files_size = DEFAULT_FILES_PAGE_SIZE
-        comments_size = DEFAULT_COMMENTS_PAGE_SIZE
-        contexts_size = DEFAULT_CONTEXTS_PAGE_SIZE
-        if getattr(self, "_rate_limited", False):
-            prs_size = max(10, prs_size // 2)
-            files_size = max(20, files_size // 2)
-            comments_size = max(5, comments_size // 2)
-            contexts_size = max(10, contexts_size // 2)
-        variables = {
-            "owner": owner,
-            "name": name,
-            "prsCursor": None,
-            "prsPageSize": prs_size,
-            "filesPageSize": files_size,
-            "commentsPageSize": comments_size,
-            "contextsPageSize": contexts_size,
-        }
+        variables = self._open_prs_page_variables(
+            owner, name, None, with_policy=self._read_policies
+        )
         async with self._page_semaphore:
             data = await self._api.graphql(REPO_OPEN_PRS_PAGE, variables)
         repo = (data or {}).get("repository") or {}
+        self._record_repository_policy(f"{owner}/{name}", repo)
         prs = repo.get("pullRequests") or {}
         nodes: list[dict[str, Any]] = prs.get("nodes", []) or []
         page_info: dict[str, Any] = prs.get("pageInfo") or {}

@@ -12,7 +12,7 @@ away.
 import asyncio
 import os
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import typer
 
@@ -21,10 +21,30 @@ import typer
 # caller rather than only the module that bound the name.
 import dependamerge.cli as _pkg
 
+from ..bot_policy import BotPolicy
+from ..bot_policy_files import PolicyFiles
 from ..close_manager import CloseResult
+from ..error_codes import (
+    ExitCode,
+    exit_for_configuration_error,
+    exit_for_pr_state_error,
+    exit_with_error,
+)
 from ..models import ComparisonResult, PullRequestInfo
 from ..progress_tracker import MergeProgressTracker
 from ._app import console
+from ._bot_scope import _out_of_scope_hint
+from ._human_gate import (
+    _confirm_human_override,
+    _given_override,
+    _refuse_human_source,
+)
+from ._policy_files import (
+    _apply_policy_files,
+    _capture_policy_files,
+    _keep_admitted_candidates,
+    _load_source_policy_files,
+)
 from ._sha import _generate_continue_sha, _generate_override_sha
 from ._similarity import _format_condensed_similarity
 
@@ -45,6 +65,11 @@ class _CloseContext:
     pr_number: int
     source_pr: PullRequestInfo
     progress_tracker: MergeProgressTracker | None
+    # The GitHub Apps this run may act on; without any flags or user
+    # config, only the built-in Apps.
+    bot_policy: BotPolicy = field(default_factory=BotPolicy)
+    # The repository and owner bot policy files the run has read.
+    policy_files: PolicyFiles = field(default_factory=PolicyFiles)
 
 
 def _run_close_parallel(
@@ -100,47 +125,89 @@ def _print_close_debug_matching(
 def _validate_close_authorization(
     ctx: _CloseContext,
     override: str | None,
-) -> bool:
-    """Gate non-automation source PRs behind the override SHA.
+    *,
+    include_human_prs: bool,
+    dry_run: bool,
+) -> None:
+    """Gate the source PR on who wrote it, as ``merge`` does.
 
-    Returns True when the close may proceed; False when the caller
-    should stop (the reason has already been printed).
+    An App the bot policy admits passes.  A person's PR needs
+    ``--include-human-prs`` and the ``--override`` that confirms it.
+    Every refusal exits non-zero; returning without closing anything
+    used to exit 0, which a script could not tell from success.
+
+    Raises:
+        SystemExit: ``VALIDATION_ERROR`` for an App outside the policy, a
+            human source without the flag, or a wrong override;
+            ``OVERRIDE_REQUIRED`` when only the override is missing.
     """
-    if ctx.github_client.is_automation_author(ctx.source_pr.author):
-        return True
+    author = ctx.source_pr.author
+    if ctx.source_pr.is_draft is True:
+        exit_for_pr_state_error(
+            ctx.pr_number,
+            "a draft",
+            details=(
+                "Drafts are set aside, as merge sets them aside; mark it ready "
+                "for review first. Nothing was scanned or closed"
+            ),
+        )
+    # The owner's and repository's files decide which Apps are in scope.
+    _load_source_policy_files(ctx)
+    if ctx.github_client.is_automation_author(author):
+        _require_source_in_scope(ctx)
+        return
+
+    if not include_human_prs:
+        _refuse_human_source(author)
 
     commit_messages = ctx.github_client.get_pull_request_commits(
         ctx.owner, ctx.repo_name, ctx.pr_number
     )
     first_commit_line = commit_messages[0].split("\n")[0] if commit_messages else ""
+    _confirm_human_override(
+        _given_override(override),
+        _generate_override_sha(ctx.source_pr, first_commit_line),
+        dry_run=dry_run,
+        subject=(
+            f"closing {ctx.source_pr.html_url} by {author} and the PRs similar to it"
+        ),
+        derivation="the PR's author and first commit message",
+    )
 
-    # Generate expected SHA
-    expected_sha = _generate_override_sha(ctx.source_pr, first_commit_line)
 
-    if not override:
-        console.print("Source PR is not from a recognized automation tool.")
-        console.print(
-            f"To close this and similar PRs, run again with: --override {expected_sha}"
-        )
-        console.print(
-            f"This SHA is based on the author '{ctx.source_pr.author}' and commit message '{first_commit_line[:50]}...'",
-            style="dim",
-        )
-        return False
+def _require_source_in_scope(ctx: _CloseContext) -> None:
+    """Stop when the run's policy puts the source PR out of scope.
 
-    if override != expected_sha:
-        console.print(
-            f"Error: Invalid override SHA. Expected: {expected_sha}",
-            style="bold red",
-        )
-        console.print(
-            "This prevents accidental bulk operations on non-automation PRs.",
-            style="dim",
-        )
-        return False
+    Judged when the request is authorised, and again once the search has
+    applied every policy it read: that can still invalidate the source's
+    repository or exclude its App, and close has no later guard, while
+    the close list always starts with the source.
 
-    console.print("Override SHA validated. Proceeding with non-automation PR close.")
-    return True
+    Raises:
+        SystemExit: ``CONFIGURATION_ERROR`` when the source repository's
+            policy is invalid; ``VALIDATION_ERROR`` when the source's
+            App is out of scope.
+    """
+    source = ctx.source_pr
+    repository = source.repository_full_name
+    problem = ctx.bot_policy.repository_error(repository)
+    if problem is not None:
+        exit_for_configuration_error(
+            message=f"❌ Invalid bot policy in {repository}",
+            details=f"{problem}. Nothing in the repository is in scope.",
+        )
+    if not ctx.github_client.is_automation_author(source.author):
+        return
+    decision = ctx.bot_policy.decide(source.author, repository)
+    if not decision.in_scope:
+        exit_with_error(
+            ExitCode.VALIDATION_ERROR,
+            message=(
+                f"❌ Source PR author {source.author} is not in this run's "
+                f"scope ({decision.reason})"
+            ),
+            details=_out_of_scope_hint(source.author),
+        )
 
 
 def _find_similar_prs_for_close(
@@ -166,21 +233,34 @@ def _find_similar_prs_for_close(
             host=ctx.host,
             progress_tracker=ctx.progress_tracker,
             debug_matching=debug_matching,
+            read_policies=True,
         )
+        # The variables read with the source's are not read again.
+        svc.adopt_policy_variables(ctx.policy_files)
         try:
             only_automation = ctx.github_client.is_automation_author(
                 ctx.source_pr.author
             )
-            return await svc.find_similar_prs(
+            found = await svc.find_similar_prs(
                 ctx.owner,
                 ctx.source_pr,
                 comparator,
                 only_automation=only_automation,
+                bot_policy=ctx.bot_policy,
             )
+            _capture_policy_files(ctx, svc)
+            return found
         finally:
             await svc.close()
 
-    return asyncio.run(_find_similar())
+    refused_before = ctx.policy_files.variables_refused
+    found: list[tuple[PullRequestInfo, ComparisonResult]] = asyncio.run(_find_similar())
+    # Apply and check every candidate repository's policy, as merge does:
+    # close has no later recheck, so an invalid repository's PRs must not
+    # survive to it, nor the source, which every close list starts with.
+    _apply_policy_files(ctx, refused_before=refused_before)
+    _require_source_in_scope(ctx)
+    return _keep_admitted_candidates(ctx.bot_policy, found)
 
 
 def _print_close_analysis_summary(

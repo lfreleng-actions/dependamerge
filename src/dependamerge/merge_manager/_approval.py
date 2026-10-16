@@ -9,20 +9,32 @@ permitted; the requirement is often only discovered from the error
 returned by a rejected merge, so approval and retry are intertwined.
 """
 
+# pyright: reportUninitializedInstanceVariable=false
+
 from __future__ import annotations
 
 import asyncio
 from typing import Any
 
+from ..bot_policy import BotPolicy
 from ..github_async import ApprovalError
 from ..github_async import PermissionError as GitHubPermissionError
+from ..merge_signals import DraftPullRequestError, DraftStateUnknownError
 from ..models import PullRequestInfo
 from ..rule_violations import violation_verb
 from ._base import _MergeManagerBase
+from ._write_guards import (
+    draft_state_now,
+    is_draft_now,
+    refuse_out_of_scope_approval,
+)
 
 
 class _ApprovalMixin(_MergeManagerBase):
     """Approving pull requests and retrying merges that need it."""
+
+    # Established by ``_LifecycleMixin.__init__``; only read here.
+    bot_policy: BotPolicy
 
     async def _ensure_pr_approved(
         self,
@@ -52,7 +64,14 @@ class _ApprovalMixin(_MergeManagerBase):
         Returns:
             True if a *new* approval was submitted, False if the PR was
             already approved (or approval was declined).
+
+        Raises:
+            RuntimeError: When the PR's App author is outside the run's
+                bot policy, or its repository's policy is invalid.
+            DraftPullRequestError: When the PR is a draft, including one
+                its author converted since the scan.
         """
+        refuse_out_of_scope_approval(self.bot_policy, pr_info, owner, repo)
         approved = await self._approve_pr(owner, repo, pr_info.number)
         if approved:
             pr_key = f"{owner}/{repo}#{pr_info.number}"
@@ -203,8 +222,16 @@ class _ApprovalMixin(_MergeManagerBase):
             # A single GET, not the polling refresh: the dispatch lock
             # is the one point serialised *and* ordered after a sibling
             # merge, so polling GitHub's recompute window here would
-            # serialise the whole repository batch.
-            if self._repo_scoped and await self._is_pr_dirty_now(pr_info, owner, repo):
+            # serialise the whole repository batch.  A draft is skipped
+            # even when also dirty, as on the main dispatch path.
+            dirty = self._repo_scoped and await self._is_pr_dirty_now(
+                pr_info, owner, repo
+            )
+            if not self._repo_scoped:
+                await is_draft_now(self, pr_info, owner, repo)
+            if pr_info.is_draft:
+                raise DraftPullRequestError(f"{owner}/{repo}#{pr_info.number}")
+            if dirty:
                 return False
             return await self._merge_pr_with_retry(pr_info, owner, repo)
 
@@ -350,6 +377,16 @@ class _ApprovalMixin(_MergeManagerBase):
         """
         if not self._github_client:
             raise RuntimeError("GitHub client not initialized")
+
+        # Every approval passes here, recovery paths' included, so a PR
+        # marked not ready since the scan is caught here.  Only an explicit
+        # "not a draft" lets it through (an approval to a draft satisfies
+        # required reviews once it is ready).  Outside the try below.
+        draft = await draft_state_now(self, owner, repo, pr_number)
+        if draft is None:
+            raise DraftStateUnknownError(f"{owner}/{repo}#{pr_number}")
+        if draft:
+            raise DraftPullRequestError(f"{owner}/{repo}#{pr_number}")
 
         try:
             skip, approvers = await self._should_skip_approval(owner, repo, pr_number)

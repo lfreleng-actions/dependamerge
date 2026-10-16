@@ -17,42 +17,39 @@ again silently misclassify a bot just because it arrived via GraphQL.
 
 Two layers are provided:
 
-- :func:`canonical_bot_login` normalises an actor login *to the REST
-  form* at the data boundary (where a GraphQL node is converted to an
-  internal model).  It is driven by the GraphQL ``__typename`` so it
-  applies uniformly to *every* App actor (dependabot, renovate,
-  pre-commit-ci, github-actions, copilot, …), not just one identity.
+- :func:`canonical_bot_login` and :func:`rest_author_login` normalise an
+  actor login *to the REST form* at the data boundary (where an API
+  payload is converted to an internal model).  They are driven by the
+  account type --- GraphQL ``__typename``, REST ``user.type`` --- so they
+  apply uniformly to *every* App actor, not just one identity.
 - :func:`normalize_bot_login` and :func:`is_dependabot` compare logins
   irrespective of the ``[bot]`` suffix, so a stray non-canonical value
   cannot disable identity-specific handling.
+
+Whether an author is a bot is decided by account type alone, never by
+name: a User account called ``renovate`` is a person.  Canonical logins
+make that cheap to check afterwards, because GitHub user logins cannot
+contain brackets, so only an App can carry the ``[bot]`` suffix.
 """
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from typing import Any
+
 BOT_SUFFIX = "[bot]"
 
-# GraphQL ``__typename`` value for an App/bot actor.
+# GraphQL ``__typename`` and REST ``user.type`` value for an App actor.
 _BOT_TYPENAME = "Bot"
 
-# Known automation-tool base logins (``[bot]``-stripped, lower-cased).
-# Membership is checked against the *normalised* login so both the REST
-# (``dependabot[bot]``) and GraphQL (``dependabot``) forms match.  Any
-# other App actor is still caught by the ``[bot]`` fallthrough in
-# :func:`is_automation_author`, so this set exists to recognise the
-# *bare* (GraphQL) forms of known tools, not to be exhaustive.
-_AUTOMATION_BOT_NAMES = frozenset(
-    {
-        "dependabot",
-        "renovate",
-        "pre-commit-ci",
-        "pre-commit",
-        "github-actions",
-        "allcontributors",
-        "copilot",
-        "github-copilot",
-        "copilot-swe-agent",
-    }
-)
+# REST names a few Apps by a display login rather than their account:
+# Copilot's coding agent and its code reviewer both arrive as ``Copilot``.
+# Only the account ID tells them apart; GraphQL reports their real
+# logins, so these map REST onto the same canonical form.
+_REST_LOGIN_BY_BOT_ID: Mapping[int, str] = {
+    198982749: "copilot-swe-agent[bot]",
+    175728472: "copilot-pull-request-reviewer[bot]",
+}
 
 # Known GitHub Copilot actor logins (normalised).  Copilot reports under
 # several identities depending on the surface: the App author
@@ -94,6 +91,31 @@ def canonical_bot_login(login: str | None, typename: str | None = None) -> str:
     return login
 
 
+def rest_author_login(user: Mapping[str, Any] | None) -> str:
+    """Return the canonical login for a REST ``user`` object.
+
+    REST already names most Apps ``<slug>[bot]``, but not every one, so
+    the ``type`` field decides rather than the name, and an App REST
+    reports by display login is resolved through its account ID.  A User
+    account's login is returned unchanged, so it can never acquire the
+    suffix that marks an App.
+
+    Args:
+        user: The ``user`` object of a REST pull request payload.
+
+    Returns:
+        The canonical login, or an empty string when there is none.
+    """
+    if not user:
+        return ""
+    login = user.get("login") or ""
+    if not login or user.get("type") != _BOT_TYPENAME:
+        return login
+    return _REST_LOGIN_BY_BOT_ID.get(user.get("id") or 0) or canonical_bot_login(
+        login, _BOT_TYPENAME
+    )
+
+
 def normalize_bot_login(login: str | None) -> str:
     """Return a lower-cased login with any ``[bot]`` suffix removed.
 
@@ -131,17 +153,14 @@ def is_copilot(author: str | None) -> bool:
 
 
 def is_automation_author(author: str | None) -> bool:
-    """Return True when ``author`` is an automation/bot actor.
+    """Return True when ``author`` is a GitHub App.
 
-    Recognises the known automation tools by their normalised base login
-    (so both ``dependabot`` and ``dependabot[bot]`` match) and, as a
-    fallthrough, treats *any* actor whose login carries the ``[bot]``
-    marker as automation.  The fallthrough preserves the historical
-    "anything ending in ``[bot]``" breadth so an unknown future bot is
-    still classified as automation.
+    Expects a canonical login, as :func:`canonical_bot_login` and
+    :func:`rest_author_login` produce, in which every App carries the
+    ``[bot]`` suffix.  A bare login is a person whatever it is called:
+    names such as ``renovate`` or ``copilot-swe-agent`` can belong to
+    User accounts, and one of those exists.
     """
     if not author:
         return False
-    if normalize_bot_login(author) in _AUTOMATION_BOT_NAMES:
-        return True
     return author.lower().endswith(BOT_SUFFIX)

@@ -164,6 +164,7 @@ class _PullRequestNodeMixin(_GitHubServiceBase):
             state="open",  # GraphQL query filters for OPEN PRs only, so all results are open
             mergeable=self._map_mergeable_enum(pr.get("mergeable")),
             mergeable_state=self._safe_get_merge_state(pr.get("mergeStateStatus")),
+            is_draft=pr.get("isDraft") is True,
             behind_by=None,  # Not included in GraphQL; could be computed if needed
             files_changed=files,
             repository_full_name=repo_full_name,

@@ -27,6 +27,7 @@ from typing import Any
 
 from rich.console import Console
 
+from ..bot_policy import BotPolicy
 from ..copilot_handler import CopilotCommentHandler
 from ..github_service import GitHubService
 from ..pr_poller import PullRequestStatePoller
@@ -61,6 +62,7 @@ class _LifecycleMixin(_MergeManagerBase):
         fix_semantic_title: bool = True,
         host: str | None = None,
         preflight_repository: str | None = None,
+        bot_policy: BotPolicy | None = None,
     ):
         # Resolved through the package at call time rather than bound at
         # import time, so that a test rebinding the constant on
@@ -79,6 +81,7 @@ class _LifecycleMixin(_MergeManagerBase):
         self.host = (host or default_github_host()).strip().lower()
         self.progress_tracker = progress_tracker
         self.preview_mode = preview_mode
+        self.bot_policy = bot_policy or BotPolicy()
         self.dismiss_copilot = dismiss_copilot
         self.force_level = force_level
         self.github2gerrit_mode = github2gerrit_mode
@@ -131,35 +134,7 @@ class _LifecycleMixin(_MergeManagerBase):
         self.log = logging.getLogger(__package__)
 
         # Centralised merge-operation timing
-        # Coerce merge_timeout to float and validate, guarding against Typer
-        # OptionInfo objects that leak through when the CLI function is called
-        # directly (e.g. from tests) without the Typer argument parser.
-        try:
-            _mt = float(merge_timeout)
-            if not math.isfinite(_mt) or _mt <= 0:
-                raise ValueError(f"out of range: {_mt}")
-            self._merge_timeout = _mt
-        except (TypeError, ValueError):
-            self.log.warning(
-                "Invalid merge_timeout=%r; falling back to default of %.0f seconds",
-                merge_timeout,
-                _mm.DEFAULT_MERGE_TIMEOUT,
-            )
-            self._merge_timeout = _mm.DEFAULT_MERGE_TIMEOUT
-        # Clamp the per-iteration sleep so a small ``merge_timeout``
-        # (< DEFAULT_MERGE_RECHECK_INTERVAL) does not over-sleep and
-        # blow past the user-specified total timeout. For typical
-        # values (>= 10s), this is a no-op and keeps the default
-        # 10s polling cadence.
-        self._merge_recheck_interval = min(
-            _mm.DEFAULT_MERGE_RECHECK_INTERVAL, self._merge_timeout
-        )
-        # Use math.ceil so the effective poll window is at least
-        # the configured ``merge_timeout`` — plain ``int()`` would
-        # truncate (e.g. 301/10 -> 30 attempts -> only 300s).
-        self._merge_poll_max_attempts = max(
-            1, math.ceil(self._merge_timeout / self._merge_recheck_interval)
-        )
+        self._init_merge_timing(merge_timeout)
 
         # Track merge operations
         self._merge_semaphore = asyncio.Semaphore(concurrency)
@@ -281,6 +256,42 @@ class _LifecycleMixin(_MergeManagerBase):
                 default_post_approval_delay,
             )
             self._post_approval_delay = default_post_approval_delay
+
+    def _init_merge_timing(self, merge_timeout: float) -> None:
+        """Validate ``merge_timeout`` and derive the polling cadence from it."""
+        # Resolved through the package at call time, as in ``__init__``,
+        # so a test rebinding a constant on the package is observed.
+        from dependamerge import merge_manager as _mm
+
+        # Coerce merge_timeout to float and validate, guarding against Typer
+        # OptionInfo objects that leak through when the CLI function is called
+        # directly (e.g. from tests) without the Typer argument parser.
+        try:
+            _mt = float(merge_timeout)
+            if not math.isfinite(_mt) or _mt <= 0:
+                raise ValueError(f"out of range: {_mt}")
+            self._merge_timeout = _mt
+        except (TypeError, ValueError):
+            self.log.warning(
+                "Invalid merge_timeout=%r; falling back to default of %.0f seconds",
+                merge_timeout,
+                _mm.DEFAULT_MERGE_TIMEOUT,
+            )
+            self._merge_timeout = _mm.DEFAULT_MERGE_TIMEOUT
+        # Clamp the per-iteration sleep so a small ``merge_timeout``
+        # (< DEFAULT_MERGE_RECHECK_INTERVAL) does not over-sleep and
+        # blow past the user-specified total timeout. For typical
+        # values (>= 10s), this is a no-op and keeps the default
+        # 10s polling cadence.
+        self._merge_recheck_interval = min(
+            _mm.DEFAULT_MERGE_RECHECK_INTERVAL, self._merge_timeout
+        )
+        # Use math.ceil so the effective poll window is at least
+        # the configured ``merge_timeout`` — plain ``int()`` would
+        # truncate (e.g. 301/10 -> 30 attempts -> only 300s).
+        self._merge_poll_max_attempts = max(
+            1, math.ceil(self._merge_timeout / self._merge_recheck_interval)
+        )
 
     def _init_failure_tracking(self) -> None:
         """Create the per-PR state that explains why a merge failed."""

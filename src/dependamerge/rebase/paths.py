@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 
+from ..merge_signals import PullRequestStopSignal
 from ..models import PullRequestInfo
 from ..slot_lease import parked
 from . import local_rebase, polling
@@ -84,6 +85,8 @@ async def _run_local_path(
     # below).
     try:
         auto_merge_ok = await ctx.enable_auto_merge(pr_info, owner, repo)
+    except PullRequestStopSignal:
+        raise
     except Exception as exc:
         ctx.log.debug(
             "Could not enable auto-merge after local rebase for %s: %s",
@@ -173,6 +176,8 @@ async def _run_dependabot_macro_path(
 
     try:
         auto_merge_ok = await ctx.enable_auto_merge(pr_info, owner, repo)
+    except PullRequestStopSignal:
+        raise
     except Exception as exc:
         ctx.log.debug(
             "Could not enable auto-merge after dependabot rebase request for %s: %s",
@@ -290,6 +295,10 @@ async def _run_rest_path(
         polling._log_post_rebase_status(ctx=ctx, pr_info=pr_info)
         return Step5Outcome()
 
+    except PullRequestStopSignal:
+        # A draft, or draft state unknown: the merge manager decides the
+        # outcome; reporting a failed rebase would bury it.
+        raise
     except Exception as exc:
         ctx.log.warning("Rebase failed for %s: %s", pr_info.html_url, exc)
         return Step5Outcome(failed=True, error_message=f"Failed to rebase PR: {exc}")

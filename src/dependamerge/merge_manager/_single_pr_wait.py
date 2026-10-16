@@ -47,6 +47,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..merge_signals import DraftPullRequestError
 from ._base import _MergeManagerBase
 from ._single_pr_context import _MergeFlow
 from ._types import MergeResult, MergeStatus
@@ -229,7 +230,13 @@ class _SinglePrWaitMixin(_MergeManagerBase):
     def _apply_late_refresh(
         self, flow: _MergeFlow, late_updated: dict[str, Any]
     ) -> MergeResult | None:
-        """Fold a post-wait PR payload back into the snapshot."""
+        """Fold a post-wait PR payload back into the snapshot.
+
+        Raises:
+            DraftPullRequestError: When the open PR is now a draft, as the
+                wait's own refresh does.  Step 6 could otherwise defer it
+                to auto-merge as pending without reading it again.
+        """
         pr_info = flow.pr_info
         result = flow.result
         if late_updated.get("state") == "closed":
@@ -252,6 +259,9 @@ class _SinglePrWaitMixin(_MergeManagerBase):
                 )
             return result
 
+        if late_updated.get("draft") is True:
+            pr_info.is_draft = True
+            raise DraftPullRequestError(flow.pr_key)
         # Only accept concrete values: GitHub returns null / "" /
         # "unknown" while it recomputes mergeability right after the
         # check lands, and clobbering the known snapshot with those

@@ -80,6 +80,7 @@ See Also
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -184,6 +185,23 @@ def _detach_from_github_actions(monkeypatch):
     """
     for name in ("GITHUB_ACTIONS", "GITHUB_OUTPUT", "GITHUB_STEP_SUMMARY"):
         monkeypatch.delenv(name, raising=False)
+
+
+@pytest.fixture(scope="session")
+def _empty_config_home(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    return Path(tmp_path_factory.mktemp("config-home"))
+
+
+@pytest.fixture(autouse=True)
+def _detach_from_user_config(monkeypatch, _empty_config_home: Path):
+    """Run every test without the developer's own bot policy.
+
+    A ``~/.config/dependamerge/config.json`` that includes or excludes
+    an App changes which pull requests a run acts on, so a suite that
+    read it would pass or fail by whose machine it ran on.  Tests of the
+    user policy point ``XDG_CONFIG_HOME`` elsewhere themselves.
+    """
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(_empty_config_home))
 
 
 def make_merge_manager(**overrides: Any) -> tuple[AsyncMergeManager, AsyncMock]:

@@ -12,8 +12,45 @@ helpers so each stays reviewable.
 
 from __future__ import annotations
 
+from ..bot_identity import is_automation_author
+from ..bot_policy import BotPolicy
 from ..models import ComparisonResult, PullRequestInfo
 from ._base import _GitHubServiceBase
+
+
+def _is_source(source_pr: PullRequestInfo, pr: PullRequestInfo) -> bool:
+    """Whether ``pr`` is ``source_pr`` itself."""
+    return (pr.number, pr.repository_full_name) == (
+        source_pr.number,
+        source_pr.repository_full_name,
+    )
+
+
+def _other_app_pr(source_pr: PullRequestInfo, pr: PullRequestInfo) -> bool:
+    """Whether ``pr`` is an App's, other than ``source_pr`` itself."""
+    return is_automation_author(pr.author) and not _is_source(source_pr, pr)
+
+
+def _variable_matters(
+    source_pr: PullRequestInfo,
+    prs: list[PullRequestInfo],
+    *,
+    only_automation: bool,
+) -> bool:
+    """Whether a repository's ``DEPENDAMERGE_BOTS`` variable bears on a search.
+
+    Read where an App's PR is open, as every run reads it.  The policy
+    judges no person's PR, but an invalid one keeps the search from
+    acting on any PR in the repository; so for a person's source PR it is
+    read where that person has another PR open, the only PRs the search
+    could act on there.
+    """
+    if not any(_other_app_pr(source_pr, pr) for pr in prs):
+        return False
+    author = source_pr.author or ""
+    return only_automation or any(
+        (pr.author or "") == author and not _is_source(source_pr, pr) for pr in prs
+    )
 
 
 class _SimilarPullRequestsMixin(_GitHubServiceBase):
@@ -26,6 +63,7 @@ class _SimilarPullRequestsMixin(_GitHubServiceBase):
         comparator,
         *,
         only_automation: bool,
+        bot_policy: BotPolicy | None = None,
     ) -> list[tuple[PullRequestInfo, ComparisonResult]]:
         """
         Find PRs across an organization that are similar to the provided source PR.
@@ -41,6 +79,8 @@ class _SimilarPullRequestsMixin(_GitHubServiceBase):
             source_pr: The PR to compare against.
             comparator: Provides compare_pull_requests(source, target) -> ComparisonResult.
             only_automation: If True, restrict candidates to automation PRs; otherwise, same author as source.
+            bot_policy: The Apps whose PRs count as automation candidates;
+                without one, only the built-in Apps do.
 
         Returns:
             List of (PullRequestInfo, ComparisonResult) tuples for similar PRs.
@@ -67,6 +107,7 @@ class _SimilarPullRequestsMixin(_GitHubServiceBase):
                 source_pr,
                 comparator,
                 only_automation=only_automation,
+                bot_policy=bot_policy,
             )
 
             results.extend(matching_prs_in_repo)
@@ -83,28 +124,32 @@ class _SimilarPullRequestsMixin(_GitHubServiceBase):
         comparator,
         *,
         only_automation: bool,
+        bot_policy: BotPolicy | None = None,
     ) -> list[tuple[PullRequestInfo, ComparisonResult]]:
-        """Compare every open PR of one repository against *source_pr*."""
-        owner_n, name_n = repo_full_name.split("/", 1)
-        first_nodes, page_info = await self._fetch_repo_prs_first_page(owner_n, name_n)
-        prs = list(first_nodes)
-        has_next = bool(page_info.get("hasNextPage"))
-        end_cursor = page_info.get("endCursor") or None
+        """Compare every open PR of one repository against *source_pr*.
 
-        # Include additional pages if present
-        if has_next:
-            async for pr_node in self._iter_repo_open_prs_pages(
-                owner_n, name_n, end_cursor
-            ):
-                prs.append(pr_node)
+        Candidates are judged with the repository's own bot policy (see
+        :meth:`_judged_open_prs`); when that is invalid, nothing there
+        is a candidate.
+        """
+        judged = await self._judged_open_prs(
+            repo_full_name,
+            source_pr,
+            only_automation=only_automation,
+            bot_policy=bot_policy or BotPolicy(),
+        )
+        if judged is None:
+            return []
+        prs, policy = judged
 
         matching_prs_in_repo: list[tuple[PullRequestInfo, ComparisonResult]] = []
 
-        for pr_node in prs:
-            target_pr = self.to_pull_request_info(repo_full_name, pr_node)
-
+        for target_pr in prs:
             if not self._is_similar_pr_candidate(
-                source_pr, target_pr, only_automation=only_automation
+                source_pr,
+                target_pr,
+                only_automation=only_automation,
+                bot_policy=policy,
             ):
                 continue
 
@@ -135,32 +180,71 @@ class _SimilarPullRequestsMixin(_GitHubServiceBase):
 
         return matching_prs_in_repo
 
+    async def _judged_open_prs(
+        self,
+        repo_full_name: str,
+        source_pr: PullRequestInfo,
+        *,
+        only_automation: bool,
+        bot_policy: BotPolicy,
+    ) -> tuple[list[PullRequestInfo], BotPolicy] | None:
+        """A repository's open PRs, and the policy that judges them.
+
+        The policy also consults the repository's own file, which its
+        first page carries, and its ``DEPENDAMERGE_BOTS`` variable, read
+        where it bears on the search (see :func:`_variable_matters`).
+        ``None`` when that policy is invalid.
+        """
+        owner_n, name_n = repo_full_name.split("/", 1)
+        first_nodes, page_info = await self._fetch_repo_prs_first_page(owner_n, name_n)
+        policy = self._valid_repository_policy(bot_policy, repo_full_name)
+        if policy is None:
+            return None
+        nodes = list(first_nodes)
+        if page_info.get("hasNextPage"):
+            end_cursor = page_info.get("endCursor") or None
+            async for pr_node in self._iter_repo_open_prs_pages(
+                owner_n, name_n, end_cursor
+            ):
+                nodes.append(pr_node)
+        prs = [self.to_pull_request_info(repo_full_name, node) for node in nodes]
+        if _variable_matters(source_pr, prs, only_automation=only_automation):
+            await self._read_repository_variable(repo_full_name)
+            policy = self._valid_repository_policy(bot_policy, repo_full_name)
+        return None if policy is None else (prs, policy)
+
+    def _valid_repository_policy(
+        self, bot_policy: BotPolicy, repository: str
+    ) -> BotPolicy | None:
+        """``bot_policy`` with ``repository``'s own; ``None`` when invalid."""
+        policy = self._with_repository_policy(bot_policy, repository)
+        problem = policy.repository_error(repository)
+        if problem is None:
+            return policy
+        self.log.warning(
+            "Skipping %s: its bot policy is invalid (%s)", repository, problem
+        )
+        return None
+
     @staticmethod
     def _is_similar_pr_candidate(
         source_pr: PullRequestInfo,
         target_pr: PullRequestInfo,
         *,
         only_automation: bool,
+        bot_policy: BotPolicy | None = None,
     ) -> bool:
         """Whether *target_pr* is worth comparing against *source_pr*."""
         # Skip the source PR itself
-        if (
-            target_pr.number == source_pr.number
-            and target_pr.repository_full_name == source_pr.repository_full_name
-        ):
+        if _is_source(source_pr, target_pr):
             return False
 
-        # Candidate filtering
+        # Candidate filtering: an App the policy admits when the source is
+        # automation (a person whose login merely contains "bot" never
+        # qualifies), the same author otherwise.
         if only_automation:
-            return any(
-                bot in (target_pr.author or "").lower()
-                for bot in [
-                    "dependabot",
-                    "renovate",
-                    "pre-commit",
-                    "github-actions",
-                    "bot",
-                ]
+            return (bot_policy or BotPolicy()).admits(
+                target_pr.author, target_pr.repository_full_name
             )
         return (target_pr.author or "") == (source_pr.author or "")
 

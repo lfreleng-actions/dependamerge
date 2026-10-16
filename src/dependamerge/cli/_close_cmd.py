@@ -37,6 +37,12 @@ from ..url_parser import (
     normalize_target,
 )
 from ._app import app, console
+from ._bot_scope import (
+    EXCLUDE_BOTS_OPTION,
+    INCLUDE_BOTS_OPTION,
+    _build_bot_policy,
+    _check_listed_bots,
+)
 from ._close import (
     _CloseContext,
     _find_similar_prs_for_close,
@@ -48,7 +54,35 @@ from ._close import (
     _validate_close_authorization,
 )
 from ._github_host import apply_gerrit_host, apply_github_host
+from ._human_gate import (
+    INCLUDE_HUMAN_PRS_OPTION,
+    OVERRIDE_OPTION,
+    _require_override_pairing,
+)
 from ._pr_display import _display_pr_info
+
+
+def _close_client(pr_url: str, token: str | None) -> _pkg.GitHubClient:
+    """Build the client for the host the pull request URL names.
+
+    A GitHub Enterprise Server install serves its API from different base
+    URLs, and the client bakes those in at construction, so the host comes
+    from the URL first.  Normalise first, or a scheme-less target is read
+    as a bare path and yields no host at all.
+
+    Falling back to dotcom rather than None when the target names no
+    host.  ``None`` makes the client consult the configured default, so a
+    malformed ``GH_HOST`` reported *its* problem instead of the invalid URL
+    the operator actually typed --- and configuring a host cannot make
+    ``not a url`` valid.  Valid shorthand has already resolved to an
+    absolute host by this point, so nothing legitimate reaches the
+    fallback.
+    """
+    target_host = (urlparse(normalize_target(pr_url)).hostname or "").lower()
+    github_client = _pkg.GitHubClient(token, host=target_host or DEFAULT_GITHUB_HOST)
+    # GitHubClient resolves None -> GITHUB_TOKEN env var (raises if missing)
+    assert github_client.token is not None
+    return github_client
 
 
 @app.command()
@@ -83,9 +117,10 @@ def close(
             "declared as GitHub being treated as Gerrit."
         ),
     ),
-    override: str | None = typer.Option(
-        None, "--override", help="SHA hash to override non-automation PR restriction"
-    ),
+    override: str | None = OVERRIDE_OPTION,
+    include_human_prs: bool = INCLUDE_HUMAN_PRS_OPTION,
+    include_bots: list[str] | None = INCLUDE_BOTS_OPTION,
+    exclude_bots: list[str] | None = EXCLUDE_BOTS_OPTION,
     show_progress: bool = typer.Option(
         True, "--progress/--no-progress", help="Show real-time progress updates"
     ),
@@ -121,39 +156,26 @@ def close(
 
     Closes similar PRs from the same automation tool (dependabot, pre-commit.ci).
 
-    For user generated bulk PRs, use the --override flag with SHA hash.
+    For human-authored PRs, add --include-human-prs; the run then prints
+    the --override value that confirms them.
     """
     # Applied before anything parses a target: the flag sets both
     # the host a shorthand resolves against and the set of hosts
     # permitted at all.
     apply_github_host(github_host)
     apply_gerrit_host(gerrit_host)
+    _require_override_pairing(override, include_human_prs)
+    bot_policy = _build_bot_policy(include_bots, exclude_bots)
 
     progress_tracker = None
 
     try:
-        # Derive the host from the URL before building the client: a
-        # GitHub Enterprise Server install serves its API from
-        # different base URLs, and the client bakes those in at
-        # construction.  Normalise first, or a scheme-less target is
-        # read as a bare path and yields no host at all.
-        #
-        # Falling back to dotcom rather than None when the target names
-        # no host.  ``None`` makes the client consult the configured
-        # default, so a malformed ``GH_HOST`` reported *its* problem
-        # instead of the invalid URL the operator actually typed ---
-        # and configuring a host cannot make ``not a url`` valid.
-        # Valid shorthand has already resolved to an absolute host by
-        # this point, so nothing legitimate reaches the fallback.
-        target_host = (urlparse(normalize_target(pr_url)).hostname or "").lower()
-        github_client = _pkg.GitHubClient(
-            token,
-            host=target_host or DEFAULT_GITHUB_HOST,
-        )
-        # GitHubClient resolves None -> GITHUB_TOKEN env var (raises if missing)
-        assert github_client.token is not None
+        github_client = _close_client(pr_url, token)
         token = github_client.token
+        # Parsed before the App lookups: parsing refuses a host nobody
+        # declared, and the lookups would carry the token to it.
         owner, repo_name, pr_number = github_client.parse_pr_url(pr_url)
+        _check_listed_bots(bot_policy, token, github_client.host)
 
         if show_progress:
             progress_tracker = MergeProgressTracker(owner, is_close_operation=True)
@@ -183,6 +205,7 @@ def close(
             pr_number=pr_number,
             source_pr=source_pr,
             progress_tracker=progress_tracker,
+            bot_policy=bot_policy,
         )
 
         # Debug matching info for source PR
@@ -190,8 +213,9 @@ def close(
             _print_close_debug_matching(ctx, comparator, similarity_threshold)
 
         # Check if source PR is from automation or has valid override
-        if not _validate_close_authorization(ctx, override):
-            return
+        _validate_close_authorization(
+            ctx, override, include_human_prs=include_human_prs is True, dry_run=dry_run
+        )
 
         # Find similar PRs across the owner (organization or user)
         all_similar_prs = _find_similar_prs_for_close(ctx, comparator, debug_matching)

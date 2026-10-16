@@ -12,6 +12,7 @@ from dependamerge.bot_identity import (
     is_copilot,
     is_dependabot,
     normalize_bot_login,
+    rest_author_login,
 )
 
 
@@ -98,35 +99,87 @@ class TestIsCopilot:
         assert not is_copilot("")
 
 
+class TestRestAuthorLogin:
+    """``rest_author_login`` decides by account type, not by name."""
+
+    def test_app_keeps_its_suffixed_login(self) -> None:
+        user = {"login": "dependabot[bot]", "type": "Bot", "id": 49699333}
+        assert rest_author_login(user) == "dependabot[bot]"
+
+    @pytest.mark.parametrize(
+        ("account_id", "expected"),
+        [
+            (198982749, "copilot-swe-agent[bot]"),
+            (175728472, "copilot-pull-request-reviewer[bot]"),
+        ],
+    )
+    def test_copilot_display_login_resolves_by_account_id(
+        self, account_id: int, expected: str
+    ) -> None:
+        # REST names two different Copilot Apps "Copilot"; GraphQL
+        # reports their real logins, which these must match.
+        user = {"login": "Copilot", "type": "Bot", "id": account_id}
+        assert rest_author_login(user) == expected
+        assert rest_author_login(user) == canonical_bot_login(
+            expected.removesuffix("[bot]"), "Bot"
+        )
+
+    def test_unknown_app_without_suffix_gains_one(self) -> None:
+        user = {"login": "Display", "type": "Bot", "id": 1}
+        assert rest_author_login(user) == "Display[bot]"
+
+    @pytest.mark.parametrize(
+        "login", ["renovate", "github-actions", "copilot-swe-agent", "talbot"]
+    )
+    def test_user_account_is_never_suffixed(self, login: str) -> None:
+        user = {"login": login, "type": "User", "id": 203248971}
+        assert rest_author_login(user) == login
+        assert not is_automation_author(rest_author_login(user))
+
+    def test_missing_user(self) -> None:
+        assert rest_author_login(None) == ""
+        assert rest_author_login({}) == ""
+
+
 class TestIsAutomationAuthor:
     @pytest.mark.parametrize(
         "author",
         [
-            # Known tools, REST (suffixed) form.
             "dependabot[bot]",
             "renovate[bot]",
             "pre-commit-ci[bot]",
             "github-actions[bot]",
-            "allcontributors[bot]",
-            # Known tools, GraphQL (bare) form.
-            "dependabot",
-            "renovate",
-            "github-actions",
-            # Copilot is automation too, including the coding agent that
-            # raises automated code fixes in either login form.
-            "github-copilot[bot]",
             "copilot-swe-agent[bot]",
-            "copilot-swe-agent",
-            # Unknown bot caught by the [bot] fallthrough.
-            "some-future-bot[bot]",
+            "lf-releng-code-monkey-bot[bot]",
+            "Dependabot[BOT]",
         ],
     )
-    def test_classifies_automation(self, author: str) -> None:
+    def test_any_app_is_automation(self, author: str) -> None:
         assert is_automation_author(author)
 
     @pytest.mark.parametrize(
         "author",
-        ["john-doe", "jane-smith", "some-user", None, ""],
+        [
+            "john-doe",
+            "some-user",
+            None,
+            "",
+            # Bare logins are people, whatever they are called: these
+            # names can belong to User accounts (copilot-swe-agent does).
+            "dependabot",
+            "renovate",
+            "github-actions",
+            "copilot-swe-agent",
+            # So is a person whose login merely contains "bot".
+            "talbot",
+            "random-bot",
+        ],
     )
-    def test_rejects_humans(self, author: str | None) -> None:
+    def test_rejects_people(self, author: str | None) -> None:
         assert not is_automation_author(author)
+
+    def test_graphql_app_classifies_once_canonical(self) -> None:
+        # The data boundary turns a GraphQL Bot node into the REST form,
+        # which is what makes the bare name classify as an App.
+        assert is_automation_author(canonical_bot_login("dependabot", "Bot"))
+        assert not is_automation_author(canonical_bot_login("dependabot", "User"))

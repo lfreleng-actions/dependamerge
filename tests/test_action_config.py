@@ -34,6 +34,8 @@ class TestPrecedence:
             "target": "acme",
             "include_repos": "",
             "exclude_repos": "",
+            "include_bots": "",
+            "exclude_bots": "",
             "merge_method": "merge",
             "force": "code-owners",
             "max_wait": "900",
@@ -83,6 +85,41 @@ class TestValues:
         )
         assert options["fix_out_of_date"] == "false"
         assert options["dismiss_copilot"] == "true"
+
+    def test_bot_lists_accept_every_app_name_form(self, action_config):
+        options = action_config.resolve(
+            _config(
+                target="acme",
+                include_bots=["my-bot", "app/other-bot", "third[bot]"],
+            ),
+            {"exclude_bots": "renovate"},
+        )
+        assert options["include_bots"] == "my-bot,app/other-bot,third[bot]"
+        assert options["exclude_bots"] == "renovate"
+
+    def test_bot_names_are_accepted_in_any_case(self, action_config):
+        # The CLI ignores case throughout an App name, its prefix and
+        # suffix included, so the action must accept what the CLI does
+        # (Copilot review on #567).
+        names = "RENOVATE[BOT],App/My-Bot,APP/Third[Bot]"
+        options = action_config.resolve(_config(target="acme", exclude_bots=names), {})
+        assert options["exclude_bots"] == names
+
+    def test_bot_lists_may_both_be_set(self, action_config):
+        # Unlike the repository lists, inclusion and exclusion combine.
+        options = action_config.resolve(
+            _config(target="acme", include_bots="*", exclude_bots="renovate"), {}
+        )
+        assert options["include_bots"] == "*"
+        assert options["exclude_bots"] == "renovate"
+
+    def test_misspelt_bot_names_stop_the_run(self, action_config):
+        with pytest.raises(action_config.ConfigError) as excinfo:
+            action_config.resolve(_config(target="acme", exclude_bots="not@app"), {})
+        assert any(
+            problem.startswith("exclude_bots (config): not a GitHub App name")
+            for problem in excinfo.value.problems
+        )
 
 
 class TestProblems:

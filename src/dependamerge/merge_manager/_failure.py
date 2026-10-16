@@ -211,7 +211,7 @@ class _FailureReportingMixin(_FailureSummaryFromExceptionMixin):
             return await self._blocked_failure_summary(pr_info)
         elif pr_info.mergeable_state == "dirty":
             return "merge conflicts"
-        elif pr_info.mergeable_state == "draft":
+        elif pr_info.is_draft or pr_info.mergeable_state == "draft":
             return "draft PR"
         elif pr_info.mergeable is False:
             return "cannot update protected ref - organization or branch protection rules prevent merge"

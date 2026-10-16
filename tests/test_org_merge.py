@@ -5,12 +5,16 @@
 
 import hashlib
 import re
+from typing import Any
 from unittest.mock import Mock, patch
 
 import pytest
 from typer.testing import CliRunner
 
 from dependamerge.cli import app
+from dependamerge.cli._human_gate import _human_set_override
+from dependamerge.error_codes import ExitCode
+from dependamerge.github_graphql import ORG_REPOS_ONLY, OWNER_PROFILE, USER_REPOS_ONLY
 from dependamerge.github_service import GitHubService
 from dependamerge.models import FileChange, PullRequestInfo
 from dependamerge.url_parser import (
@@ -417,15 +421,13 @@ class TestMergeOrgUrl:
     @patch("dependamerge.cli._check_merge_permissions")
     @patch("dependamerge.cli.GitHubClient")
     @patch("dependamerge.cli.asyncio.run")
-    def test_permission_check_samples_repo_that_survives_the_prompt(
+    def test_permission_check_samples_repo_the_run_touches(
         self, mock_asyncio_run, mock_client_class, mock_check_perms
     ):
-        # Regression (#427): with --include-human-prs the probe must
-        # sample a repository the run will actually touch.  Probing
-        # before the prompt sampled the *unfiltered* set, so a
-        # repository holding only human PRs could gate the run and then
-        # be dropped -- rejecting a fine-grained token scoped to exactly
-        # the automation repositories the operator meant to merge.
+        # Regression (#427): the probe must sample a repository the run
+        # will actually touch.  Once --override confirms the human PRs
+        # they stay in scope, so the busiest repository, holding only
+        # human PRs, is the one the run touches first.
         #
         # _owner_merge_order puts the repository with the most PRs
         # first, so two human PRs in "chatter" outrank the single
@@ -459,27 +461,25 @@ class TestMergeOrgUrl:
                 "--token",
                 "test_token",
                 "--include-human-prs",
+                "--override",
+                _human_set_override("acme", human_prs),
             ],
-            # Enter at the prompt: skip the human PRs, leaving only
-            # acme/widget in scope.
-            input="\n",
         )
 
         assert result.exit_code == 0, f"CLI failed: {result.stdout}"
-        assert "Excluding human PRs" in _strip_ansi(result.stdout)
+        assert "--override confirms" in _strip_ansi(result.stdout)
         mock_check_perms.assert_called_once()
-        assert captured["repo_name"] == "widget"
+        assert captured["repo_name"] == "chatter"
 
     @patch("dependamerge.cli._check_merge_permissions")
     @patch("dependamerge.cli.GitHubClient")
     @patch("dependamerge.cli.asyncio.run")
-    def test_permission_check_skipped_when_prompt_empties_the_run(
+    def test_unconfirmed_human_prs_stop_before_the_permission_check(
         self, mock_asyncio_run, mock_client_class, mock_check_perms
     ):
-        # The complement of the case above: when every in-scope PR is
-        # human-authored and the operator skips them, nothing is left to
-        # merge.  There is no repository the run will touch, so probing
-        # permissions at all would be gating on a phantom.
+        # Without the override the run stops at the human gate, before
+        # it probes permissions or merges anything, and prints the value
+        # that confirms exactly the PRs it listed.
         human_prs = [
             _make_pr(1, author="a-person", repo="acme/chatter"),
             _make_pr(2, author="a-person", repo="acme/chatter"),
@@ -499,13 +499,40 @@ class TestMergeOrgUrl:
                 "--token",
                 "test_token",
                 "--include-human-prs",
+                "--no-confirm",
             ],
-            input="\n",
         )
 
-        assert result.exit_code == 0, f"CLI failed: {result.stdout}"
-        assert "No automation PRs remain" in _strip_ansi(result.stdout)
+        assert result.exit_code == ExitCode.OVERRIDE_REQUIRED, result.stdout
+        assert f"--override {_human_set_override('acme', human_prs)}" in (
+            _strip_ansi(result.stdout)
+        )
         mock_check_perms.assert_not_called()
+
+    @patch("dependamerge.cli._run_parallel_merge")
+    @patch("dependamerge.cli.GitHubClient")
+    @patch("dependamerge.cli.asyncio.run")
+    def test_drafts_are_listed_and_never_reach_the_merge(
+        self, mock_asyncio_run, mock_client_class, mock_merge
+    ):
+        # #566: a draft reports ``blocked`` like any PR; only the flag
+        # says it is one, and the run must set it aside up front.
+        ready = _make_pr(1, repo="acme/widget")
+        draft = _make_pr(2, repo="acme/widget").model_copy(update={"is_draft": True})
+
+        mock_client_class.return_value = Mock(token="test_token")
+        mock_asyncio_run.side_effect = _mock_asyncio_run([([ready, draft], [])])
+        mock_merge.return_value = []
+
+        result = self.runner.invoke(
+            app,
+            ["merge", "https://github.com/acme", "--token", "t", "--dry-run"],
+        )
+
+        assert result.exit_code == 0, result.stdout
+        assert "Draft PRs skipped: 1" in _strip_ansi(result.stdout)
+        merged = [pr for pr, _ in mock_merge.call_args.args[1]]
+        assert merged == [ready]
 
     def test_ghe_owner_url_surfaces_owner_wide_message(self):
         # Regression: an owner-shaped URL on a non-github host (e.g. GHE)
@@ -685,66 +712,68 @@ class TestFetchOwnerOpenPrs:
             await svc.fetch_owner_open_prs("acme")
         await svc.close()
 
-    @pytest.mark.asyncio
-    async def test_resolve_owner_root_org(self):
-        svc = GitHubService(token="test_token")
+    @staticmethod
+    def _answer_profile(svc, owner_node):
+        """Answer every query as the owner profile; return the calls made."""
+        calls: list[tuple[str, dict[str, Any], dict[str, Any]]] = []
 
-        async def fake_graphql(query, variables):
-            return {"organization": {"repositories": {"nodes": []}}}
-
-        svc._api.graphql = fake_graphql  # type: ignore[assignment]
-
-        root_key, _query = await svc._resolve_owner_root("acme")
-        await svc.close()
-        assert root_key == "organization"
-
-    @pytest.mark.asyncio
-    async def test_resolve_owner_root_user_fallback(self):
-        svc = GitHubService(token="test_token")
-
-        async def fake_graphql(query, variables):
-            # organization root is null -> owner is a user account
-            return {"organization": None}
+        async def fake_graphql(query, variables, **kwargs):
+            calls.append((query, variables, kwargs))
+            return {"repositoryOwner": owner_node}
 
         svc._api.graphql = fake_graphql  # type: ignore[assignment]
-
-        root_key, _query = await svc._resolve_owner_root("someuser")
-        await svc.close()
-        assert root_key == "user"
+        return calls
 
     @pytest.mark.asyncio
-    async def test_resolve_owner_root_user_fallback_on_not_found_error(self):
-        # Against real GitHub, organization(login: <user>) returns a
-        # NOT_FOUND GraphQL error (data.organization = null), which
-        # GitHubAsync.graphql surfaces as GraphQLError.  That must be
-        # treated as "not an org" and fall back to the user root.
+    @pytest.mark.parametrize(
+        ("owner_node", "root_key", "query"),
+        [
+            (
+                {"__typename": "Organization", "dotgithub": None},
+                "organization",
+                ORG_REPOS_ONLY,
+            ),
+            ({"__typename": "User", "dotgithub": None}, "user", USER_REPOS_ONLY),
+            # An unknown login is null, without an error; listing it as a
+            # user reports it, as the old fallback did.
+            (None, "user", USER_REPOS_ONLY),
+        ],
+    )
+    async def test_resolve_owner_root_asks_the_owner_profile(
+        self, owner_node, root_key, query
+    ):
+        svc = GitHubService(token="test_token")
+        calls = self._answer_profile(svc, owner_node)
+
+        resolved = await svc._resolve_owner_root("acme")
+        await svc.close()
+
+        assert resolved == (root_key, query)
+        [(sent, variables, kwargs)] = calls
+        assert sent == OWNER_PROFILE
+        # A reporting service never asks for the policy files.
+        assert variables == {
+            "owner": "acme",
+            "repo": "",
+            "withRepo": False,
+            "withPolicy": False,
+        }
+        # Only a missing ``.github`` (or target) repository is an answer;
+        # every other GraphQL error still raises.
+        assert set(kwargs["allow_not_found"]) == {
+            ("repositoryOwner", "dotgithub"),
+            ("repositoryOwner", "target"),
+        }
+
+    @pytest.mark.asyncio
+    async def test_resolve_owner_root_propagates_graphql_errors(self):
+        # An error the transport does not tolerate must propagate rather
+        # than be silently downgraded to a user fallback.
         from dependamerge.github_async import GraphQLError
 
         svc = GitHubService(token="test_token")
 
-        async def fake_graphql(query, variables):
-            raise GraphQLError(
-                '[{"type": "NOT_FOUND", "path": ["organization"], '
-                '"message": "Could not resolve to an Organization with '
-                "the login of 'someuser'.\"}]"
-            )
-
-        svc._api.graphql = fake_graphql  # type: ignore[assignment]
-
-        root_key, _query = await svc._resolve_owner_root("someuser")
-        await svc.close()
-        assert root_key == "user"
-
-    @pytest.mark.asyncio
-    async def test_resolve_owner_root_propagates_unrelated_graphql_error(self):
-        # A GraphQL error that is *not* the not-an-organization NOT_FOUND
-        # must propagate rather than be silently downgraded to a user
-        # fallback.
-        from dependamerge.github_async import GraphQLError
-
-        svc = GitHubService(token="test_token")
-
-        async def fake_graphql(query, variables):
+        async def fake_graphql(query, variables, **kwargs):
             raise GraphQLError(
                 '[{"type": "FORBIDDEN", "message": "Resource not accessible"}]'
             )
@@ -756,44 +785,17 @@ class TestFetchOwnerOpenPrs:
         await svc.close()
 
     @pytest.mark.asyncio
-    async def test_resolve_owner_root_propagates_nested_not_found(self):
-        # A NOT_FOUND on a *nested* field under the organization root
-        # (path longer than ["organization"]) means the org resolved but a
-        # sub-field failed; it must NOT be downgraded to a user fallback.
-        # Only an exact top-level ["organization"] NOT_FOUND counts.
-        from dependamerge.github_async import GraphQLError
-
-        svc = GitHubService(token="test_token")
-
-        async def fake_graphql(query, variables):
-            raise GraphQLError(
-                '[{"type": "NOT_FOUND", "path": ["organization", "repositories"], '
-                '"message": "Could not resolve organization repositories."}]'
-            )
-
-        svc._api.graphql = fake_graphql  # type: ignore[assignment]
-
-        with pytest.raises(GraphQLError):
-            await svc._resolve_owner_root("someuser")
-        await svc.close()
-
-    @pytest.mark.asyncio
     async def test_resolve_owner_root_cached(self):
         svc = GitHubService(token="test_token")
-        calls = 0
-
-        async def fake_graphql(query, variables):
-            nonlocal calls
-            calls += 1
-            return {"organization": {"repositories": {"nodes": []}}}
-
-        svc._api.graphql = fake_graphql  # type: ignore[assignment]
+        calls = self._answer_profile(
+            svc, {"__typename": "Organization", "dotgithub": None}
+        )
 
         await svc._resolve_owner_root("acme")
         await svc._resolve_owner_root("acme")
         await svc.close()
         # Second call served from cache; only one probe.
-        assert calls == 1
+        assert len(calls) == 1
 
     @pytest.mark.asyncio
     async def test_fetch_repo_open_prs_reports_result_count_to_progress(self):
@@ -864,7 +866,9 @@ class TestFetchOwnerOpenPrs:
             }
         }
 
-        async def fake_graphql(query, variables):
+        async def fake_graphql(query, variables, **kwargs):
+            if query == OWNER_PROFILE:
+                return {"repositoryOwner": {"__typename": "Organization"}}
             return page
 
         svc._api.graphql = fake_graphql  # type: ignore[assignment]

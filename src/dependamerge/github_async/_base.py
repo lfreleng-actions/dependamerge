@@ -16,7 +16,7 @@ so the real implementations always win.
 from __future__ import annotations
 
 import logging
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Collection
 from typing import TYPE_CHECKING, Any
 
 import httpx
@@ -96,7 +96,11 @@ class _GitHubAsyncBase:
         ) -> dict[str, Any]: ...
 
         async def graphql(
-            self, query: str, variables: dict[str, Any] | None = None
+            self,
+            query: str,
+            variables: dict[str, Any] | None = None,
+            *,
+            allow_not_found: Collection[tuple[str, ...]] = (),
         ) -> dict[str, Any]: ...
 
         def get_paginated(

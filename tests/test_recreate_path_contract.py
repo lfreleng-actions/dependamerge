@@ -160,6 +160,63 @@ class TestAReplacementThatClosesIsTerminal:
         assert result.pr_info is not None
 
 
+class TestADraftReplacementIsSkipped:
+    """A replacement marked draft while waiting ends as a skip of it.
+
+    No check makes a draft mergeable, so a ``blocked`` one waited out the
+    poll budget and was reported as pending auto-merge, and a ``dirty``
+    one was abandoned as blocked, exiting 7 (Copilot review on #567).
+    Driven through ``_merge_single_pr``, which reports the result.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("state", ["blocked", "dirty"])
+    async def test_the_result_names_the_skipped_replacement(self, state: str) -> None:
+        mgr, client = _mgr()
+        client.get = AsyncMock(
+            return_value=_payload(draft=True, mergeable=False, mergeable_state=state)
+        )
+        mgr._get_merge_method_for_repo = AsyncMock(return_value="merge")  # type: ignore[method-assign]
+        owner, name = REPO.split("/", 1)
+
+        async def sequence(flow: _MergeFlow) -> MergeResult:
+            await mgr._wait_for_recreated_pr_checks(owner, name, 107, _payload())
+            return flow.result
+
+        mgr._run_merge_sequence = sequence  # type: ignore[method-assign]
+        result = await mgr._merge_single_pr(_pr())
+
+        assert result.status is MergeStatus.SKIPPED
+        assert result.pr_info.number == 107
+        # Stopped at the first reading, not at the end of the budget.
+        assert client.get.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_a_replacement_marked_draft_before_its_merge_is_skipped(
+        self,
+    ) -> None:
+        # Marked draft while its dispatch waited for the repository lock:
+        # no merge is sent, and the result is a skip of the replacement.
+        mgr, client = _mgr()
+        mgr._get_merge_method_for_repo = AsyncMock(return_value="merge")  # type: ignore[method-assign]
+        mgr._approve_pr = AsyncMock(return_value=True)  # type: ignore[method-assign]
+        mgr._fetch_pr_state = AsyncMock(  # type: ignore[method-assign]
+            return_value={"state": "open", "draft": True}
+        )
+        client.merge_pull_request = AsyncMock(return_value=True)
+
+        async def sequence(flow: _MergeFlow) -> MergeResult:
+            await mgr._merge_recreated_pr(flow, _pr(107))
+            return flow.result
+
+        mgr._run_merge_sequence = sequence  # type: ignore[method-assign]
+        result = await mgr._merge_single_pr(_pr())
+
+        assert result.status is MergeStatus.SKIPPED
+        assert result.pr_info.number == 107
+        client.merge_pull_request.assert_not_called()
+
+
 class TestAStuckCheckCanActuallyTriggerARecreate:
     """The gates belong to the unsigned-commit cause, not to every cause."""
 

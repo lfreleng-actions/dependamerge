@@ -84,6 +84,35 @@ def _repos(value: Any) -> str:
     return ",".join(names)
 
 
+#: One App name: 'name', 'name[bot]' or 'app/name', in any case, as the
+#: CLI accepts.
+_APP = re.compile(
+    r"\A(?:app/)?[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\[bot\])?\Z", re.IGNORECASE
+)
+
+
+def _bots(value: Any) -> str:
+    """Validate a list of GitHub App names, for include_bots/exclude_bots.
+
+    Checked here as well as by dependamerge, so a misspelt list stops the
+    run before the project is even installed; '*' is left for the CLI to
+    accept in include_bots alone.
+    """
+    if isinstance(value, str):
+        items = [value]
+    elif isinstance(value, list) and all(isinstance(item, str) for item in value):
+        items = value
+    else:
+        raise ValueError("must be a string or a list of strings")
+    names = [name for item in items for name in _SEPARATORS.split(item) if name]
+    if not names:
+        raise ValueError("names no App; omit it to keep the defaults")
+    bad = [name for name in names if name != "*" and not _APP.match(name)]
+    if bad:
+        raise ValueError(f"not a GitHub App name: {', '.join(bad)}")
+    return ",".join(names)
+
+
 def _choice(*allowed: str) -> Callable[[Any], str]:
     def parse(value: Any) -> str:
         if value not in allowed:
@@ -130,6 +159,8 @@ OPTIONS: dict[str, tuple[Callable[[Any], str], str | None]] = {
     "target": (_target, None),
     "include_repos": (_repos, ""),
     "exclude_repos": (_repos, ""),
+    "include_bots": (_bots, ""),
+    "exclude_bots": (_bots, ""),
     "merge_method": (_choice("merge", "squash", "rebase"), "merge"),
     "force": (_choice("none", "code-owners", "protection-rules", "all"), "code-owners"),
     "max_wait": (_seconds, "900"),

@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 
 from ..github_async import PermissionError as GitHubPermissionError
+from ..merge_signals import PullRequestStopSignal
 from ..models import PullRequestInfo
 from ._base import _MergeManagerBase
 
@@ -276,6 +277,9 @@ class _AutoMergeEnableMixin(_MergeManagerBase):
             except GitHubPermissionError:
                 # Surface token permission problems to the caller's
                 # dedicated handler rather than masking them here.
+                raise
+            except PullRequestStopSignal:
+                # A draft, or draft state unknown: never arm auto-merge.
                 raise
             except Exception as exc:
                 self.log.warning(

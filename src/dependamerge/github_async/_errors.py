@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import time
+from collections.abc import Collection
 from typing import (
     Any,
 )
@@ -209,6 +210,26 @@ def _is_transient_graphql_error(errors: Any) -> bool:
             "internal server error",
             "network timeout",
         ]
+    )
+
+
+def _only_allowed_not_found(errors: Any, allowed: Collection[tuple[str, ...]]) -> bool:
+    """Whether every GraphQL error is a ``NOT_FOUND`` at an ``allowed`` path.
+
+    GitHub reports a missing object at a nested field as ``null`` there,
+    plus an error naming the field's ``path``, alongside otherwise valid
+    data.  Where the caller expects an object may be missing, that is an
+    answer rather than a failure.
+    """
+    if not allowed or not isinstance(errors, list) or not errors:
+        return False
+    paths = {tuple(path) for path in allowed}
+    return all(
+        isinstance(error, dict)
+        and error.get("type") == "NOT_FOUND"
+        and isinstance(error.get("path"), list)
+        and tuple(error["path"]) in paths
+        for error in errors
     )
 
 

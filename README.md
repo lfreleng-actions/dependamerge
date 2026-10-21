@@ -1754,10 +1754,12 @@ Apache-2.0 License - see LICENSE file for details.
 #### Authentication Error
 
 ```text
-Error: GitHub token needed
+❌ GitHub token required
+Details: Provide --token or set the GITHUB_TOKEN environment variable
 ```
 
-Solution: Set `GITHUB_TOKEN` environment variable or use `--token` flag.
+The run exits with code 2 (configuration error). Solution: Set
+`GITHUB_TOKEN` environment variable or use `--token` flag.
 
 ### Permission Error
 

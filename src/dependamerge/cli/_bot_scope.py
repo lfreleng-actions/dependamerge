@@ -112,7 +112,12 @@ async def _app_exists(api: _github_async.GitHubAsync, login: str) -> bool | None
 def _lookup_apps(
     logins: list[str], token: str | None, host: str
 ) -> dict[str, bool | None]:
-    """Look each login up once; the value is ``None`` when unknown."""
+    """Look each login up once; the value is ``None`` when unknown.
+
+    A client that cannot be built or opened (no token, say) leaves every
+    login unknown rather than escaping as a traceback.  Callers require
+    the token first, so this is a backstop, not the report.
+    """
 
     async def _run() -> dict[str, bool | None]:
         api_url, graphql_url = derive_api_urls(host or default_github_host())
@@ -122,7 +127,10 @@ def _lookup_apps(
             found = await asyncio.gather(*(_app_exists(api, login) for login in logins))
         return dict(zip(logins, found, strict=True))
 
-    return asyncio.run(_run())
+    try:
+        return asyncio.run(_run())
+    except Exception:
+        return dict.fromkeys(logins)
 
 
 def _check_listed_bots(policy: BotPolicy, token: str | None, host: str) -> None:

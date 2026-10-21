@@ -50,6 +50,7 @@ from ._merge_target import (
 )
 from ._org_merge import _handle_org_merge
 from ._repo_merge import _handle_repo_merge
+from ._token import _require_github_token
 
 
 @app.command()
@@ -391,6 +392,11 @@ def merge(
     if gerrit_target is not None:
         _dispatch_gerrit(gerrit_target, ctx, topic)
         return
+
+    # Resolved after the Gerrit dispatch, which needs no GitHub token,
+    # and after the target is parsed, which refuses an undeclared host
+    # before the App lookups below carry the token anywhere.
+    ctx.token = _require_github_token(ctx.token)
 
     # Bot policy is GitHub's: Gerrit changes have owners, not Apps.
     ctx.bot_policy = _build_bot_policy(include_bots, exclude_bots)

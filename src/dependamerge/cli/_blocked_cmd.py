@@ -9,7 +9,6 @@ that rebases the PRs the scan found blocked.
 """
 
 import asyncio
-import os
 
 import typer
 
@@ -19,7 +18,6 @@ from ..error_codes import (
     convert_git_error,
     convert_github_api_error,
     convert_network_error,
-    exit_for_configuration_error,
     exit_for_github_api_error,
     exit_with_error,
     is_github_api_permission_error,
@@ -41,6 +39,7 @@ from ..url_parser import (
 from ._app import app, console
 from ._github_host import apply_gerrit_host, apply_github_host
 from ._reports import _display_blocked_results
+from ._token import _require_github_token
 
 
 def _resolve_blocked_owner(org_input: str) -> tuple[str, str]:
@@ -192,12 +191,7 @@ def _run_blocked_fix(
         console.print("No eligible PRs to fix based on the selected reasons.")
         return
 
-    token_to_use = token or os.getenv("GITHUB_TOKEN")
-    if not token_to_use:
-        exit_for_configuration_error(
-            message="❌ GitHub token required for --fix option",
-            details="Provide --token or set GITHUB_TOKEN environment variable",
-        )
+    token_to_use = _require_github_token(token)
 
     console.print(f"Starting interactive fix for {len(selections)} PR(s)...")
     try:
@@ -328,6 +322,12 @@ def blocked(
     apply_gerrit_host(gerrit_host)
 
     organization, owner_host = _resolve_blocked_owner(org_input)
+
+    if fix:
+        # The scan uses the token before the fix does; resolving it
+        # here reports a missing one as the fix would, not as a
+        # permissions failure from the scan.
+        token = _require_github_token(token)
 
     progress_tracker = None
 

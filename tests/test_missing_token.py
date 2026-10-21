@@ -28,10 +28,6 @@ DETAILS = "Provide --token or set the GITHUB_TOKEN environment variable"
 
 runner = CliRunner()
 
-NOT_YET_REPORTED = pytest.mark.xfail(
-    strict=True, reason="A missing token is not yet a configuration error"
-)
-
 
 @pytest.fixture(autouse=True)
 def _no_token(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -46,7 +42,6 @@ def _assert_reported(result) -> None:
     assert not isinstance(result.exception, ValueError)
 
 
-@NOT_YET_REPORTED
 @pytest.mark.parametrize(
     "args",
     [
@@ -63,7 +58,6 @@ def test_merge_without_a_token_is_a_configuration_error(args: list[str]) -> None
     _assert_reported(runner.invoke(app, ["merge", "--dry-run", *args]))
 
 
-@NOT_YET_REPORTED
 def test_merge_with_only_a_user_policy_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -75,7 +69,6 @@ def test_merge_with_only_a_user_policy_file(
     _assert_reported(runner.invoke(app, ["merge", "--dry-run", PR_URL]))
 
 
-@NOT_YET_REPORTED
 @pytest.mark.parametrize("args", [[PR_URL], ["--include-bots", "some-app", PR_URL]])
 def test_close_without_a_token_is_a_configuration_error(args: list[str]) -> None:
     _assert_reported(runner.invoke(app, ["close", "--dry-run", *args]))
@@ -96,14 +89,12 @@ def test_gerrit_merge_needs_no_github_token() -> None:
     dispatch.assert_called_once()
 
 
-@NOT_YET_REPORTED
 def test_blocked_fix_command_without_a_token_is_a_configuration_error() -> None:
     # The scan needs the token before the fix does, so it has to be
     # resolved before scanning or the scan reports it as exit 3.
     _assert_reported(runner.invoke(app, ["blocked", "acme", "--fix", "--no-progress"]))
 
 
-@NOT_YET_REPORTED
 def test_blocked_fix_without_a_token_is_a_configuration_error(capsys) -> None:
     scan = SimpleNamespace(
         unmergeable_prs=[
@@ -122,7 +113,6 @@ def test_blocked_fix_without_a_token_is_a_configuration_error(capsys) -> None:
     assert DETAILS in out
 
 
-@NOT_YET_REPORTED
 def test_lookup_without_a_client_leaves_every_login_unknown() -> None:
     logins = ["renovate[bot]", "some-app[bot]"]
     with patch(

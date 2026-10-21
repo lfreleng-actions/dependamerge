@@ -60,6 +60,7 @@ from ._human_gate import (
     _require_override_pairing,
 )
 from ._pr_display import _display_pr_info
+from ._token import _require_github_token
 
 
 def _close_client(pr_url: str, token: str | None) -> _pkg.GitHubClient:
@@ -80,7 +81,6 @@ def _close_client(pr_url: str, token: str | None) -> _pkg.GitHubClient:
     """
     target_host = (urlparse(normalize_target(pr_url)).hostname or "").lower()
     github_client = _pkg.GitHubClient(token, host=target_host or DEFAULT_GITHUB_HOST)
-    # GitHubClient resolves None -> GITHUB_TOKEN env var (raises if missing)
     assert github_client.token is not None
     return github_client
 
@@ -170,6 +170,7 @@ def close(
     progress_tracker = None
 
     try:
+        token = _require_github_token(token)
         github_client = _close_client(pr_url, token)
         token = github_client.token
         # Parsed before the App lookups: parsing refuses a host nobody

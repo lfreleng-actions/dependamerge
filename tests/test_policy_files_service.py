@@ -15,12 +15,15 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
+from dataclasses import replace
+from types import SimpleNamespace
 from typing import Any
 
 import httpx
 import pytest
 
 from dependamerge.bot_policy_files import PolicyFiles
+from dependamerge.cli._policy_files import _warn_unreadable_variables
 from dependamerge.github_graphql import (
     ORG_REPOS_ONLY,
     OWNER_PROFILE,
@@ -315,6 +318,11 @@ class _AllSimilar:
         return ComparisonResult(is_similar=True, confidence_score=1.0, reasons=["x"])
 
 
+class _NoneSimilar:
+    def compare_pull_requests(self, source, target, only_automation):
+        return ComparisonResult(is_similar=False, confidence_score=0.0, reasons=[])
+
+
 def _source(author: str, repository: str) -> PullRequestInfo:
     return PullRequestInfo(
         number=1,
@@ -419,3 +427,69 @@ class TestSimilarPullRequests:
             ("acme/people", 20)
         ]
         assert list(svc.policy_files.repository_variables) == ["acme/widget"]
+
+    @pytest.mark.asyncio
+    async def test_every_app_pr_seen_is_kept_matching_or_not(self) -> None:
+        # Whether an unreadable variable is worth a warning depends on
+        # the App PRs the search saw, not only those it kept: an App no
+        # policy admits, or whose PR does not match, is still one a
+        # variable might have decided (Copilot review on #585).
+        pages = {
+            # The code monkey: no file admits it, so not a candidate.
+            "other": _pr_page("other", [3, 4], policy=None),
+            # Admitted here, but nothing matches.
+            "widget": _pr_page(
+                "widget", [5, 6], people=(6,), policy=_file(include_bots=[CODE_MONKEY])
+            ),
+        }
+        svc, _ = _service(_organisation(pages))
+        try:
+            found = await svc.find_similar_prs(
+                "acme",
+                _source("dependabot[bot]", "acme/home"),
+                _NoneSimilar(),
+                only_automation=True,
+            )
+        finally:
+            await svc.close()
+        assert found == []
+        # People's PRs are not kept: no policy judges them.
+        assert sorted(
+            (pr.repository_full_name, pr.number, pr.author) for pr in svc.seen_app_prs
+        ) == [
+            ("acme/other", 3, f"{CODE_MONKEY}[bot]"),
+            ("acme/other", 4, "dependabot[bot]"),
+            ("acme/widget", 5, f"{CODE_MONKEY}[bot]"),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_an_invalid_repositorys_app_prs_are_still_seen(self, capsys) -> None:
+        # A repository whose policy is invalid has nothing in scope, but
+        # its App PRs still decide whether an unreadable variable is worth
+        # a warning; a directory where its file should be covers neither
+        # level (Copilot review on #585).
+        pages = {"broken": _pr_page("broken", [3, 4, 10], people=(10,), policy={})}
+        svc, _ = _service(_organisation(pages))
+        try:
+            found = await svc.find_similar_prs(
+                "acme",
+                _source("dependabot[bot]", "acme/home"),
+                _AllSimilar(),
+                only_automation=True,
+            )
+        finally:
+            await svc.close()
+        assert found == []
+        assert sorted((pr.number, pr.author) for pr in svc.seen_app_prs) == [
+            (3, f"{CODE_MONKEY}[bot]"),
+            (4, "dependabot[bot]"),
+        ]
+        files = replace(
+            svc.policy_files, variables_refused=frozenset({"orgs", "repos"})
+        )
+        _warn_unreadable_variables(
+            SimpleNamespace(policy_files=files), svc.seen_app_prs
+        )
+        out = capsys.readouterr().out
+        assert "cannot read the organisation DEPENDAMERGE_BOTS variable" in out
+        assert "cannot read repository DEPENDAMERGE_BOTS variables" in out

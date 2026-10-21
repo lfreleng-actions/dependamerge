@@ -79,6 +79,8 @@ class _MergeContext:
     draft_results: list[MergeResult] = field(default_factory=list)
     # The repository and owner bot policy files the run has read.
     policy_files: PolicyFiles = field(default_factory=PolicyFiles)
+    # The kinds of unreadable variable the run has warned about.
+    policy_variables_warned: frozenset[str] = frozenset()
 
     # Derived / mutable state
     github_client: _pkg.GitHubClient | None = None

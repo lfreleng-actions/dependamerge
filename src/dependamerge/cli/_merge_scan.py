@@ -36,6 +36,7 @@ from ._merge_report import (
 from ._policy_files import (
     _apply_policy_files,
     _capture_policy_files,
+    _captured_app_prs,
     _keep_admitted_candidates,
 )
 from ._sha import _generate_continue_sha
@@ -61,6 +62,10 @@ def _scan_and_find_similar(ctx: _MergeContext) -> None:
     # progress tracker automatically.
 
     from ..github_service import GitHubService
+
+    # Every App PR the search saw, matching or not: they decide whether
+    # an unreadable variable is worth a warning.
+    seen: list[PullRequestInfo] = []
 
     async def _find_similar():
         svc = GitHubService(
@@ -90,13 +95,15 @@ def _scan_and_find_similar(ctx: _MergeContext) -> None:
             # with its first page of PRs, and by its variable where an
             # App's PR there could be a candidate; the merge rechecks.
             _capture_policy_files(ctx, svc)
+            seen.extend(_captured_app_prs(svc))
             return found
         finally:
             await svc.close()
 
-    refused_before = ctx.policy_files.variables_refused
     ctx.all_similar_prs = asyncio.run(_find_similar())
-    _apply_policy_files(ctx, refused_before=refused_before)
+    _apply_policy_files(
+        ctx, [ctx.source_pr, *seen, *(pr for pr, _ in ctx.all_similar_prs)]
+    )
     # Checking the files can still invalidate a candidate's repository
     # (an exclusion naming no App), so filter against the checked policy.
     ctx.all_similar_prs = _keep_admitted_candidates(ctx.bot_policy, ctx.all_similar_prs)

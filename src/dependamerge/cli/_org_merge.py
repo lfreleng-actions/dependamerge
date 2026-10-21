@@ -301,7 +301,7 @@ def _handle_org_merge(
     owner_prs, ctx.scan_errors = _fetch_owner_prs(
         parsed_org, ctx, only_automation=only_automation
     )
-    _apply_policy_files(ctx)
+    _apply_policy_files(ctx, owner_prs)
     _require_selection_matched(parsed_org, ctx)
 
     # Without --no-confirm the first pass is a preview (evaluation) run.

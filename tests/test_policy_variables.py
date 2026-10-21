@@ -15,13 +15,18 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
 
+from dependamerge.bot_identity import is_automation_author
 from dependamerge.bot_policy import BotPolicy, PolicyLevel
 from dependamerge.bot_policy_files import PolicyFiles, apply_policy_files
-from dependamerge.cli._policy_files import _warn_unreadable_variables
+from dependamerge.cli._policy_files import (
+    _load_source_policy_files,
+    _warn_unreadable_variables,
+)
 from dependamerge.github_graphql import ORG_REPOS_ONLY, USER_REPOS_ONLY
 from dependamerge.github_service import GitHubService
 from dependamerge.github_service._policy_variables import PolicyVariableError
@@ -211,13 +216,208 @@ class TestCombining:
         assert PolicyLevel.OWNER  # levels are unchanged
 
 
+ORG_WARNING = (
+    "⚠️ Token cannot read the organisation DEPENDAMERGE_BOTS variable\n"
+    "   Revise the token permission, or create a configuration file\n"
+    "   to suppress this warning: .github/dependamerge/config.json\n"
+)
+
+REPO_WARNING = (
+    "⚠️ Token cannot read repository DEPENDAMERGE_BOTS variables\n"
+    "   Revise the token permission, or create a configuration file\n"
+    "   to suppress this warning: .github/dependamerge/config.json\n"
+)
+
+
+def _refused(*kinds: str, **files: Any) -> SimpleNamespace:
+    return SimpleNamespace(
+        policy_files=PolicyFiles(variables_refused=frozenset(kinds), **files)
+    )
+
+
 class TestWarning:
-    def test_each_refused_kind_is_reported_once(self, capsys) -> None:
-        ctx = SimpleNamespace(
-            policy_files=PolicyFiles(variables_refused=frozenset({"orgs"}))
-        )
-        _warn_unreadable_variables(ctx, frozenset())
-        first = capsys.readouterr().out
-        assert "the organisation's DEPENDAMERGE_BOTS" in first
-        _warn_unreadable_variables(ctx, frozenset({"orgs"}))
+    """The warning appears only where a refused variable could matter.
+
+    That is, for an App outside the built-in ones, at a level no policy
+    file covers; and each kind at most once per run.
+    """
+
+    @pytest.mark.parametrize(
+        "author",
+        ["dependabot[bot]", "renovate[bot]", "pre-commit-ci[bot]", "octocat"],
+    )
+    def test_no_warning_for_built_in_apps_or_people(self, capsys, author) -> None:
+        ctx = _refused("orgs", "repos")
+        _warn_unreadable_variables(ctx, [_pr(author, "acme/widget")])
         assert capsys.readouterr().out == ""
+
+    def test_no_warning_without_pull_requests(self, capsys) -> None:
+        _warn_unreadable_variables(_refused("orgs", "repos"), [])
+        assert capsys.readouterr().out == ""
+
+    def test_an_organisation_warning_for_another_app(self, capsys) -> None:
+        ctx = _refused("orgs")
+        _warn_unreadable_variables(ctx, [_pr(CODE_MONKEY, "acme/widget")])
+        out = capsys.readouterr().out
+        assert out == ORG_WARNING
+        assert all(len(line) <= 80 for line in out.splitlines())
+
+    def test_a_repository_warning_for_another_app(self, capsys) -> None:
+        ctx = _refused("repos")
+        _warn_unreadable_variables(ctx, [_pr(CODE_MONKEY, "acme/widget")])
+        out = capsys.readouterr().out
+        assert out == REPO_WARNING
+        assert all(len(line) <= 80 for line in out.splitlines())
+
+    def test_one_block_per_refused_kind(self, capsys) -> None:
+        ctx = _refused("orgs", "repos")
+        _warn_unreadable_variables(ctx, [_pr(CODE_MONKEY, "acme/widget")])
+        assert capsys.readouterr().out == ORG_WARNING + REPO_WARNING
+
+    def test_an_owner_file_silences_the_organisation_warning(self, capsys) -> None:
+        ctx = _refused("orgs", owners={"acme": _blob({"exclude_bots": []})})
+        _warn_unreadable_variables(ctx, [_pr(CODE_MONKEY, "acme/widget")])
+        assert capsys.readouterr().out == ""
+
+    def test_a_repository_file_silences_the_repository_warning(self, capsys) -> None:
+        ctx = _refused(
+            "repos", repositories={"acme/widget": _blob({"exclude_bots": []})}
+        )
+        _warn_unreadable_variables(ctx, [_pr(CODE_MONKEY, "Acme/Widget")])
+        assert capsys.readouterr().out == ""
+
+    def test_each_repository_without_a_file_needs_its_variable(self, capsys) -> None:
+        ctx = _refused(
+            "repos",
+            owners={"acme": _blob({})},
+            repositories={"acme/widget": _blob({}), "acme/gadget": None},
+        )
+        prs = [_pr(CODE_MONKEY, "acme/widget"), _pr(CODE_MONKEY, "acme/gadget")]
+        _warn_unreadable_variables(ctx, prs)
+        assert capsys.readouterr().out == REPO_WARNING
+
+    def test_an_owner_file_leaves_the_repository_warning(self, capsys) -> None:
+        ctx = _refused("orgs", "repos", owners={"acme": _blob({})})
+        _warn_unreadable_variables(ctx, [_pr(CODE_MONKEY, "acme/widget")])
+        assert capsys.readouterr().out == REPO_WARNING
+
+    def test_each_refused_kind_is_reported_once(self, capsys) -> None:
+        ctx = _refused("orgs")
+        prs = [_pr(CODE_MONKEY, "acme/widget")]
+        _warn_unreadable_variables(ctx, prs)
+        assert capsys.readouterr().out == ORG_WARNING
+        _warn_unreadable_variables(ctx, prs)
+        assert capsys.readouterr().out == ""
+
+    def test_a_kind_held_back_is_reported_once_it_matters(self, capsys) -> None:
+        ctx = _refused("orgs")
+        _warn_unreadable_variables(ctx, [_pr("dependabot[bot]", "acme/widget")])
+        assert capsys.readouterr().out == ""
+        _warn_unreadable_variables(ctx, [_pr(CODE_MONKEY, "acme/gadget")])
+        assert capsys.readouterr().out == ORG_WARNING
+
+    def test_the_source_pull_request_decides_on_load(self, capsys) -> None:
+        refused = PolicyFiles(variables_refused=frozenset({"orgs"}))
+        client = MagicMock()
+        client.get_policy_files.return_value = refused
+        ctx = SimpleNamespace(
+            github_client=client,
+            owner="acme",
+            repo_name="widget",
+            token="t",
+            host="",
+            policy_files=PolicyFiles(),
+            bot_policy=BotPolicy(),
+            source_pr=_pr(CODE_MONKEY, "acme/widget"),
+        )
+        _load_source_policy_files(ctx)
+        assert capsys.readouterr().out == ORG_WARNING
+        ctx.source_pr = _pr("dependabot[bot]", "acme/widget")
+        ctx.policy_variables_warned = frozenset()
+        _load_source_policy_files(ctx)
+        assert capsys.readouterr().out == ""
+
+
+class TestSearchWarning:
+    """merge and close judge the warning by every App PR their search saw.
+
+    Not only the matches: an App no policy admits, or whose PR does not
+    match, is still one an unreadable variable might have decided
+    (Copilot review on #585).
+    """
+
+    @staticmethod
+    def _service(seen: list[PullRequestInfo]) -> MagicMock:
+        svc = MagicMock()
+        svc.find_similar_prs = AsyncMock(return_value=[])
+        svc.close = AsyncMock()
+        svc.policy_files = PolicyFiles(variables_refused=frozenset({"orgs"}))
+        svc.seen_app_prs = tuple(seen)
+        return svc
+
+    @classmethod
+    def _merge(cls, seen: list[PullRequestInfo]) -> None:
+        from dependamerge.cli._context import _MergeContext
+        from dependamerge.cli._merge_scan import _scan_and_find_similar
+
+        ctx = _MergeContext(
+            pr_url="https://github.com/acme/home/pull/1",
+            no_confirm=True,
+            similarity_threshold=0.8,
+            merge_method="merge",
+            token="t",
+            override=None,
+            no_fix=False,
+            merge_timeout=300.0,
+            show_progress=False,
+            debug_matching=False,
+            dismiss_copilot=False,
+            force="none",
+            verbose=False,
+            no_netrc=False,
+            netrc_file=None,
+            netrc_optional=True,
+            github2gerrit_mode="ignore",
+        )
+        ctx.owner = "acme"
+        ctx.github_client = MagicMock()
+        ctx.github_client.is_automation_author.side_effect = is_automation_author
+        ctx.source_pr = _pr("dependabot[bot]", "acme/home")
+        ctx.comparator = MagicMock()
+        with patch(
+            "dependamerge.github_service.GitHubService",
+            return_value=cls._service(seen),
+        ):
+            _scan_and_find_similar(ctx)
+
+    @classmethod
+    def _close(cls, seen: list[PullRequestInfo]) -> None:
+        from dependamerge.cli import _close
+
+        client = MagicMock()
+        client.is_automation_author.side_effect = is_automation_author
+        ctx = _close._CloseContext(
+            token="t",
+            github_client=client,
+            host="github.com",
+            owner="acme",
+            repo_name="home",
+            pr_number=1,
+            source_pr=_pr("dependabot[bot]", "acme/home"),
+            progress_tracker=None,
+        )
+        with patch(
+            "dependamerge.github_service.GitHubService",
+            return_value=cls._service(seen),
+        ):
+            _close._find_similar_prs_for_close(ctx, MagicMock(), debug_matching=False)
+
+    @pytest.mark.parametrize("run", ["_merge", "_close"])
+    def test_an_unmatched_app_pr_warns(self, capsys, run) -> None:
+        getattr(self, run)([_pr(CODE_MONKEY, "acme/gadget")])
+        assert ORG_WARNING in capsys.readouterr().out
+
+    @pytest.mark.parametrize("run", ["_merge", "_close"])
+    def test_only_built_in_app_prs_stay_silent(self, capsys, run) -> None:
+        getattr(self, run)([_pr("renovate[bot]", "acme/gadget")])
+        assert "Token cannot read" not in capsys.readouterr().out

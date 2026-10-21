@@ -12,6 +12,8 @@ helpers so each stays reviewable.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 from ..bot_identity import is_automation_author
 from ..bot_policy import BotPolicy
 from ..models import ComparisonResult, PullRequestInfo
@@ -55,6 +57,16 @@ def _variable_matters(
 
 class _SimilarPullRequestsMixin(_GitHubServiceBase):
     """Similar-PR discovery for ``GitHubService``."""
+
+    @property
+    def seen_app_prs(self) -> tuple[PullRequestInfo, ...]:
+        """Every App's pull request the searches have seen, as a snapshot.
+
+        Before any filter: an App the policy does not admit, or whose pull
+        request does not match, was still seen, and a policy variable the
+        token cannot read might have admitted it.
+        """
+        return tuple(self._seen_app_prs)
 
     async def find_similar_prs(
         self,
@@ -130,7 +142,8 @@ class _SimilarPullRequestsMixin(_GitHubServiceBase):
 
         Candidates are judged with the repository's own bot policy (see
         :meth:`_judged_open_prs`); when that is invalid, nothing there
-        is a candidate.
+        is a candidate.  The App PRs it lists join
+        :attr:`seen_app_prs`, candidates or not.
         """
         judged = await self._judged_open_prs(
             repo_full_name,
@@ -193,12 +206,17 @@ class _SimilarPullRequestsMixin(_GitHubServiceBase):
         The policy also consults the repository's own file, which its
         first page carries, and its ``DEPENDAMERGE_BOTS`` variable, read
         where it bears on the search (see :func:`_variable_matters`).
-        ``None`` when that policy is invalid.
+        ``None`` when that policy is invalid, after the first page's App
+        PRs join :attr:`seen_app_prs`: none is in scope, but whether a
+        variable the token cannot read is worth a warning still counts them.
         """
         owner_n, name_n = repo_full_name.split("/", 1)
         first_nodes, page_info = await self._fetch_repo_prs_first_page(owner_n, name_n)
         policy = self._valid_repository_policy(bot_policy, repo_full_name)
         if policy is None:
+            self._record_app_prs(
+                self.to_pull_request_info(repo_full_name, node) for node in first_nodes
+            )
             return None
         nodes = list(first_nodes)
         if page_info.get("hasNextPage"):
@@ -208,10 +226,15 @@ class _SimilarPullRequestsMixin(_GitHubServiceBase):
             ):
                 nodes.append(pr_node)
         prs = [self.to_pull_request_info(repo_full_name, node) for node in nodes]
+        self._record_app_prs(prs)
         if _variable_matters(source_pr, prs, only_automation=only_automation):
             await self._read_repository_variable(repo_full_name)
             policy = self._valid_repository_policy(bot_policy, repo_full_name)
         return None if policy is None else (prs, policy)
+
+    def _record_app_prs(self, prs: Iterable[PullRequestInfo]) -> None:
+        """Add the App PRs among ``prs`` to :attr:`seen_app_prs`."""
+        self._seen_app_prs.extend(pr for pr in prs if is_automation_author(pr.author))
 
     def _valid_repository_policy(
         self, bot_policy: BotPolicy, repository: str

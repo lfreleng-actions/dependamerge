@@ -267,7 +267,7 @@ def _handle_repo_merge(
 
     only_automation = not ctx.include_human_prs
     repo_prs = _fetch_repo_prs(ctx, only_automation=only_automation)
-    _apply_policy_files(ctx)
+    _apply_policy_files(ctx, repo_prs)
 
     if not repo_prs:
         label = "automation " if only_automation else ""

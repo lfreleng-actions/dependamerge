@@ -16,15 +16,19 @@ before deciding whether that pull request is in scope.  See
 An invalid owner policy stops the run before anything merges.  An
 invalid repository policy puts none of that repository's pull requests
 in scope; the run reports it and carries on with the others.  A token
-that cannot read variables is reported once.
+that cannot read a kind of variable is reported once, and only when that
+kind could decide something no file covers: see
+:func:`_warn_unreadable_variables`.
 """
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import replace
 from typing import Any
 
-from ..bot_policy import BotPolicy, PolicyLevel, app_slug
+from ..bot_identity import is_automation_author
+from ..bot_policy import BUILTIN_BOTS, BotPolicy, PolicyLevel, app_slug
 from ..bot_policy_files import POLICY_VARIABLE, PolicyFiles, apply_policy_files
 from ..error_codes import exit_for_configuration_error
 from . import _bot_scope
@@ -33,6 +37,7 @@ from ._app import console
 __all__ = [
     "_apply_policy_files",
     "_capture_policy_files",
+    "_captured_app_prs",
     "_keep_admitted_candidates",
     "_load_source_policy_files",
     "_policy_with_files",
@@ -41,16 +46,21 @@ __all__ = [
 
 _FILE_LEVELS = (PolicyLevel.REPOSITORY, PolicyLevel.OWNER)
 
-_KIND_NAMES = {"orgs": "the organisation's", "repos": "repositories'"}
+_KIND_NAMES = {"orgs": "the organisation", "repos": "repository"}
+
+_KIND_NOUNS = {"orgs": "variable", "repos": "variables"}
+
+_POLICY_FILE = ".github/dependamerge/config.json"
 
 
-def _unreadable_variables_message(kinds: frozenset[str]) -> str:
-    """The one-time warning naming which variables the token cannot read."""
-    which = " or ".join(_KIND_NAMES.get(kind, kind) for kind in sorted(kinds))
+def _unreadable_variables_message(kind: str) -> str:
+    """The warning that the token cannot read ``kind``'s variables."""
+    which = _KIND_NAMES.get(kind, kind)
+    noun = _KIND_NOUNS.get(kind, "variables")
     return (
-        f"⚠️ This token cannot read {which} {POLICY_VARIABLE} Actions "
-        "variables: their inclusions do not apply and their exclusions cannot "
-        "hold. Keep exclusions that must hold in policy files."
+        f"⚠️ Token cannot read {which} {POLICY_VARIABLE} {noun}\n"
+        "   Revise the token permission, or create a configuration file\n"
+        f"   to suppress this warning: {_POLICY_FILE}"
     )
 
 
@@ -72,6 +82,16 @@ def _capture_policy_files(ctx: Any, svc: Any) -> None:
     files = getattr(svc, "policy_files", None)
     if isinstance(files, PolicyFiles):
         ctx.policy_files = _combined(ctx.policy_files, files)
+
+
+def _captured_app_prs(svc: Any) -> list[Any]:
+    """The App pull requests a service's searches saw, before any filter.
+
+    They decide whether an unreadable variable is worth a warning (see
+    :func:`_warn_unreadable_variables`), whether or not they match.
+    """
+    seen = getattr(svc, "seen_app_prs", None)
+    return list(seen) if isinstance(seen, tuple | list) else []
 
 
 def _check_file_apps(policy: BotPolicy, token: str | None, host: str) -> BotPolicy:
@@ -136,27 +156,56 @@ def _policy_with_files(
     return _check_file_apps(applied, token, host)
 
 
-def _warn_unreadable_variables(ctx: Any, refused_before: frozenset[str]) -> None:
-    """Say which variables the token cannot read, unless already said.
+def _needs_variables(files: PolicyFiles, kind: str, prs: Iterable[Any]) -> bool:
+    """Whether a refused ``kind`` of variable could decide one of ``prs``.
 
-    ``refused_before`` is what the run knew before its latest read, so
-    each kind is reported once.
+    Only an App outside :data:`BUILTIN_BOTS` depends on a policy to be in
+    scope, and a policy file at the refused level covers it: the owner's
+    for ``orgs``, the pull request's repository's for ``repos``.
     """
-    newly = ctx.policy_files.variables_refused - refused_before
-    if newly:
-        console.print(_unreadable_variables_message(newly))
+    for pr in prs:
+        author = (getattr(pr, "author", None) or "").lower()
+        if not is_automation_author(author) or author in BUILTIN_BOTS:
+            continue
+        repository = (getattr(pr, "repository_full_name", None) or "").lower()
+        if kind == "orgs":
+            blob = files.owners.get(repository.split("/", 1)[0])
+        else:
+            blob = files.repositories.get(repository)
+        if not blob:
+            return True
+    return False
 
 
-def _apply_policy_files(
-    ctx: Any, *, refused_before: frozenset[str] = frozenset()
-) -> None:
+def _warn_unreadable_variables(ctx: Any, prs: Iterable[Any] = ()) -> None:
+    """Say which variables the token cannot read, where it matters.
+
+    A refused kind is reported only when one of ``prs``, the pull
+    requests the run has seen, is an App's outside the built-in ones and
+    no policy file covers that level; each kind at most once per run.
+    """
+    files: PolicyFiles = ctx.policy_files
+    warned: frozenset[str] = getattr(ctx, "policy_variables_warned", frozenset())
+    pending = sorted(files.variables_refused - warned)
+    if not pending:
+        return
+    prs = list(prs)
+    for kind in pending:
+        if _needs_variables(files, kind, prs):
+            console.print(_unreadable_variables_message(kind))
+            warned |= {kind}
+    ctx.policy_variables_warned = warned
+
+
+def _apply_policy_files(ctx: Any, prs: Iterable[Any] = ()) -> None:
     """Apply the files and variables the run has read to its policy.
 
-    Says, once per run, that the token cannot read the variables (see
+    ``prs`` are the pull requests the run has seen, which decide whether
+    an unreadable variable is worth a warning (see
     :func:`_warn_unreadable_variables`).  Exits with a configuration
     error when an owner's policy is invalid.
     """
-    _warn_unreadable_variables(ctx, refused_before)
+    _warn_unreadable_variables(ctx, prs)
     ctx.bot_policy = _policy_with_files(
         ctx.bot_policy, ctx.policy_files, ctx.token, ctx.host
     )
@@ -170,11 +219,11 @@ def _load_source_policy_files(ctx: Any) -> None:
     policy is invalid has nothing in scope, so the run stops with a
     configuration error.
     """
-    refused_before = ctx.policy_files.variables_refused
     files = ctx.github_client.get_policy_files(ctx.owner, ctx.repo_name)
     if isinstance(files, PolicyFiles):
         ctx.policy_files = _combined(ctx.policy_files, files)
-    _apply_policy_files(ctx, refused_before=refused_before)
+    source = getattr(ctx, "source_pr", None)
+    _apply_policy_files(ctx, [source] if source is not None else [])
     repository = f"{ctx.owner}/{ctx.repo_name}"
     problem = ctx.bot_policy.repository_error(repository)
     if problem is not None:

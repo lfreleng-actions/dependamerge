@@ -160,14 +160,29 @@ Reading variables needs more than reading code:
 | Organisation | `admin:org` scope | "Variables" organisation permission, read |
 
 A token can lack one and hold the other. When GitHub refuses a kind of
-variable, dependamerge stops reading that kind and says so once. The
-refused variables' inclusions do not apply, and their exclusions cannot
-hold, so keep exclusions that must hold in files. Any other failure to
-read a variable stops the run, since the variable might hold an
-exclusion:
+variable, dependamerge stops reading that kind. The refused variables'
+inclusions do not apply, and their exclusions cannot hold, so keep
+exclusions that must hold in files. Any other failure to read a variable
+stops the run, since the variable might hold an exclusion.
+
+Dependamerge warns about a refused kind at most once per run, and stays
+silent unless it could matter: the run has seen a pull request from an App
+outside the built-in ones, matching and in scope or not, and no policy
+file covers that level. For organisation variables, that means the
+owner's `.github` repository has no `.github/dependamerge/config.json`;
+for repository variables, that a repository holding such a pull request
+has none of its own:
 
 ```text
-⚠️ This token cannot read the organisation's DEPENDAMERGE_BOTS Actions
-variables: their inclusions do not apply and their exclusions cannot
-hold. Keep exclusions that must hold in policy files.
+⚠️ Token cannot read the organisation DEPENDAMERGE_BOTS variable
+   Revise the token permission, or create a configuration file
+   to suppress this warning: .github/dependamerge/config.json
 ```
+
+Repository variables get the same warning, starting `⚠️ Token cannot
+read repository DEPENDAMERGE_BOTS variables`. To suppress it, give the
+token the permission in the table above, or add the policy file at the
+refused level; the file may hold an empty document, `{}`. A run that
+sees no pull request but people's and built-in Apps' stays silent, so a
+refused variable excluding a built-in App goes unenforced without a
+warning: another reason to keep exclusions that must hold in files.

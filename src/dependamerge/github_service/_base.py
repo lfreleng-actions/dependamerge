@@ -56,6 +56,7 @@ class _GitHubServiceBase:
     _owner_policy_variables: dict[str, str | None]
     _repository_policy_variables: dict[str, str | None]
     _policy_variables_refused: set[str]
+    _seen_app_prs: list[PullRequestInfo]
 
     # Implemented by sibling mixins; declared here (type-checking only,
     # so nothing is defined at runtime) for cross-mixin calls.

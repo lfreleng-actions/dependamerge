@@ -42,6 +42,7 @@ from ._human_gate import (
 from ._policy_files import (
     _apply_policy_files,
     _capture_policy_files,
+    _captured_app_prs,
     _keep_admitted_candidates,
     _load_source_policy_files,
 )
@@ -70,6 +71,8 @@ class _CloseContext:
     bot_policy: BotPolicy = field(default_factory=BotPolicy)
     # The repository and owner bot policy files the run has read.
     policy_files: PolicyFiles = field(default_factory=PolicyFiles)
+    # The kinds of unreadable variable the run has warned about.
+    policy_variables_warned: frozenset[str] = frozenset()
 
 
 def _run_close_parallel(
@@ -227,6 +230,10 @@ def _find_similar_prs_for_close(
     if ctx.progress_tracker:
         ctx.progress_tracker.update_operation("Listing repositories...")
 
+    # Every App PR the search saw, matching or not: they decide whether
+    # an unreadable variable is worth a warning.
+    seen: list[PullRequestInfo] = []
+
     async def _find_similar():
         svc = GitHubService(
             token=ctx.token,
@@ -249,16 +256,16 @@ def _find_similar_prs_for_close(
                 bot_policy=ctx.bot_policy,
             )
             _capture_policy_files(ctx, svc)
+            seen.extend(_captured_app_prs(svc))
             return found
         finally:
             await svc.close()
 
-    refused_before = ctx.policy_files.variables_refused
     found: list[tuple[PullRequestInfo, ComparisonResult]] = asyncio.run(_find_similar())
     # Apply and check every candidate repository's policy, as merge does:
     # close has no later recheck, so an invalid repository's PRs must not
     # survive to it, nor the source, which every close list starts with.
-    _apply_policy_files(ctx, refused_before=refused_before)
+    _apply_policy_files(ctx, [ctx.source_pr, *seen, *(pr for pr, _ in found)])
     _require_source_in_scope(ctx)
     return _keep_admitted_candidates(ctx.bot_policy, found)
 

@@ -267,7 +267,7 @@ class TestCloseSource:
         svc.find_similar_prs = AsyncMock(return_value=[])
         svc.close = AsyncMock()
 
-        def apply(ctx: Any, **_: Any) -> None:
+        def apply(ctx: Any, *_: Any) -> None:
             ctx.bot_policy = policy_after
 
         with (

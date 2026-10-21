@@ -146,6 +146,9 @@ class GitHubService(
         self._owner_policy_variables: dict[str, str | None] = {}
         self._repository_policy_variables: dict[str, str | None] = {}
         self._policy_variables_refused: set[str] = set()
+        # Every App's pull request a similar-PR search has seen, before
+        # any filter; see ``seen_app_prs``.
+        self._seen_app_prs = []
         self.log = logging.getLogger("dependamerge.github_service")
 
     def _attach_callbacks(self, client: GitHubAsync) -> None:

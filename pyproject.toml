@@ -35,7 +35,7 @@ dependencies = [
   "aiolimiter>=1.2.1",
   "httpx[http2]>=0.28.1",
   "pydantic>=2.12.5",
-  "pygerrit2>=2.0.15",
+  "python-gerrit-api>=3.1.0",
   "requests>=2.32.0",
   "rich>=14.2.0",
   "tenacity>=9.1.2",
@@ -191,6 +191,8 @@ typeCheckingMode = "standard"
 include = ["src", "tests", "scripts"]
 # Auto-generated version file uses deprecated typing imports for backwards compat
 exclude = ["src/dependamerge/_version.py"]
+# Narrow stubs for untyped dependencies (python-gerrit-api has no py.typed)
+stubPath = "typings"
 
 # --- Errors we want to catch and fix ---
 # These are genuine type defects, so they fail the build.  They were
@@ -271,6 +273,7 @@ warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = false
 ignore_missing_imports = true
+mypy_path = "typings"
 
 # ``tests`` reaches through module objects on purpose --- the suite
 # patches ``dependamerge.merge_manager.asyncio.sleep`` and friends so

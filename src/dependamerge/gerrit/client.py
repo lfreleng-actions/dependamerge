@@ -8,14 +8,18 @@ This module provides a typed wrapper for Gerrit REST API calls with:
 - Request timeouts
 - Transient error classification (HTTP 5xx/429 and network errors)
 
-The client uses pygerrit2 for all Gerrit REST API interactions.
+The transport is python-gerrit-api's ``GerritClient`` on a Requests
+session.  The library does no retrying of its own: retries, timeouts and
+error classification stay here, and failures keep their HTTP status and
+response body.
 
-The error types, the pure retry helpers and the request machinery live in
-the sibling modules ``_client_errors`` and ``_client_requests`` and are
-re-exported here, so this module's surface is unchanged.  ``GerritRestAPI``,
-``HTTPBasicAuth`` and ``get_credentials_for_host`` are deliberately resolved
-in *this* module's namespace only, so that substituting them here is
-observed by the code that uses them.
+The error types, the pure retry helpers, the request machinery and the
+transport adapters live in the sibling modules ``_client_errors``,
+``_client_requests`` and ``_client_transport`` and are re-exported here,
+so this module's surface is unchanged.  ``GerritClient``,
+``get_credentials_for_host`` and ``get_netrc_auth`` are deliberately
+resolved in *this* module's namespace only, so that substituting them
+here is observed by the code that uses them.
 
 Usage:
     from dependamerge.gerrit.client import GerritRestClient, build_client
@@ -31,13 +35,14 @@ import os
 from pathlib import Path
 from typing import Any
 
-from pygerrit2 import GerritRestAPI, HTTPBasicAuth
+from gerrit import GerritClient
+from requests.utils import get_netrc_auth
 
 from dependamerge.netrc import NetrcParseError, get_credentials_for_host
 
 # The sibling modules below carry the parts of this module that never touch
-# GerritRestAPI / HTTPBasicAuth / get_credentials_for_host.  Redundant ``as``
-# aliases mark deliberate re-exports: every name here has always been
+# GerritClient / get_credentials_for_host / get_netrc_auth.  Redundant
+# ``as`` aliases mark deliberate re-exports: every name here has always been
 # reachable as ``dependamerge.gerrit.client.<name>``.
 from ._client_errors import _RETRYABLE_HTTP_CODES as _RETRYABLE_HTTP_CODES
 from ._client_errors import _TRANSIENT_ERR_SUBSTRINGS as _TRANSIENT_ERR_SUBSTRINGS
@@ -52,6 +57,7 @@ from ._client_errors import _calculate_backoff as _calculate_backoff
 from ._client_errors import _extract_status_code as _extract_status_code
 from ._client_errors import _is_transient_error as _is_transient_error
 from ._client_requests import _GerritRequestMixin
+from ._client_transport import GerritSession, SessionPool
 
 log = logging.getLogger("dependamerge.gerrit.client")
 
@@ -63,7 +69,9 @@ class GerritRestClient(_GerritRequestMixin):
     This client provides methods for making authenticated requests to
     Gerrit's REST API with automatic retry on transient failures.
 
-    Uses pygerrit2 for all Gerrit REST API interactions.
+    Uses python-gerrit-api for all Gerrit REST API interactions.  Each
+    concurrent request runs on its own Requests session, taken from a
+    pool owned by the client; :meth:`close` releases them.
     """
 
     def __init__(
@@ -93,13 +101,9 @@ class GerritRestClient(_GerritRequestMixin):
         if auth and auth[0] and auth[1]:
             self._auth = _Auth(auth[0], auth[1])
 
-        if self._auth is not None:
-            self._client = GerritRestAPI(
-                url=self._base_url,
-                auth=HTTPBasicAuth(self._auth.user, self._auth.password),
-            )
-        else:
-            self._client = GerritRestAPI(url=self._base_url)
+        self._backends: SessionPool[GerritClient] = SessionPool(
+            self._new_backend, _close_backend
+        )
 
         log.debug(
             "GerritRestClient initialized: base_url=%s, timeout=%.1fs, "
@@ -109,6 +113,36 @@ class GerritRestClient(_GerritRequestMixin):
             self._max_attempts,
             self._auth.user if self._auth else "(none)",
         )
+
+    def _new_backend(self) -> GerritClient:
+        """Create a python-gerrit-api client on a session of its own.
+
+        The library's own netrc lookup stays off and it is given no retry
+        adapter: credentials come from ``build_client`` and retries from
+        ``_request_with_retry``.  Its timeout is set here because the
+        library overrides any per-call value.
+        """
+        auth = self._auth
+        return GerritClient(
+            base_url=self._base_url,
+            username=auth.user if auth else None,
+            password=auth.password if auth else None,
+            use_netrc=False,
+            ssl_verify=True,
+            timeout=self._timeout,
+            max_retries=None,
+            session=GerritSession(),
+        )
+
+    def close(self) -> None:
+        """Close the HTTP sessions this client opened."""
+        self._backends.close()
+
+    def __enter__(self) -> GerritRestClient:
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self.close()
 
     @property
     def base_url(self) -> str:
@@ -195,6 +229,10 @@ class GerritRestClient(_GerritRequestMixin):
         return f"GerritRestClient(base_url='{masked}{self._base_url}')"
 
 
+def _close_backend(backend: GerritClient) -> None:
+    backend.session.close()
+
+
 def build_client(
     host: str,
     *,
@@ -217,6 +255,11 @@ def build_client(
     2. .netrc file (if use_netrc=True)
     3. Environment variables: GERRIT_USERNAME/GERRIT_PASSWORD or
        GERRIT_HTTP_USER/GERRIT_HTTP_PASSWORD
+    4. Requests' own netrc lookup ($NETRC, then ~/.netrc), when
+       use_netrc=True and no netrc_file was given
+
+    Only these credentials are ever sent: the transport never consults
+    netrc on its own, so ``is_authenticated`` is always accurate.
 
     Args:
         host: Gerrit hostname (without scheme).
@@ -270,6 +313,16 @@ def build_client(
             os.getenv("GERRIT_PASSWORD", "").strip()
             or os.getenv("GERRIT_HTTP_PASSWORD", "").strip()
         )
+
+    # Last, Requests' netrc reader, which honours $NETRC and account-only
+    # entries.  The previous backend consulted it implicitly on every
+    # unauthenticated request; made here, it shows in is_authenticated and
+    # respects use_netrc and an explicit netrc_file.
+    if (not user or not passwd) and use_netrc and netrc_file is None:
+        fallback = get_netrc_auth(base_url)
+        if fallback and fallback[0] and fallback[1]:
+            user, passwd = fallback
+            log.debug("Using credentials from Requests netrc lookup for %s", host)
 
     auth: tuple[str, str] | None = None
     if user and passwd:

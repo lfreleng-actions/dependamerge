@@ -98,7 +98,7 @@ The following modules provide proven Gerrit REST functionality:
    - Keep `GerritUrlBuilder` and `create_gerrit_url_builder`
    - Keep base path discovery logic
 4. Create `gerrit/__init__.py` with public exports
-5. Add `pygerrit2>=2.0.15` dependency to `pyproject.toml`
+5. Add `python-gerrit-api>=3.1.0` dependency to `pyproject.toml`
 
 ### Authentication Support
 
@@ -517,7 +517,7 @@ Add to `pyproject.toml`:
 ```toml
 dependencies = [
     # ... existing deps ...
-    "pygerrit2>=2.0.15",  # Gerrit REST API client
+    "python-gerrit-api>=3.1.0",  # Gerrit REST API client
 ]
 ```
 
@@ -558,7 +558,7 @@ src/dependamerge/
 ├── cli.py                     # Add Gerrit support
 ├── pr_comparator.py           # Generalize for both platforms
 
-pyproject.toml                 # Add pygerrit2 dependency
+pyproject.toml                 # Add python-gerrit-api dependency
 ```
 
 ---
@@ -599,11 +599,32 @@ pyproject.toml                 # Add pygerrit2 dependency
 4. **Rate limiting:** Large Gerrit servers may rate limit API calls
    - *Mitigation:* Use exponential backoff; reuse retry framework
 
-### Fallback Strategy
+### Gerrit REST Transport
 
-If pygerrit2 proves problematic, the implementation can fall back to direct
-HTTP requests using `httpx` (already a dependency), as demonstrated in the
-`github2gerrit-action` codebase.
+`GerritRestClient` sends requests through python-gerrit-api's
+`GerritClient` and Requests, and keeps these contracts itself:
+
+- **Credentials:** `build_client` resolves them once (explicit, project
+  `.netrc` search, environment variables, then Requests' `$NETRC` or
+  `~/.netrc` lookup). The session never reads netrc on its own, on the
+  first request or on a redirect, so `is_authenticated` matches what goes
+  over the wire, and `use_netrc=False` or an explicit `netrc_file` holds.
+- **URLs:** authenticated requests use one `/a/` after any deployment
+  prefix (`/infra/a/`, `/r/a/`); anonymous requests use none.
+- **Payloads:** request bodies go out as JSON, an empty object included.
+- **Responses:** the `)]}'` XSSI guard comes off before LF or CRLF;
+  non-JSON and empty bodies come back as text.
+- **Errors:** HTTP failures keep their exact status and response body in
+  `GerritRestError`, `GerritAuthError` (401/403) and
+  `GerritNotFoundError` (404).
+- **Retries and timeouts:** the client owns both; the library adds no
+  retry adapter, so each attempt is one request.
+- **Environment:** proxy (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`,
+  `NO_PROXY` with IPv4 CIDR) and CA bundle (`REQUESTS_CA_BUNDLE`, then
+  `CURL_CA_BUNDLE`) settings apply as Requests defines them. Requests
+  does not match IPv6 CIDR ranges in `NO_PROXY`.
+- **Threads:** each concurrent request takes its own session from a pool
+  the client owns; `close()` releases them.
 
 ---
 

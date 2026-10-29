@@ -4,19 +4,18 @@
 Tests for Gerrit REST client module.
 
 This module tests the GerritRestClient's initialization, request handling,
-retry behavior, and authentication using pygerrit2.
+retry helpers, and credential resolution.  Wire-level behaviour through
+the python-gerrit-api backend is covered in ``test_gerrit_backend``.
 """
 
+import importlib.util
 from unittest.mock import MagicMock, patch
 
-import pytest
-from requests.exceptions import ConnectionError, HTTPError, Timeout
+from requests.exceptions import HTTPError
 
 from dependamerge.gerrit.client import (
-    GerritAuthError,
-    GerritNotFoundError,
     GerritRestClient,
-    GerritRestError,
+    _Auth,
     _calculate_backoff,
     _extract_status_code,
     _is_transient_error,
@@ -121,10 +120,10 @@ class TestExtractStatusCode:
         exc.response.status_code = 404
         assert _extract_status_code(exc) == 404
 
-    def test_extract_from_string_representation(self):
-        """Test extracting status code from exception string."""
+    def test_digits_in_message_are_not_a_status(self):
+        """Digits in an exception message are never taken for a status."""
         exc = Exception("Server returned 503 Service Unavailable")
-        assert _extract_status_code(exc) == 503
+        assert _extract_status_code(exc) is None
 
     def test_no_status_code(self):
         """Test when no status code can be extracted."""
@@ -135,24 +134,19 @@ class TestExtractStatusCode:
 class TestGerritRestClientInit:
     """Tests for GerritRestClient initialization."""
 
-    @patch("dependamerge.gerrit.client.GerritRestAPI")
-    def test_basic_init(self, mock_api):
+    def test_basic_init(self):
         """Test basic client initialization."""
         client = GerritRestClient(base_url="https://gerrit.example.org/")
 
         assert client.base_url == "https://gerrit.example.org/"
         assert client.is_authenticated is False
-        mock_api.assert_called_once()
 
-    @patch("dependamerge.gerrit.client.GerritRestAPI")
-    def test_init_normalizes_base_url(self, mock_api):
+    def test_init_normalizes_base_url(self):
         """Test that base URL is normalized to end with slash."""
         client = GerritRestClient(base_url="https://gerrit.example.org")
         assert client.base_url == "https://gerrit.example.org/"
 
-    @patch("dependamerge.gerrit.client.GerritRestAPI")
-    @patch("dependamerge.gerrit.client.HTTPBasicAuth")
-    def test_init_with_auth(self, mock_auth, mock_api):
+    def test_init_with_auth(self):
         """Test client initialization with authentication."""
         client = GerritRestClient(
             base_url="https://gerrit.example.org/",
@@ -160,10 +154,9 @@ class TestGerritRestClientInit:
         )
 
         assert client.is_authenticated is True
-        mock_auth.assert_called_once_with("user", "password")
+        assert client._auth == _Auth("user", "password")
 
-    @patch("dependamerge.gerrit.client.GerritRestAPI")
-    def test_init_with_empty_auth(self, mock_api):
+    def test_init_with_empty_auth(self):
         """Test that empty auth credentials are ignored."""
         client = GerritRestClient(
             base_url="https://gerrit.example.org/",
@@ -172,8 +165,7 @@ class TestGerritRestClientInit:
 
         assert client.is_authenticated is False
 
-    @patch("dependamerge.gerrit.client.GerritRestAPI")
-    def test_init_with_partial_auth(self, mock_api):
+    def test_init_with_partial_auth(self):
         """Test that partial auth credentials are ignored."""
         client = GerritRestClient(
             base_url="https://gerrit.example.org/",
@@ -182,349 +174,30 @@ class TestGerritRestClientInit:
 
         assert client.is_authenticated is False
 
-    @patch("dependamerge.gerrit.client.GerritRestAPI")
-    def test_repr(self, mock_api):
+    def test_repr(self):
         """Test string representation."""
         client = GerritRestClient(base_url="https://gerrit.example.org/")
         repr_str = repr(client)
         assert repr_str == "GerritRestClient(base_url='https://gerrit.example.org/')"
 
 
-class TestGerritRestClientRequests:
-    """Tests for GerritRestClient request methods."""
-
-    @patch("dependamerge.gerrit.client.GerritRestAPI")
-    def test_get_empty_path_raises(self, mock_api):
-        """Test that empty path raises GerritRestError."""
-        client = GerritRestClient(base_url="https://gerrit.example.org/")
-
-        with pytest.raises(GerritRestError, match="path is required"):
-            client.get("")
-
-    @patch("dependamerge.gerrit.client.GerritRestAPI")
-    def test_get_success(self, mock_api):
-        """Test successful GET request."""
-        mock_instance = MagicMock()
-        mock_instance.get.return_value = {"key": "value"}
-        mock_api.return_value = mock_instance
-
-        client = GerritRestClient(base_url="https://gerrit.example.org/")
-        result = client.get("/changes/12345")
-
-        assert result == {"key": "value"}
-        mock_instance.get.assert_called_once()
-
-    @patch("dependamerge.gerrit.client.GerritRestAPI")
-    def test_get_normalizes_path(self, mock_api):
-        """Test that GET normalizes path to start with /."""
-        mock_instance = MagicMock()
-        mock_instance.get.return_value = {}
-        mock_api.return_value = mock_instance
-
-        client = GerritRestClient(base_url="https://gerrit.example.org/")
-        client.get("changes/12345")
-
-        # Should be called with path starting with /
-        call_args = mock_instance.get.call_args
-        assert call_args[0][0].startswith("/")
-
-    @patch("dependamerge.gerrit.client.GerritRestAPI")
-    def test_post_with_data(self, mock_api):
-        """Test POST request with JSON data."""
-        mock_instance = MagicMock()
-        mock_instance.post.return_value = {"success": True}
-        mock_api.return_value = mock_instance
-
-        client = GerritRestClient(base_url="https://gerrit.example.org/")
-        result = client.post("/changes/12345/review", {"labels": {"Code-Review": 2}})
-
-        assert result == {"success": True}
-        mock_instance.post.assert_called_once()
-        # Verify data was passed
-        call_kwargs = mock_instance.post.call_args[1]
-        assert call_kwargs["data"] == {"labels": {"Code-Review": 2}}
-
-    @patch("dependamerge.gerrit.client.GerritRestAPI")
-    def test_post_without_data(self, mock_api):
-        """Test POST request without data."""
-        mock_instance = MagicMock()
-        mock_instance.post.return_value = {}
-        mock_api.return_value = mock_instance
-
-        client = GerritRestClient(base_url="https://gerrit.example.org/")
-        client.post("/changes/12345/submit")
-
-        mock_instance.post.assert_called_once()
-
-    @patch("dependamerge.gerrit.client.GerritRestAPI")
-    def test_put_with_data(self, mock_api):
-        """Test PUT request with JSON data."""
-        mock_instance = MagicMock()
-        mock_instance.put.return_value = {"updated": True}
-        mock_api.return_value = mock_instance
-
-        client = GerritRestClient(base_url="https://gerrit.example.org/")
-        result = client.put("/changes/12345/topic", {"topic": "feature-x"})
-
-        assert result == {"updated": True}
-        mock_instance.put.assert_called_once()
-
-    @patch("dependamerge.gerrit.client.GerritRestAPI")
-    def test_delete(self, mock_api):
-        """Test DELETE request."""
-        mock_instance = MagicMock()
-        mock_instance.delete.return_value = {}
-        mock_api.return_value = mock_instance
-
-        client = GerritRestClient(base_url="https://gerrit.example.org/")
-        client.delete("/changes/12345/topic")
-
-        mock_instance.delete.assert_called_once()
-
-
-class TestGerritRestClientErrors:
-    """Tests for GerritRestClient error handling."""
-
-    @patch("dependamerge.gerrit.client.GerritRestAPI")
-    def test_401_raises_auth_error(self, mock_api):
-        """Test that 401 response raises GerritAuthError."""
-        mock_instance = MagicMock()
-        error = HTTPError("401 Unauthorized")
-        error.response = MagicMock()
-        error.response.status_code = 401
-        mock_instance.get.side_effect = error
-        mock_api.return_value = mock_instance
-
-        client = GerritRestClient(base_url="https://gerrit.example.org/")
-
-        with pytest.raises(GerritAuthError) as exc_info:
-            client.get("/changes/12345")
-
-        assert exc_info.value.status_code == 401
-
-    @patch("dependamerge.gerrit.client.GerritRestAPI")
-    def test_403_raises_auth_error(self, mock_api):
-        """Test that 403 response raises GerritAuthError."""
-        mock_instance = MagicMock()
-        error = HTTPError("403 Forbidden")
-        error.response = MagicMock()
-        error.response.status_code = 403
-        mock_instance.get.side_effect = error
-        mock_api.return_value = mock_instance
-
-        client = GerritRestClient(base_url="https://gerrit.example.org/")
-
-        with pytest.raises(GerritAuthError) as exc_info:
-            client.get("/changes/12345")
-
-        assert exc_info.value.status_code == 403
-
-    @patch("dependamerge.gerrit.client.GerritRestAPI")
-    def test_404_raises_not_found_error(self, mock_api):
-        """Test that 404 response raises GerritNotFoundError."""
-        mock_instance = MagicMock()
-        error = HTTPError("404 Not Found")
-        error.response = MagicMock()
-        error.response.status_code = 404
-        mock_instance.get.side_effect = error
-        mock_api.return_value = mock_instance
-
-        client = GerritRestClient(base_url="https://gerrit.example.org/")
-
-        with pytest.raises(GerritNotFoundError) as exc_info:
-            client.get("/changes/99999")
-
-        assert exc_info.value.status_code == 404
-
-    @patch("dependamerge.gerrit.client.GerritRestAPI")
-    def test_500_raises_rest_error(self, mock_api):
-        """Test that 500 response raises GerritRestError."""
-        mock_instance = MagicMock()
-        error = HTTPError("500 Internal Server Error")
-        error.response = MagicMock()
-        error.response.status_code = 500
-        mock_instance.get.side_effect = error
-        mock_api.return_value = mock_instance
-
-        client = GerritRestClient(
-            base_url="https://gerrit.example.org/",
-            max_attempts=1,  # Disable retries for this test
-        )
-
-        with pytest.raises(GerritRestError) as exc_info:
-            client.get("/changes/12345")
-
-        assert exc_info.value.status_code == 500
-
-    @patch("dependamerge.gerrit.client.GerritRestAPI")
-    def test_connection_error_raises_rest_error(self, mock_api):
-        """Test that connection errors raise GerritRestError."""
-        mock_instance = MagicMock()
-        mock_instance.get.side_effect = ConnectionError("Connection refused")
-        mock_api.return_value = mock_instance
-
-        client = GerritRestClient(
-            base_url="https://gerrit.example.org/",
-            max_attempts=1,
-        )
-
-        with pytest.raises(GerritRestError):
-            client.get("/changes/12345")
-
-    @patch("dependamerge.gerrit.client.GerritRestAPI")
-    def test_timeout_error_raises_rest_error(self, mock_api):
-        """Test that timeout errors raise GerritRestError."""
-        mock_instance = MagicMock()
-        mock_instance.get.side_effect = Timeout("Request timed out")
-        mock_api.return_value = mock_instance
-
-        client = GerritRestClient(
-            base_url="https://gerrit.example.org/",
-            max_attempts=1,
-        )
-
-        with pytest.raises(GerritRestError):
-            client.get("/changes/12345")
-
-
-class TestGerritRestClientRetry:
-    """Tests for retry behavior."""
-
-    @patch("time.sleep")
-    @patch("dependamerge.gerrit.client.GerritRestAPI")
-    def test_retry_on_503(self, mock_api, mock_sleep):
-        """Test that 503 errors trigger retry."""
-        mock_instance = MagicMock()
-
-        # First call fails with 503, second succeeds
-        error = HTTPError("503 Service Unavailable")
-        error.response = MagicMock()
-        error.response.status_code = 503
-
-        mock_instance.get.side_effect = [error, {"key": "value"}]
-        mock_api.return_value = mock_instance
-
-        client = GerritRestClient(
-            base_url="https://gerrit.example.org/",
-            max_attempts=3,
-        )
-        result = client.get("/changes/12345")
-
-        assert result == {"key": "value"}
-        assert mock_instance.get.call_count == 2
-        assert mock_sleep.call_count == 1
-
-    @patch("time.sleep")
-    @patch("dependamerge.gerrit.client.GerritRestAPI")
-    def test_retry_on_transient_error(self, mock_api, mock_sleep):
-        """Test that transient network errors trigger retry."""
-        mock_instance = MagicMock()
-
-        # First call fails with transient error, second succeeds
-        mock_instance.get.side_effect = [
-            ConnectionError("Connection reset by peer"),
-            {"key": "value"},
-        ]
-        mock_api.return_value = mock_instance
-
-        client = GerritRestClient(
-            base_url="https://gerrit.example.org/",
-            max_attempts=3,
-        )
-        result = client.get("/changes/12345")
-
-        assert result == {"key": "value"}
-        assert mock_instance.get.call_count == 2
-        assert mock_sleep.call_count == 1
-
-    @patch("time.sleep")
-    @patch("dependamerge.gerrit.client.GerritRestAPI")
-    def test_no_retry_on_401(self, mock_api, mock_sleep):
-        """Test that 401 errors do not trigger retry."""
-        mock_instance = MagicMock()
-        error = HTTPError("401 Unauthorized")
-        error.response = MagicMock()
-        error.response.status_code = 401
-        mock_instance.get.side_effect = error
-        mock_api.return_value = mock_instance
-
-        client = GerritRestClient(
-            base_url="https://gerrit.example.org/",
-            max_attempts=3,
-        )
-
-        with pytest.raises(GerritAuthError):
-            client.get("/changes/12345")
-
-        assert mock_instance.get.call_count == 1
-        assert mock_sleep.call_count == 0
-
-    @patch("time.sleep")
-    @patch("dependamerge.gerrit.client.GerritRestAPI")
-    def test_no_retry_on_404(self, mock_api, mock_sleep):
-        """Test that 404 errors do not trigger retry."""
-        mock_instance = MagicMock()
-        error = HTTPError("404 Not Found")
-        error.response = MagicMock()
-        error.response.status_code = 404
-        mock_instance.get.side_effect = error
-        mock_api.return_value = mock_instance
-
-        client = GerritRestClient(
-            base_url="https://gerrit.example.org/",
-            max_attempts=3,
-        )
-
-        with pytest.raises(GerritNotFoundError):
-            client.get("/changes/99999")
-
-        assert mock_instance.get.call_count == 1
-        assert mock_sleep.call_count == 0
-
-    @patch("time.sleep")
-    @patch("dependamerge.gerrit.client.GerritRestAPI")
-    def test_max_attempts_exhausted(self, mock_api, mock_sleep):
-        """Test that error is raised after max attempts exhausted."""
-        mock_instance = MagicMock()
-        error = HTTPError("503 Service Unavailable")
-        error.response = MagicMock()
-        error.response.status_code = 503
-        mock_instance.get.side_effect = error
-        mock_api.return_value = mock_instance
-
-        client = GerritRestClient(
-            base_url="https://gerrit.example.org/",
-            max_attempts=3,
-        )
-
-        with pytest.raises(GerritRestError):
-            client.get("/changes/12345")
-
-        assert mock_instance.get.call_count == 3
-        assert mock_sleep.call_count == 2  # Sleep between attempts
-
-
 class TestBuildClient:
     """Tests for the build_client factory function."""
 
-    @patch("dependamerge.gerrit.client.GerritRestAPI")
-    def test_build_client_basic(self, mock_api):
+    def test_build_client_basic(self):
         """Test building client with just hostname."""
         client = build_client("gerrit.example.org")
 
         assert client.base_url == "https://gerrit.example.org/"
         assert client.is_authenticated is False
 
-    @patch("dependamerge.gerrit.client.GerritRestAPI")
-    def test_build_client_with_base_path(self, mock_api):
+    def test_build_client_with_base_path(self):
         """Test building client with base path."""
         client = build_client("gerrit.example.org", base_path="infra")
 
         assert client.base_url == "https://gerrit.example.org/infra/"
 
-    @patch("dependamerge.gerrit.client.GerritRestAPI")
-    @patch("dependamerge.gerrit.client.HTTPBasicAuth")
-    def test_build_client_with_credentials(self, mock_auth, mock_api):
+    def test_build_client_with_credentials(self):
         """Test building client with explicit credentials."""
         client = build_client(
             "gerrit.example.org",
@@ -533,11 +206,9 @@ class TestBuildClient:
         )
 
         assert client.is_authenticated is True
-        mock_auth.assert_called_once_with("testuser", "testpass")
+        assert client._auth == _Auth("testuser", "testpass")
 
-    @patch("dependamerge.gerrit.client.GerritRestAPI")
-    @patch("dependamerge.gerrit.client.HTTPBasicAuth")
-    def test_build_client_from_env(self, mock_auth, mock_api, monkeypatch):
+    def test_build_client_from_env(self, monkeypatch):
         """Test building client with credentials from environment."""
         monkeypatch.setenv("GERRIT_USERNAME", "envuser")
         monkeypatch.setenv("GERRIT_PASSWORD", "envpass")
@@ -545,11 +216,9 @@ class TestBuildClient:
         client = build_client("gerrit.example.org")
 
         assert client.is_authenticated is True
-        mock_auth.assert_called_once_with("envuser", "envpass")
+        assert client._auth == _Auth("envuser", "envpass")
 
-    @patch("dependamerge.gerrit.client.GerritRestAPI")
-    @patch("dependamerge.gerrit.client.HTTPBasicAuth")
-    def test_build_client_env_fallback(self, mock_auth, mock_api, monkeypatch):
+    def test_build_client_env_fallback(self, monkeypatch):
         """Test credential fallback from GERRIT_HTTP_USER/PASSWORD."""
         monkeypatch.delenv("GERRIT_USERNAME", raising=False)
         monkeypatch.delenv("GERRIT_PASSWORD", raising=False)
@@ -559,13 +228,9 @@ class TestBuildClient:
         client = build_client("gerrit.example.org")
 
         assert client.is_authenticated is True
-        mock_auth.assert_called_once_with("httpuser", "httppass")
+        assert client._auth == _Auth("httpuser", "httppass")
 
-    @patch("dependamerge.gerrit.client.GerritRestAPI")
-    @patch("dependamerge.gerrit.client.HTTPBasicAuth")
-    def test_build_client_explicit_overrides_env(
-        self, mock_auth, mock_api, monkeypatch
-    ):
+    def test_build_client_explicit_overrides_env(self, monkeypatch):
         """Test that explicit credentials override environment."""
         monkeypatch.setenv("GERRIT_USERNAME", "envuser")
         monkeypatch.setenv("GERRIT_PASSWORD", "envpass")
@@ -577,14 +242,10 @@ class TestBuildClient:
         )
 
         assert client.is_authenticated is True
-        mock_auth.assert_called_once_with("explicit", "credentials")
+        assert client._auth == _Auth("explicit", "credentials")
 
-    @patch("dependamerge.gerrit.client.GerritRestAPI")
-    @patch("dependamerge.gerrit.client.HTTPBasicAuth")
     @patch("dependamerge.gerrit.client.get_credentials_for_host")
-    def test_build_client_from_netrc(
-        self, mock_get_creds, mock_auth, mock_api, monkeypatch
-    ):
+    def test_build_client_from_netrc(self, mock_get_creds, monkeypatch):
         """Test building client with credentials from .netrc file."""
         # Clear environment variables
         monkeypatch.delenv("GERRIT_USERNAME", raising=False)
@@ -604,15 +265,11 @@ class TestBuildClient:
         client = build_client("gerrit.example.org")
 
         assert client.is_authenticated is True
-        mock_auth.assert_called_once_with("netrcuser", "netrcpass")
+        assert client._auth == _Auth("netrcuser", "netrcpass")
         mock_get_creds.assert_called_once()
 
-    @patch("dependamerge.gerrit.client.GerritRestAPI")
-    @patch("dependamerge.gerrit.client.HTTPBasicAuth")
     @patch("dependamerge.gerrit.client.get_credentials_for_host")
-    def test_build_client_explicit_overrides_netrc(
-        self, mock_get_creds, mock_auth, mock_api, monkeypatch
-    ):
+    def test_build_client_explicit_overrides_netrc(self, mock_get_creds, monkeypatch):
         """Test that explicit credentials override netrc."""
         # Clear environment variables
         monkeypatch.delenv("GERRIT_USERNAME", raising=False)
@@ -634,16 +291,12 @@ class TestBuildClient:
         )
 
         assert client.is_authenticated is True
-        mock_auth.assert_called_once_with("explicit", "credentials")
+        assert client._auth == _Auth("explicit", "credentials")
         # netrc should not be queried when explicit creds provided
         mock_get_creds.assert_not_called()
 
-    @patch("dependamerge.gerrit.client.GerritRestAPI")
-    @patch("dependamerge.gerrit.client.HTTPBasicAuth")
     @patch("dependamerge.gerrit.client.get_credentials_for_host")
-    def test_build_client_netrc_overrides_env(
-        self, mock_get_creds, mock_auth, mock_api, monkeypatch
-    ):
+    def test_build_client_netrc_overrides_env(self, mock_get_creds, monkeypatch):
         """Test that netrc credentials take priority over environment."""
         monkeypatch.setenv("GERRIT_USERNAME", "envuser")
         monkeypatch.setenv("GERRIT_PASSWORD", "envpass")
@@ -661,11 +314,10 @@ class TestBuildClient:
 
         assert client.is_authenticated is True
         # netrc should take priority
-        mock_auth.assert_called_once_with("netrcuser", "netrcpass")
+        assert client._auth == _Auth("netrcuser", "netrcpass")
 
-    @patch("dependamerge.gerrit.client.GerritRestAPI")
     @patch("dependamerge.gerrit.client.get_credentials_for_host")
-    def test_build_client_use_netrc_false(self, mock_get_creds, mock_api, monkeypatch):
+    def test_build_client_use_netrc_false(self, mock_get_creds, monkeypatch):
         """Test that use_netrc=False skips netrc lookup."""
         # Clear environment variables
         monkeypatch.delenv("GERRIT_USERNAME", raising=False)
@@ -676,11 +328,9 @@ class TestBuildClient:
         assert client.is_authenticated is False
         mock_get_creds.assert_not_called()
 
-    @patch("dependamerge.gerrit.client.GerritRestAPI")
-    @patch("dependamerge.gerrit.client.HTTPBasicAuth")
     @patch("dependamerge.gerrit.client.get_credentials_for_host")
     def test_build_client_netrc_with_explicit_file(
-        self, mock_get_creds, mock_auth, mock_api, monkeypatch, tmp_path
+        self, mock_get_creds, monkeypatch, tmp_path
     ):
         """Test that netrc_file parameter is passed correctly."""
         # Clear environment variables
@@ -703,32 +353,33 @@ class TestBuildClient:
         client = build_client("gerrit.example.org", netrc_file=netrc_path)
 
         assert client.is_authenticated is True
-        mock_auth.assert_called_once_with("fileuser", "filepass")
+        assert client._auth == _Auth("fileuser", "filepass")
         # Verify netrc_file was passed
         call_kwargs = mock_get_creds.call_args[1]
         assert call_kwargs.get("netrc_file") == netrc_path
 
 
-class TestPygerrit2Integration:
-    """Tests for pygerrit2 integration."""
+class TestBackend:
+    """The transport is python-gerrit-api, configured by the client."""
 
-    def test_pygerrit2_is_importable(self):
-        """Test that pygerrit2 can be imported."""
-        from pygerrit2 import GerritRestAPI, HTTPBasicAuth
+    def test_pygerrit2_is_gone(self):
+        """pygerrit2 is no longer installed or imported."""
+        assert importlib.util.find_spec("pygerrit2") is None
 
-        assert GerritRestAPI is not None
-        assert HTTPBasicAuth is not None
-
-    @patch("dependamerge.gerrit.client.GerritRestAPI")
-    def test_client_uses_pygerrit2(self, mock_api):
-        """Test that client uses pygerrit2 for requests."""
-        mock_instance = MagicMock()
-        mock_instance.get.return_value = {"test": "data"}
-        mock_api.return_value = mock_instance
-
-        client = GerritRestClient(base_url="https://gerrit.example.org/")
-        result = client.get("/changes/")
-
-        assert result == {"test": "data"}
-        mock_api.assert_called_once()
-        mock_instance.get.assert_called_once()
+    @patch("dependamerge.gerrit.client.GerritClient")
+    def test_backend_configuration(self, mock_backend):
+        """Netrc, retries and timeout are owned by GerritRestClient."""
+        client = GerritRestClient(
+            base_url="https://gerrit.example.org/infra",
+            auth=("user", "password"),
+            timeout=12.0,
+        )
+        with client._backends.acquire():
+            pass
+        kwargs = mock_backend.call_args.kwargs
+        assert kwargs["base_url"] == "https://gerrit.example.org/infra/"
+        assert kwargs["username"] == "user"
+        assert kwargs["use_netrc"] is False
+        assert kwargs["max_retries"] is None
+        assert kwargs["timeout"] == 12.0
+        assert kwargs["ssl_verify"] is True

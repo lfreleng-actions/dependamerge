@@ -134,7 +134,6 @@ class TestCredentialsOnTheWire:
         _client().get("/changes/1")
         assert "Authorization" not in mock_http.calls[0].request.headers
 
-    @pytest.mark.xfail(strict=True, reason="backend reads netrc implicitly")
     def test_anonymous_client_ignores_ambient_netrc(self, mock_http, clean_env):
         netrc = clean_env / "ambient-netrc"
         netrc.write_text(f"machine {HOST} login {USER} password {SECRET}\n")
@@ -211,7 +210,6 @@ class TestBuildClientCredentials:
         client = build_client(HOST, netrc_file=netrc)
         assert self._auth_header(mock_http, client) == _basic(USER, password)
 
-    @pytest.mark.xfail(strict=True, reason="NETRC credentials are sent unreported")
     def test_netrc_from_environment_variable(self, mock_http, clean_env, monkeypatch):
         netrc = self._netrc(
             clean_env, f"machine {HOST} login {USER} password {SECRET}\n"
@@ -221,7 +219,6 @@ class TestBuildClientCredentials:
         assert client.is_authenticated is True
         assert self._auth_header(mock_http, client) == _basic(USER, SECRET)
 
-    @pytest.mark.xfail(strict=True, reason="NETRC credentials are sent unreported")
     def test_netrc_account_only_entry(self, mock_http, clean_env, monkeypatch):
         netrc = self._netrc(
             clean_env, f"machine {HOST} account {USER} password {SECRET}\n"
@@ -231,7 +228,6 @@ class TestBuildClientCredentials:
         assert client.is_authenticated is True
         assert self._auth_header(mock_http, client) == _basic(USER, SECRET)
 
-    @pytest.mark.xfail(strict=True, reason="backend reads netrc implicitly")
     def test_explicit_netrc_file_is_not_bypassed(
         self, mock_http, clean_env, monkeypatch
     ):
@@ -259,7 +255,6 @@ class TestBuildClientCredentials:
         client = build_client(HOST)
         assert self._auth_header(mock_http, client) == _basic(USER, SECRET)
 
-    @pytest.mark.xfail(strict=True, reason="backend reads netrc implicitly")
     def test_use_netrc_false_sends_nothing_from_netrc(
         self, mock_http, clean_env, monkeypatch
     ):
@@ -330,7 +325,6 @@ class TestResponseDecoding:
         mock_http.add(responses.GET, f"{BASE}/changes/", body=body, content_type=JSON)
         assert _client().get("/changes/") == [{"_number": 1}]
 
-    @pytest.mark.xfail(strict=True, reason="only an LF after the guard is accepted")
     def test_xssi_guard_crlf(self, mock_http, clean_env):
         body = ')]}\'\r\n{"_number": 1}'
         mock_http.add(responses.GET, f"{BASE}/changes/1", body=body, content_type=JSON)
@@ -376,7 +370,6 @@ class TestErrors:
         assert info.value.status_code == status
         assert not isinstance(info.value, (GerritAuthError, GerritNotFoundError))
 
-    @pytest.mark.xfail(strict=True, reason="the response body is discarded")
     def test_conflict_keeps_body(self, mock_http, clean_env):
         body = "merge conflict in src/a.py\nmerge conflict in src/b.py"
         url = f"{BASE}/a/changes/1/rebase"
@@ -386,7 +379,6 @@ class TestErrors:
         assert info.value.status_code == 409
         assert info.value.response_body == body
 
-    @pytest.mark.xfail(strict=True, reason="status is guessed from message digits")
     def test_digits_in_a_network_error_are_not_a_status(self, mock_http, clean_env):
         mock_http.add(
             responses.GET,
@@ -396,6 +388,21 @@ class TestErrors:
         with pytest.raises(GerritRestError) as info:
             _client(max_attempts=1).get("/changes/404")
         assert type(info.value) is GerritRestError
+
+    def test_empty_path_is_rejected(self, mock_http, clean_env):
+        with pytest.raises(GerritRestError, match="path is required"):
+            _client().get("")
+        assert len(mock_http.calls) == 0
+
+    def test_timeout_raises_rest_error(self, mock_http, clean_env):
+        mock_http.add(
+            responses.GET,
+            f"{BASE}/changes/1",
+            body=requests.ReadTimeout("Read timed out"),
+        )
+        with pytest.raises(GerritRestError) as info:
+            _client(max_attempts=1).get("/changes/1")
+        assert info.value.status_code is None
 
 
 class TestRetryAccounting:
@@ -416,7 +423,6 @@ class TestRetryAccounting:
         _client(max_attempts=3).get("/changes/1")
         assert len(mock_http.calls) == 2
 
-    @pytest.mark.xfail(strict=True, reason="backend adapter retries as well")
     def test_exhausted_attempts(self, mock_http, clean_env, no_sleep):
         mock_http.add(responses.GET, f"{BASE}/changes/1", status=500, body="boom")
         with pytest.raises(GerritRestError) as info:
@@ -432,6 +438,19 @@ class TestRetryAccounting:
             _client(max_attempts=3).get("/changes/1")
         assert len(mock_http.calls) == 1
         assert no_sleep.call_count == 0
+
+    def test_http_error_body_does_not_make_it_transient(
+        self, mock_http, clean_env, no_sleep
+    ):
+        mock_http.add(
+            responses.GET,
+            f"{BASE}/changes/1",
+            status=400,
+            body="upstream connection reset by peer",
+        )
+        with pytest.raises(GerritRestError):
+            _client(max_attempts=3).get("/changes/1")
+        assert len(mock_http.calls) == 1
 
     def test_transient_network_error_is_retried(self, mock_http, clean_env, no_sleep):
         url = f"{BASE}/changes/1"

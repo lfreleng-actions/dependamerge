@@ -90,15 +90,14 @@ def _calculate_backoff(
 
 
 def _extract_status_code(exc: Exception) -> int | None:
-    """Extract HTTP status code from a requests exception if available."""
-    # Check for response attribute (requests.HTTPError)
+    """Return the HTTP status carried by a requests exception, if any.
+
+    Only a real response counts: digits in the message (a port, a change
+    number) are never taken for a status.
+    """
     response = getattr(exc, "response", None)
     if response is not None:
         status_code = getattr(response, "status_code", None)
         if status_code is not None:
             return int(status_code)
-    exc_str = str(exc)
-    for code in (401, 403, 404, 429, 500, 502, 503, 504):
-        if str(code) in exc_str:
-            return code
     return None

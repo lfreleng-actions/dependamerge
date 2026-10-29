@@ -17,6 +17,7 @@ input.
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from collections.abc import Collection
@@ -319,3 +320,166 @@ def test_the_version_resolver_joins_each_value_to_its_option(steps) -> None:
     assert re.search(r"--(ref|sha|repository-url) \"", version["run"]) is None
     for option in ("--ref=", "--sha=", "--repository-url="):
         assert option in version["run"]
+
+
+# Composite steps run in the caller's workspace, which can hold anything
+# the caller checked out. None of it may stand in for the action's own
+# Python: each file below records that it ran, then fails.
+_PLANTED_MODULE = """\
+import os
+import sys
+
+marker = os.path.join(os.environ["RUNNER_TEMP"], "planted-ran")
+with open(marker, "a", encoding="utf-8") as handle:
+    handle.write(__name__ + "\\n")
+sys.exit(97)
+"""
+_PLANTED_INTERPRETER = """\
+#!/bin/sh
+echo "interpreter $0" >> "$RUNNER_TEMP/planted-ran"
+exit 97
+"""
+_STEP_VALUES = {
+    "github.action_ref": "v1.2.3",
+    "github.action_repository": "lfreleng-actions/dependamerge",
+    "inputs.target": "acme",
+    "inputs.fail_on_merge_errors": "true",
+    "inputs.slack_when": "always",
+}
+
+
+def _plant(workspace: Path) -> None:
+    """Fill ``workspace`` with files that would take over a Python run."""
+    for name in ("json", "re", "sitecustomize", "dependamerge/__init__"):
+        module = workspace / f"{name}.py"
+        module.parent.mkdir(parents=True, exist_ok=True)
+        module.write_text(_PLANTED_MODULE)
+    # The interpreter a .python-version, or a .venv, would have uv run.
+    for interpreter in ("bin/python3", ".venv/bin/python", ".venv/bin/python3"):
+        path = workspace / interpreter
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(_PLANTED_INTERPRETER)
+        path.chmod(0o755)
+    (workspace / ".python-version").write_text("./bin/python3\n")
+    (workspace / ".venv" / "pyvenv.cfg").write_text("home = /usr/bin\n")
+
+
+def _run_step_in_workspace(
+    step: dict[str, Any],
+    tmp_path: Path,
+    inherited: dict[str, str],
+    values: dict[str, str] | None = None,
+) -> tuple[subprocess.CompletedProcess[str], Path, Path]:
+    """Run ``step`` as the runner would, from a workspace of planted files.
+
+    ``values`` supplies expressions beyond the defaults. Returns the
+    finished process, the step's output file and the marker any planted
+    file writes when it runs.
+    """
+    values = {**_STEP_VALUES, **(values or {})}
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    _plant(workspace)
+    runner_temp = tmp_path / "runner-temp"
+    runner_temp.mkdir(exist_ok=True)
+    uv = shutil.which("uv")
+    path = [os.path.dirname(sys.executable), "/usr/bin", "/bin"]
+    if uv:
+        path.insert(0, os.path.dirname(uv))
+
+    def evaluate(value: Any) -> str:
+        return re.sub(
+            r"\$\{\{\s*(.*?)\s*\}\}", lambda m: values.get(m[1], ""), str(value)
+        )
+
+    env = {
+        "PATH": os.pathsep.join(path),
+        "HOME": str(tmp_path),
+        "RUNNER_TEMP": str(runner_temp),
+        "RUNNER_OS": "Linux",
+        "GITHUB_ACTION_PATH": str(_ACTION.parent),
+        "GITHUB_OUTPUT": str(tmp_path / "output"),
+        "GITHUB_STEP_SUMMARY": str(tmp_path / "summary"),
+        "GITHUB_SERVER_URL": "https://github.com",
+        "GITHUB_REPOSITORY": "acme/caller",
+        "GITHUB_SHA": "0" * 40,
+        **inherited,
+        **{k: evaluate(v) for k, v in (step.get("env") or {}).items()},
+    }
+    script = tmp_path / "step.sh"
+    script.write_text(step["run"])
+    finished = subprocess.run(
+        ["bash", "--noprofile", "--norc", "-eo", "pipefail", str(script)],
+        cwd=workspace,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    return finished, tmp_path / "output", runner_temp / "planted-ran"
+
+
+# An empty PYTHONPATH entry, as 'X:$PYTHONPATH' leaves when PYTHONPATH
+# is unset, names the working directory.
+_INHERITED = pytest.mark.parametrize(
+    "inherited", [{}, {"PYTHONPATH": ":"}], ids=["workspace", "empty-pythonpath"]
+)
+
+
+@_INHERITED
+@pytest.mark.parametrize(
+    ("step_id", "expected"),
+    [("version", "version=1.2.3"), ("options", "target=acme")],
+)
+def test_uv_steps_run_nothing_from_the_workspace(
+    steps, tmp_path, inherited, step_id, expected
+) -> None:
+    if shutil.which("uv") is None:
+        pytest.skip("uv is not installed")
+    (step,) = [s for s in steps if s.get("id") == step_id]
+    finished, output, marker = _run_step_in_workspace(step, tmp_path, inherited)
+    assert not marker.exists(), marker.read_text()
+    assert finished.returncode == 0, finished.stderr
+    assert expected in output.read_text().splitlines()
+
+
+@_INHERITED
+def test_the_summary_imports_the_installed_report(steps, tmp_path, inherited) -> None:
+    # The test environment stands in for the one the run step builds.
+    probe = subprocess.run(
+        [sys.executable, "-I", "-c", "import dependamerge.ci_report"],
+        cwd=tmp_path,
+        capture_output=True,
+    )
+    if sys.prefix == sys.base_prefix or probe.returncode != 0:
+        pytest.skip("dependamerge is not installed in a virtual environment")
+    from dependamerge.ci_report import build_document
+
+    runner_temp = tmp_path / "runner-temp"
+    runner_temp.mkdir()
+    (runner_temp / "dependamerge-venv").symlink_to(sys.prefix)
+    results = tmp_path / "results.json"
+    document = build_document(
+        [],
+        explain=lambda _: [],
+        target="acme",
+        scope="owner",
+        preview=False,
+        dry_run=True,
+    )
+    results.write_text(json.dumps(document))
+    (step,) = [s for s in steps if s.get("id") == "summary"]
+    values = {"steps.run.outputs.results_file": str(results)}
+    finished, output, marker = _run_step_in_workspace(step, tmp_path, inherited, values)
+    assert not marker.exists(), marker.read_text()
+    assert finished.returncode == 0, finished.stderr
+    assert "total=0" in output.read_text().splitlines()
+
+
+def test_the_run_step_drops_an_inherited_pythonpath(steps, tmp_path) -> None:
+    # The build and dependamerge run from the caller's workspace, so an
+    # empty entry would put it on their sys.path.
+    calls = _run_step_environment_seen_by_uv(steps, tmp_path, {"PYTHONPATH": ":"})
+    assert calls, "the run step called uv"
+    for call in calls:
+        assert "PYTHONPATH" not in call

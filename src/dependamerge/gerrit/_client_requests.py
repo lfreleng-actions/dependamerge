@@ -5,14 +5,15 @@ The request and retry machinery behind ``GerritRestClient``.
 
 :class:`_GerritRequestMixin` carries the two methods that issue Gerrit
 REST calls: the bounded retry loop and the single-shot request that
-dispatches to pygerrit2 and translates failures into the
-:mod:`dependamerge.gerrit._client_errors` hierarchy.
+dispatches to python-gerrit-api and translates failures into the
+:mod:`dependamerge.gerrit._client_errors` hierarchy.  HTTP errors are read
+from the response itself, so they keep their exact status and body.
 
 It lives here rather than in ``dependamerge.gerrit.client`` purely to
-keep that module reviewable.  Nothing in here references ``GerritRestAPI``,
-``HTTPBasicAuth`` or ``get_credentials_for_host``: those names are only
-resolved in ``client``'s own namespace, so that patching them there stays
-effective.  Every attribute this mixin reads is established by
+keep that module reviewable.  Nothing in here calls ``GerritClient`` (it
+appears only in annotations) or ``get_credentials_for_host``: those names
+are only resolved in ``client``'s own namespace, so that patching them
+there stays effective.  Every attribute this mixin reads is established by
 ``GerritRestClient.__init__``.
 """
 
@@ -20,9 +21,10 @@ effective.  Every attribute this mixin reads is established by
 
 from __future__ import annotations
 
+import json
 import logging
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any, Final
 
 from requests.exceptions import RequestException
 
@@ -36,15 +38,25 @@ from ._client_errors import (
     _extract_status_code,
     _is_transient_error,
 )
+from ._client_transport import SessionPool, decode_response
+
+if TYPE_CHECKING:
+    from gerrit import GerritClient
 
 log = logging.getLogger("dependamerge.gerrit.client")
+
+_METHODS: Final[frozenset[str]] = frozenset({"GET", "POST", "PUT", "DELETE"})
+
+# Longest stretch of an error body quoted in an exception message; the
+# whole body stays available as ``response_body``.
+_MAX_ERROR_DETAIL: Final[int] = 500
 
 
 class _GerritRequestMixin:
     """Request/retry behaviour shared into ``GerritRestClient``."""
 
     # Established by GerritRestClient.__init__.
-    _client: Any
+    _backends: SessionPool[GerritClient]
     _timeout: float
     _max_attempts: int
     _auth: _Auth | None
@@ -73,7 +85,9 @@ class _GerritRequestMixin:
                 is_retryable_http = (
                     exc.status_code and exc.status_code in _RETRYABLE_HTTP_CODES
                 )
-                is_transient = _is_transient_error(exc)
+                # An HTTP failure is classified by its status alone: its
+                # message now quotes the server's body, which may say anything.
+                is_transient = exc.status_code is None and _is_transient_error(exc)
 
                 if is_retryable_http or is_transient:
                     if attempt < self._max_attempts - 1:
@@ -135,12 +149,15 @@ class _GerritRequestMixin:
         path: str,
         data: Any | None = None,
     ) -> Any:
-        """Perform a single HTTP request (no retry) using pygerrit2."""
+        """Perform a single HTTP request (no retry) using python-gerrit-api."""
         if not path:
             raise GerritRestError("path is required")
+        if method not in _METHODS:
+            raise GerritRestError(f"Unsupported HTTP method: {method}")
 
-        # Normalize path to start with /
-        api_path = path if path.startswith("/") else f"/{path}"
+        # One leading slash, so the endpoint always lands under the base
+        # path (and the /a/ prefix) rather than replacing it.
+        api_path = "/" + path.lstrip("/")
 
         log.debug(
             "Gerrit REST %s %s (auth=%s)",
@@ -149,60 +166,61 @@ class _GerritRequestMixin:
             "yes" if self._auth else "no",
         )
 
+        headers = {"Accept": "application/json"}
+        kwargs: dict[str, Any] = {}
+        if data is not None and method in ("POST", "PUT"):
+            # Serialised here, not handed over as a dict: the library would
+            # form-encode a dict, and drop an empty one entirely.
+            kwargs["data"] = json.dumps(data)
+            headers["Content-Type"] = "application/json; charset=UTF-8"
+
         try:
-            # aislop-ignore-next-line ai-slop/python-repetitive-dispatch -- each verb has distinct argument handling (data payload for POST/PUT)
-            if method == "GET":
-                return self._client.get(api_path, timeout=self._timeout)
-            elif method == "POST":
-                if data is not None:
-                    return self._client.post(api_path, data=data, timeout=self._timeout)
-                return self._client.post(api_path, timeout=self._timeout)
-            elif method == "PUT":
-                if data is not None:
-                    return self._client.put(api_path, data=data, timeout=self._timeout)
-                return self._client.put(api_path, timeout=self._timeout)
-            elif method == "DELETE":
-                return self._client.delete(api_path, timeout=self._timeout)
-            else:
-                raise GerritRestError(f"Unsupported HTTP method: {method}")
-
+            with self._backends.acquire() as backend:
+                url = backend.get_endpoint_url(api_path)
+                send = getattr(backend.requester, method.lower())
+                response = send(url, headers=headers, raise_for_status=False, **kwargs)
         except RequestException as exc:
-            status_code = _extract_status_code(exc)
-            exc_str = str(exc).lower()
-
-            if status_code == 401 or "401" in exc_str or "unauthorized" in exc_str:
-                raise GerritAuthError(
-                    f"Authentication failed for {path}",
-                    status_code=401,
-                ) from exc
-            if status_code == 403 or "403" in exc_str or "forbidden" in exc_str:
-                raise GerritAuthError(
-                    f"Access forbidden for {path}",
-                    status_code=403,
-                ) from exc
-            if status_code == 404 or "404" in exc_str or "not found" in exc_str:
-                raise GerritNotFoundError(
-                    f"Resource not found: {path}",
-                    status_code=404,
-                ) from exc
-
             raise GerritRestError(
                 f"Gerrit REST {method} {path} failed: {exc}",
-                status_code=status_code,
+                status_code=_extract_status_code(exc),
             ) from exc
 
-        except Exception as exc:
-            exc_str = str(exc).lower()
-            if "401" in exc_str or "unauthorized" in exc_str:
-                raise GerritAuthError(
-                    f"Authentication failed: {exc}", status_code=401
-                ) from exc
-            if "403" in exc_str or "forbidden" in exc_str:
-                raise GerritAuthError(
-                    f"Access forbidden: {exc}", status_code=403
-                ) from exc
-            if "404" in exc_str or "not found" in exc_str:
-                raise GerritNotFoundError(
-                    f"Resource not found: {exc}", status_code=404
-                ) from exc
-            raise GerritRestError(f"Gerrit REST {method} failed: {exc}") from exc
+        if response.status_code >= 400:
+            raise _http_error(method, path, response.status_code, response.text)
+
+        try:
+            return decode_response(response)
+        except ValueError as exc:
+            raise GerritRestError(
+                f"Gerrit REST {method} {path} returned invalid JSON: {exc}",
+                status_code=response.status_code,
+            ) from exc
+
+
+def _http_error(method: str, path: str, status: int, body: str) -> GerritRestError:
+    """Map an HTTP error status to the client's exception hierarchy."""
+    if status == 401:
+        return GerritAuthError(
+            f"Authentication failed for {path}",
+            status_code=status,
+            response_body=body,
+        )
+    if status == 403:
+        return GerritAuthError(
+            f"Access forbidden for {path}",
+            status_code=status,
+            response_body=body,
+        )
+    if status == 404:
+        return GerritNotFoundError(
+            f"Resource not found: {path}",
+            status_code=status,
+            response_body=body,
+        )
+    detail = body.strip()
+    if len(detail) > _MAX_ERROR_DETAIL:
+        detail = detail[:_MAX_ERROR_DETAIL] + "..."
+    message = f"Gerrit REST {method} {path} failed: HTTP {status}"
+    if detail:
+        message = f"{message}: {detail}"
+    return GerritRestError(message, status_code=status, response_body=body)

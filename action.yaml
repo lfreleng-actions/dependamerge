@@ -221,7 +221,13 @@ runs:
         # runner may fetch this action from github.com. Each value is
         # joined to its option, so one that looks like an option (an
         # input of '--help', say) stays data.
-        version="$(uv run --no-project --quiet "$resolver" \
+        #
+        # uv runs from the action's directory with --no-config, so a
+        # .python-version, uv.toml or .venv in the caller's workspace
+        # cannot choose the interpreter, and an empty PYTHONPATH entry
+        # names the action's directory rather than the workspace.
+        version="$(uv run --no-config --no-project --quiet \
+          --directory "$GITHUB_ACTION_PATH" "$resolver" \
           --ref="$ACTION_REF" --sha="$sha" \
           --repository-url="$GITHUB_SERVER_URL/$repository.git" \
           --repository-url="https://github.com/$repository.git")"
@@ -257,8 +263,10 @@ runs:
         # A boolean is exactly true or false and an enumeration one of its
         # values: a typo such as 'ture' must not turn a dry run live, nor
         # 'squahs' let the merge fall back to another method.
+        # From the action's directory, as in the version step.
         status=0
-        uv run --no-project --quiet \
+        uv run --no-config --no-project --quiet \
+          --directory "$GITHUB_ACTION_PATH" \
           "$GITHUB_ACTION_PATH/scripts/action_config.py" || status=$?
         # Linux and macOS runners only: the Windows path is untested.
         if [ "$RUNNER_OS" = "Windows" ]; then
@@ -333,6 +341,11 @@ runs:
         # for want of credentials instead of submitting changes.
         unset GERRIT_USERNAME GERRIT_PASSWORD GERRIT_HTTP_USER \
           GERRIT_HTTP_PASSWORD
+        # The installed environment needs no search path of its own. An
+        # inherited PYTHONPATH with an empty entry would put the caller's
+        # workspace, the working directory here, on dependamerge's
+        # sys.path and run a sitecustomize.py from it.
+        unset PYTHONPATH
 
         # Non-interactive by construction. GitHub2Gerrit PRs are skipped
         # (and reported) because no Gerrit credentials reach this step.
@@ -431,8 +444,11 @@ runs:
         # The run step built this environment; calling its interpreter
         # directly avoids a second resolution (and a rebuild).
         # Validation refuses Windows runners, so the layout is Unix's.
+        # -I keeps the working directory (the caller's workspace) and
+        # PYTHONPATH off sys.path, so only the environment's own
+        # dependamerge is imported.
         python="$RUNNER_TEMP/dependamerge-venv/bin/python"
-        report() { "$python" -m dependamerge.ci_report "$@"; }
+        report() { "$python" -I -m dependamerge.ci_report "$@"; }
         report markdown "$RESULTS_FILE" >> "$GITHUB_STEP_SUMMARY"
         report outputs "$RESULTS_FILE" >> "$GITHUB_OUTPUT"
         if [ -n "$SLACK_CHANNEL" ]; then

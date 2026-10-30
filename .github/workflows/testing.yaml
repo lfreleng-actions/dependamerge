@@ -117,7 +117,7 @@ jobs:
           fail() { echo "::error::$1"; exit 1; }
           [ -n "${VERSION}" ] || fail 'no version output'
           # The version reported is the version that ran.
-          installed="$("${RUNNER_TEMP}/dependamerge-venv/bin/python" -c \
+          installed="$("${RUNNER_TEMP}/dependamerge-venv/bin/python" -I -c \
             'import importlib.metadata as m; print(m.version("dependamerge"))')"
           echo "installed=${installed}"
           [ "${installed}" = "${VERSION}" ] \
@@ -137,6 +137,99 @@ jobs:
           [ "${channel}" = 'C0000000000' ] || fail 'wrong Slack channel'
           jq -e '.blocks | length > 0 and length <= 50' \
             <<< "${SLACK_PAYLOAD}" >/dev/null || fail 'bad Slack blocks'
+
+  workspace-files:
+    # Composite steps run in the caller's workspace. Files there must
+    # not choose the action's interpreter or replace its modules: each
+    # planted file records that it ran in a marker, then fails. Run once
+    # as is, and once with an empty PYTHONPATH entry, which names the
+    # working directory.
+    name: 'Workspace files stay inert (PYTHONPATH=${{ matrix.pythonpath }})'
+    runs-on: 'ubuntu-latest'
+    timeout-minutes: 15
+    permissions:
+      contents: read  # Read repositories and their contents.
+      pull-requests: read  # Discover open PRs to evaluate (read-only).
+    strategy:
+      fail-fast: false
+      matrix:
+        pythonpath: ['', ':']
+    steps:
+      # yamllint disable-line rule:line-length
+      - uses: lfreleng-actions/harden-runner-block-action@e5e8179f45aa893b23cc8b5d2e25466355d9c4f8  # v0.14.0
+        with:
+          # yamllint disable-line rule:line-length
+          config: 'lfreleng-actions//.github/harden-runner/lfreleng-actions/allow_list.txt@6d4a65c5601afd6c2fbe52bda4b0024b132f265d'  # v0.19.0
+
+      - name: 'Harden runner (block)'
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
+        with:
+          egress-policy: 'block'
+          allowed-endpoints: >
+            ${{ env.CONNECTION_ALLOW_LIST }}
+
+      - name: 'Plant files in the workspace'
+        shell: bash
+        run: |
+          # Plant files in the workspace
+          set -euo pipefail
+          mkdir -p dependamerge bin .venv/bin
+          for module in json re sitecustomize dependamerge/__init__; do
+            cat > "${module}.py" <<'EOF'
+          import os
+          import sys
+
+          marker = os.path.join(os.environ["RUNNER_TEMP"], "planted-ran")
+          with open(marker, "a", encoding="utf-8") as handle:
+              handle.write(__name__ + "\n")
+          sys.exit(97)
+          EOF
+          done
+          # The interpreter a .python-version, or a .venv, would select.
+          for interpreter in bin/python3 .venv/bin/python .venv/bin/python3; do
+            cat > "${interpreter}" <<'EOF'
+          #!/bin/sh
+          echo "interpreter $0" >> "$RUNNER_TEMP/planted-ran"
+          exit 97
+          EOF
+            chmod +x "${interpreter}"
+          done
+          echo './bin/python3' > .python-version
+          echo 'home = /usr/bin' > .venv/pyvenv.cfg
+
+      - name: 'Run local action from the planted workspace'
+        id: dependamerge
+        uses: $/
+        env:
+          PYTHONPATH: '${{ matrix.pythonpath }}'
+        with:
+          target: '${{ github.repository }}'
+          dry_run: 'true'
+          slack_channel: 'C0000000000'
+
+      - name: 'Validate action outputs'
+        shell: bash
+        env:
+          VERSION: '${{ steps.dependamerge.outputs.version }}'
+          EXIT_CODE: '${{ steps.dependamerge.outputs.exit_code }}'
+          TOTAL: '${{ steps.dependamerge.outputs.total }}'
+          SLACK_PAYLOAD: '${{ steps.dependamerge.outputs.slack_payload }}'
+        run: |
+          # Validate action outputs
+          set -euo pipefail
+          echo "version=${VERSION} exit_code=${EXIT_CODE} total=${TOTAL}"
+          fail() { echo "::error::$1"; exit 1; }
+          if [ -e "${RUNNER_TEMP}/planted-ran" ]; then
+            cat "${RUNNER_TEMP}/planted-ran"
+            fail 'a file planted in the workspace ran'
+          fi
+          [ -n "${VERSION}" ] || fail 'no version output'
+          [ "${EXIT_CODE}" = '0' ] || fail "exit code ${EXIT_CODE}"
+          [[ "${TOTAL}" =~ ^[0-9]+$ ]] || fail 'no total output'
+          channel="$(jq -r '.channel' <<< "${SLACK_PAYLOAD}")" \
+            || fail 'slack_payload is not JSON'
+          [ "${channel}" = 'C0000000000' ] || fail 'wrong Slack channel'
 
   macos:
     # The action supports macOS runners as well as Linux; this smoke run
@@ -184,7 +277,7 @@ jobs:
           echo "version=${VERSION} exit_code=${EXIT_CODE} total=${TOTAL}"
           fail() { echo "::error::$1"; exit 1; }
           [ -n "${VERSION}" ] || fail 'no version output'
-          installed="$("${RUNNER_TEMP}/dependamerge-venv/bin/python" -c \
+          installed="$("${RUNNER_TEMP}/dependamerge-venv/bin/python" -I -c \
             'import importlib.metadata as m; print(m.version("dependamerge"))')"
           [ "${installed}" = "${VERSION}" ] \
             || fail "built ${installed}, but reported ${VERSION}"

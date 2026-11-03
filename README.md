@@ -515,15 +515,18 @@ with these additions:
 
 <!-- markdownlint-disable MD013 -->
 
-| Input                  | Default      | Description                                                                         |
-| ---------------------- | ------------ | ----------------------------------------------------------------------------------- |
-| `dry_run`              | `false`      | Boolean: `true` forces a dry run; `false` leaves `config` to decide                 |
-| `slack_channel`        |              | Slack channel ID; empty disables Slack                                              |
-| `slack_when`           | `activity`   | Post the digest `always`, on `activity` (any PR processed), on `attention` or never |
-| `fail_on_merge_errors` | `false`      | Fail the run when PRs end failed or blocked; the digest reports them either way     |
-| `environment`          | (required)   | Protected environment in the caller that gates the job and holds the merge token    |
-| `timeout_minutes`      | `60`         | Job timeout                                                                         |
-| `egress_allow_config`  | org list     | Merge job's harden-runner egress allow-list coordinate, pinned; leave unchanged     |
+| Input                                  | Default    | Description                                                                                                            |
+| -------------------------------------- | ---------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `dry_run`                              | `false`    | Boolean: `true` forces a dry run; `false` leaves `config` to decide                                                    |
+| `slack_channel`                        |            | Slack channel ID; empty disables Slack                                                                                 |
+| `slack_when`                           | `activity` | Post the digest `always`, on `activity` (any PR processed), on `attention` or never                                    |
+| `fail_on_merge_errors`                 | `false`    | Fail the run when PRs end failed or blocked; the digest reports them either way                                        |
+| `environment`                          | (required) | Protected environment in the caller that gates the job and holds the merge token                                       |
+| `timeout_minutes`                      | `60`       | Job timeout                                                                                                            |
+| `harden_runner_allowlist`              | org list   | Merge job's harden-runner egress allow-list coordinate, pinned; leave unchanged                                        |
+| `harden_runner_supplemental_allowlist` |            | Extra allow-list coordinate merged with `harden_runner_allowlist`; empty adds nothing                                  |
+| `harden_runner_supplemental_unpinned`  | `false`    | Boolean: let the supplemental list omit `@ref` and follow its default branch; it must sit in the caller's organisation |
+| `harden_runner_extra_endpoints`        |            | Inline `host[:port]` endpoints, space or newline separated, merged into the allow-list; empty adds nothing             |
 
 <!-- markdownlint-enable MD013 -->
 
@@ -537,15 +540,15 @@ cannot stop the notice too. It reads the `SLACK_BOT_TOKEN` the caller passes:
 store that token where the caller can map it (a repository or organisation
 secret) as well as in any environment. It holds no merge token, and keeps the
 pinned default allow-list, which admits Slack, so a broken
-`egress_allow_config` cannot silence it. A digest Slack itself refuses (a
+`harden_runner_*` input cannot silence it. A digest Slack itself refuses (a
 revoked token, a channel the bot cannot post to) fails the run but sends no
 notice, since Slack would refuse the notice the same way; watch for the failed
 run. A digest that fails for any other reason, such as a connection a custom
-`egress_allow_config` blocks, still gets the notice. Outputs `merged`, `failed`,
-`blocked`, `exit_code` and `digest_posted` describe the run; in a dry run the
-counts are predictions. The workflow fetches its action through `$/`, so the
-commit you pin decides the workflow, the action and the tool together, and
-Dependabot's `github-actions` ecosystem moves all three at once.
+`harden_runner_allowlist` blocks, still gets the notice. Outputs `merged`,
+`failed`, `blocked`, `exit_code` and `digest_posted` describe the run; in a dry
+run the counts are predictions. The workflow fetches its action through `$/`,
+so the commit you pin decides the workflow, the action and the tool together,
+and Dependabot's `github-actions` ecosystem moves all three at once.
 
 One run per calling workflow proceeds at a time; a run that starts while
 another is still merging waits for it.

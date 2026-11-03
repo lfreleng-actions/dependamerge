@@ -46,7 +46,6 @@ def _block_action_with(job: dict[str, Any]) -> dict[str, Any]:
     return matches[0].get("with") or {}
 
 
-@pytest.mark.xfail(strict=True, reason="inputs not yet exposed")
 def test_merge_job_passes_every_allow_list_input(jobs) -> None:
     assert _block_action_with(jobs["merge"]) == {
         "config": "${{ inputs.harden_runner_allowlist }}",

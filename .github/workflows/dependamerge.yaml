@@ -118,13 +118,37 @@ on:
         description: 'Job timeout in minutes'
         type: number
         default: 60
-      egress_allow_config:
+      harden_runner_allowlist:
         description: >-
           harden-runner-block-action allow-list coordinate for the merge
           job; the failure notice keeps the pinned default
         type: string
         # yamllint disable-line rule:line-length
         default: 'lfreleng-actions//.github/harden-runner/lfreleng-actions/allow_list.txt@6d4a65c5601afd6c2fbe52bda4b0024b132f265d'  # v0.19.0
+      harden_runner_supplemental_allowlist:
+        description: >-
+          Extra harden-runner allow-list merged with
+          harden_runner_allowlist, in the same coordinate grammar.
+          Empty adds nothing
+        required: false
+        type: string
+        default: ''
+      harden_runner_supplemental_unpinned:
+        description: >-
+          Let harden_runner_supplemental_allowlist omit '@ref' and
+          follow its default branch; only a list in the caller's own
+          organisation qualifies
+        required: false
+        type: boolean
+        default: false
+      harden_runner_extra_endpoints:
+        description: >-
+          Extra egress endpoints written inline, host[:port] tokens
+          separated by spaces or newlines, merged into the allow-list
+          for short-lived fixes. Empty adds nothing
+        required: false
+        type: string
+        default: ''
     secrets:
       # Store DEPENDAMERGE_TOKEN as a secret of the environment named by
       # the environment input, and map it explicitly in the caller: per
@@ -190,7 +214,16 @@ jobs:
       # yamllint disable-line rule:line-length
       - uses: lfreleng-actions/harden-runner-block-action@2fed66c9c36c4687c31ca349b925b81ec629673f  # v0.15.0
         with:
-          config: ${{ inputs.egress_allow_config }}
+          config: ${{ inputs.harden_runner_allowlist }}
+          # yamllint disable-line rule:line-length
+          supplemental_config: ${{ inputs.harden_runner_supplemental_allowlist }}
+          # A caller naming a list depends on it, so its absence fails
+          # here rather than at the first blocked connection.
+          # yamllint disable-line rule:line-length
+          supplemental_required: ${{ inputs.harden_runner_supplemental_allowlist != '' && 'true' || 'false' }}
+          # yamllint disable-line rule:line-length
+          supplemental_unpinned: ${{ inputs.harden_runner_supplemental_unpinned && 'true' || 'false' }}
+          extra_endpoints: ${{ inputs.harden_runner_extra_endpoints }}
 
       - name: 'Harden runner (block)'
         # yamllint disable-line rule:line-length
@@ -348,7 +381,7 @@ jobs:
     # no merge token, only the Slack token the caller passes.
     permissions: {}
     steps:
-      # A fixed allow-list, not the caller's egress_allow_config: one
+      # A fixed allow-list, not the caller's harden_runner_allowlist: one
       # that broke the merge job's hardening would break this job the
       # same way, silencing the notice of that very failure. The notice
       # needs Slack alone, which this pinned list admits.

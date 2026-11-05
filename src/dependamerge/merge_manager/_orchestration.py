@@ -236,11 +236,11 @@ class _OrchestrationMixin(_MergeManagerBase):
                     res = await self._merge_single_pr_with_semaphore(pr_info)
                 except asyncio.CancelledError:
                     # Cancellation must propagate so the gather below can
-                    # tear the run down.  On Python >= 3.10 CancelledError
-                    # already derives from BaseException (not Exception),
-                    # so the handler below would not catch it; this
-                    # explicit re-raise documents that intent and guards
-                    # against the broad handler ever being widened.
+                    # tear the run down.  CancelledError derives from
+                    # BaseException (not Exception), so the handler below
+                    # would not catch it; this explicit re-raise documents
+                    # that intent and guards against the broad handler ever
+                    # being widened.
                     raise
                 except Exception as e:
                     # Defensive: a crash on one PR must not lose results

@@ -10,13 +10,8 @@ requires: a requirement missing from the group would be absent at build
 time, and one only in the group would never be used.
 """
 
-import sys
+import tomllib
 from pathlib import Path
-
-if sys.version_info >= (3, 11):
-    import tomllib
-else:  # pragma: no cover - Python 3.10
-    import tomli as tomllib
 
 _PYPROJECT = Path(__file__).resolve().parent.parent / "pyproject.toml"
 

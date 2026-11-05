@@ -14,7 +14,7 @@ authors = [
 ]
 license = "Apache-2.0"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 classifiers = [
   "Intended Audience :: Developers",
   "Intended Audience :: Science/Research",
@@ -24,11 +24,11 @@ classifiers = [
   "Programming Language :: Python",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3 :: Only",
-  "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
   "Programming Language :: Python :: 3.14",
+  "Programming Language :: Python :: 3.15",
   "Topic :: Software Development",
 ]
 dependencies = [
@@ -174,7 +174,7 @@ ignore_errors = true
 show_missing = true
 
 [tool.basedpyright]
-pythonVersion = "3.10"
+pythonVersion = "3.11"
 pythonPlatform = "All"
 typeCheckingMode = "standard"
 # Scope a bare ``basedpyright`` invocation to our own code.  Without
@@ -288,7 +288,7 @@ root = "tests"
 reportPrivateImportUsage = false
 
 [tool.ruff]
-target-version = "py310"
+target-version = "py311"
 line-length = 88
 # Auto-generated version file uses deprecated typing imports for backwards compat
 exclude = ["src/dependamerge/_version.py"]
@@ -307,6 +307,8 @@ ignore = [
   "E501",
   "B008",
   "C901",
+  # StrEnum changes str()/format() output of enum members
+  "UP042",
 ]
 
 [tool.ruff.lint.per-file-ignores]

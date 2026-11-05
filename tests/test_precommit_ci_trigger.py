@@ -16,7 +16,7 @@ Covers:
 """
 
 from contextlib import ExitStack
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
@@ -194,7 +194,7 @@ class TestInfrastructureErrorRetrigger:
         finish.  There is nothing here left to finish.
         """
         mgr, _client = _make_manager()
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         just_now = now.strftime("%Y-%m-%dT%H:%M:%SZ")
 
         assert (
@@ -211,7 +211,7 @@ class TestInfrastructureErrorRetrigger:
         minutes to be told the same thing.
         """
         mgr, _client = _make_manager()
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         assert (
             mgr._precommit_run_is_stuck({"state": "failure"}, now, _make_pr_info())
@@ -247,7 +247,7 @@ class TestStuckPendingRetrigger:
 
     @staticmethod
     def _iso(seconds_ago: float) -> str:
-        ts = datetime.now(timezone.utc) - timedelta(seconds=seconds_ago)
+        ts = datetime.now(UTC) - timedelta(seconds=seconds_ago)
         return ts.strftime("%Y-%m-%dT%H:%M:%SZ")
 
     @pytest.mark.asyncio
@@ -1174,7 +1174,7 @@ class TestSuppressionIsScopedToTheIncident:
 
     @staticmethod
     def _iso(seconds_ago: float) -> str:
-        ts = datetime.now(timezone.utc) - timedelta(seconds=seconds_ago)
+        ts = datetime.now(UTC) - timedelta(seconds=seconds_ago)
         return ts.strftime("%Y-%m-%dT%H:%M:%SZ")
 
     def _errored_status(self, age_seconds: float):
@@ -1281,7 +1281,7 @@ class TestThePollWaitsForANewReading:
 
     @staticmethod
     def _iso(seconds_ago: float) -> str:
-        ts = datetime.now(timezone.utc) - timedelta(seconds=seconds_ago)
+        ts = datetime.now(UTC) - timedelta(seconds=seconds_ago)
         return ts.strftime("%Y-%m-%dT%H:%M:%SZ")
 
     @pytest.mark.asyncio

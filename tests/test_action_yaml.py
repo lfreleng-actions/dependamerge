@@ -17,7 +17,6 @@ input.
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
 from collections.abc import Collection
@@ -44,12 +43,16 @@ _GITHUB_FIELDS = frozenset(
         "server_url",
     }
 )
+# The runner context fields a step may read: the action keeps its
+# interpreter, uv's tools and its cache under the runner's temp directory.
+_RUNNER_FIELDS = frozenset({"temp"})
 # A whole expression that is one plain property path; anything else (a
 # function call, an index, a bare context, another context) is refused.
 _PROPERTY_PATH = re.compile(
     r"\A(?:inputs\.(?P<input>[a-z][a-z0-9_]*)"
-    r"|steps\.(?P<step>[a-z][a-z0-9_-]*)\.outputs\.(?P<output>[a-z][a-z0-9_]*)"
-    r"|github\.(?P<github>[a-z][a-z0-9_]*))\Z"
+    r"|steps\.(?P<step>[a-z][a-z0-9_-]*)\.outputs\.(?P<output>[a-z][a-z0-9_-]*)"
+    r"|github\.(?P<github>[a-z][a-z0-9_]*)"
+    r"|runner\.(?P<runner>[a-z][a-z0-9_]*))\Z"
 )
 
 
@@ -112,6 +115,9 @@ def _refusal(
     elif path["step"] is not None:
         if path["step"] not in step_ids:
             return "names no step"
+    elif path["runner"] is not None:
+        if path["runner"] not in _RUNNER_FIELDS:
+            return "is not an allowed runner field"
     elif path["github"] not in _GITHUB_FIELDS:
         return "is not an allowed github field"
     return None
@@ -171,6 +177,7 @@ _STEP_IDS = ("options",)
         "INPUTS.TOKEN",
         # Contexts no step needs.
         "env.GITHUB_TOKEN",
+        "runner.environment",
         "secrets.ANYTHING",
         "github.event.pull_request.title",
         # Paths that name nothing the action declares.
@@ -192,6 +199,8 @@ def test_an_expression_outside_the_allowlist_is_refused(expression) -> None:
         ("inputs.token", "run"),
         ("steps.options.outputs.target", "other"),
         ("github.repository", "other"),
+        ("runner.temp", "other"),
+        ("steps.options.outputs.uv-path", "other"),
     ],
 )
 def test_an_allowlisted_expression_is_accepted(expression, step) -> None:
@@ -204,7 +213,7 @@ def test_the_run_step_never_exports_the_token(steps) -> None:
     # A 'token' the caller exported keeps its export attribute when
     # assigned, and allexport exports even a fresh one; both would hand
     # the merge token to uv. The attribute must go before any tool runs.
-    first_tool = script.index("uv sync")
+    first_tool = script.index('"$UV" sync')
     for statement in ("unset -v token", 'token="$MERGE_TOKEN"', "declare +x token"):
         assert -1 < script.find(statement) < first_tool, statement
     assert script.index("unset -v token") < script.index('token="$MERGE_TOKEN"')
@@ -398,10 +407,15 @@ def _run_step_in_workspace(
     _plant(workspace)
     runner_temp = tmp_path / "runner-temp"
     runner_temp.mkdir(exist_ok=True)
-    uv = shutil.which("uv")
-    path = [os.path.dirname(sys.executable), "/usr/bin", "/bin"]
-    if uv:
-        path.insert(0, os.path.dirname(uv))
+    # The planted interpreters come first, as a caller's $GITHUB_PATH
+    # entry would put them.
+    path = [
+        str(workspace / ".venv" / "bin"),
+        str(workspace / "bin"),
+        os.path.dirname(sys.executable),
+        "/usr/bin",
+        "/bin",
+    ]
 
     def evaluate(value: Any) -> str:
         return re.sub(
@@ -447,11 +461,9 @@ _INHERITED = pytest.mark.parametrize(
     ("step_id", "expected"),
     [("version", "version=1.2.3"), ("options", "target=acme")],
 )
-def test_uv_steps_run_nothing_from_the_workspace(
+def test_python_steps_run_nothing_from_the_workspace(
     steps, tmp_path, inherited, step_id, expected
 ) -> None:
-    if shutil.which("uv") is None:
-        pytest.skip("uv is not installed")
     (step,) = [s for s in steps if s.get("id") == step_id]
     finished, output, marker = _run_step_in_workspace(step, tmp_path, inherited)
     assert not marker.exists(), marker.read_text()
@@ -527,7 +539,6 @@ def _setup_uv(steps: list[dict[str, Any]]) -> dict[str, Any]:
     return setup
 
 
-@pytest.mark.xfail(strict=True, reason="setup-uv can run a caller's interpreter")
 def test_setup_uv_cannot_run_a_caller_interpreter(steps) -> None:
     setup = _setup_uv(steps)
     assert setup.get("id") == "setup-uv"
@@ -587,7 +598,6 @@ def _uv_call_refusals(step: dict[str, Any]) -> list[str]:
     return found
 
 
-@pytest.mark.xfail(strict=True, reason="uv runs from PATH without --python")
 def test_every_uv_call_names_the_trusted_interpreter(steps) -> None:
     calls = [_UV_CALL.search(c) for s in steps for c in _commands(s.get("run") or "")]
     assert any(calls), "the action calls uv"
@@ -629,7 +639,6 @@ _PYTHON_START = re.compile(_COMMAND_START + r'"\$(PYTHON|python)"(?P<rest>.*)')
 _BARE_PYTHON = re.compile(_COMMAND_START + r"python(?:3(?:\.\d+)?)?(?:\s|$)")
 
 
-@pytest.mark.xfail(strict=True, reason="Python starts without the trusted -I")
 def test_every_python_start_is_isolated(steps) -> None:
     # macOS reads both even under -I.
     unset = "unset PYTHONEXECUTABLE __PYVENV_LAUNCHER__"
@@ -646,7 +655,6 @@ def test_every_python_start_is_isolated(steps) -> None:
     assert starts >= 3
 
 
-@pytest.mark.xfail(strict=True, reason="no step installs a trusted interpreter")
 def test_steps_take_uv_and_python_from_the_action_steps(steps) -> None:
     ids = [step.get("id") for step in steps]
     assert ids.index("setup-uv") < ids.index("python") < ids.index("version")
@@ -755,7 +763,6 @@ _INSTALL_ALLOWED = frozenset(
 )
 
 
-@pytest.mark.xfail(strict=True, reason="no step installs a trusted interpreter")
 def test_the_install_step_hides_the_caller_environment(steps, tmp_path) -> None:
     finished, calls, output = _run_install_step(
         steps, tmp_path, "{install_dir}/cpython-3.13/bin/python3.13"
@@ -782,7 +789,6 @@ def test_the_install_step_hides_the_caller_environment(steps, tmp_path) -> None:
     assert path.startswith(f"{runner_temp}/")
 
 
-@pytest.mark.xfail(strict=True, reason="no step installs a trusted interpreter")
 def test_the_install_step_refuses_an_interpreter_found_elsewhere(
     steps, tmp_path
 ) -> None:
@@ -793,7 +799,6 @@ def test_the_install_step_refuses_an_interpreter_found_elsewhere(
     assert not output.exists() or "path=" not in output.read_text()
 
 
-@pytest.mark.xfail(strict=True, reason="the run step lets the caller pick Python")
 @pytest.mark.parametrize("name", _INTERPRETER_SELECTORS)
 def test_the_run_step_builds_with_the_trusted_interpreter(
     steps, tmp_path, name
@@ -809,7 +814,6 @@ def test_the_run_step_builds_with_the_trusted_interpreter(
         assert "--no-config" in argv
 
 
-@pytest.mark.xfail(strict=True, reason="the run step uses the caller's uv cache")
 def test_the_run_step_uses_its_own_cache(steps, tmp_path) -> None:
     inherited = {"UV_CACHE_DIR": str(tmp_path / "workspace" / "cache")}
     calls = _run_step_uv_calls(steps, tmp_path, inherited)
@@ -819,35 +823,11 @@ def test_the_run_step_uses_its_own_cache(steps, tmp_path) -> None:
         assert "/workspace/" not in call["env"]["UV_CACHE_DIR"]
 
 
-_STEERS_UV_RUN = pytest.mark.xfail(
-    strict=True, reason="uv run picks the interpreter this names"
-)
-
-
 @pytest.mark.parametrize("step_id", ["version", "options"])
-@pytest.mark.parametrize(
-    "name",
-    [
-        pytest.param(name, marks=_STEERS_UV_RUN)
-        if name
-        in (
-            "UV_PYTHON",
-            "UV_INTERNAL__PARENT_INTERPRETER",
-            "VIRTUAL_ENV",
-            "CONDA_PREFIX",
-            "PYTHONHOME",
-            "PYTHONEXECUTABLE",
-            "__PYVENV_LAUNCHER__",
-        )
-        else name
-        for name in _INTERPRETER_SELECTORS
-    ],
-)
+@pytest.mark.parametrize("name", _INTERPRETER_SELECTORS)
 def test_python_steps_ignore_interpreter_selectors(
     steps, tmp_path, step_id, name
 ) -> None:
-    if shutil.which("uv") is None:
-        pytest.skip("uv is not installed")
     (step,) = [s for s in steps if s.get("id") == step_id]
     workspace = tmp_path / "workspace"
     value = {

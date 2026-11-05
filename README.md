@@ -369,6 +369,17 @@ It never offers a local signed rebase,
 which needs a signing identity a runner lacks; see `--rebase-local` under
 [Merge Command Options](#merge-command-options).
 
+The action runs its own uv and its own Python: a pinned uv, and a uv-managed
+CPython 3.13 that it installs under `RUNNER_TEMP` and calls by absolute path.
+Nothing an earlier step leaves in the job's environment, such as `PATH`,
+`UV_PYTHON`, `VIRTUAL_ENV`, `CONDA_PREFIX` or a `PYTHON*` setting, chooses the
+interpreter that builds and runs dependamerge, and the action ignores a
+`UV_CACHE_DIR` the job sets. The action does trust the job's `PATH` for the
+tools the runner and setup-uv start, such as `bash` and `tar`, so a caller that
+puts its own executables there, including its own `uv` with
+`UV_NO_MODIFY_PATH` set, controls the job before this action runs. A runner
+that restricts egress must allow uv's Python download as well as PyPI.
+
 Each run writes a results table to the step summary, failures first, then
 removes its results file. A run that leaves PRs failed or blocked fails the step
 with exit code `7` after writing the summary. Set `fail_on_merge_errors: false`

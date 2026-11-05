@@ -231,6 +231,197 @@ jobs:
             || fail 'slack_payload is not JSON'
           [ "${channel}" = 'C0000000000' ] || fail 'wrong Slack channel'
 
+  interpreter-isolation:
+    # A composite action inherits its caller job's environment, so an
+    # earlier step, such as code from the checkout under review writing
+    # to $GITHUB_ENV and $GITHUB_PATH, could choose the interpreter that
+    # builds and runs dependamerge with the caller's token. Every bait
+    # below records that it ran in a marker, then fails. The request
+    # leg names an interpreter outright; the active-environment leg
+    # makes one look like the active virtual or Conda environment.
+    name: 'Interpreter isolation (${{ matrix.os }}, ${{ matrix.selector }})'
+    runs-on: '${{ matrix.os }}'
+    timeout-minutes: 20
+    permissions:
+      contents: read  # Read repositories and their contents.
+      pull-requests: read  # Discover open PRs to evaluate (read-only).
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ['ubuntu-24.04', 'macos-15']
+        selector: ['request', 'active-environment']
+    steps:
+      # yamllint disable-line rule:line-length
+      - uses: lfreleng-actions/harden-runner-block-action@2fed66c9c36c4687c31ca349b925b81ec629673f  # v0.15.0
+        if: runner.os == 'Linux'
+        with:
+          # yamllint disable-line rule:line-length
+          config: 'lfreleng-actions//.github/harden-runner/lfreleng-actions/allow_list.txt@6d4a65c5601afd6c2fbe52bda4b0024b132f265d'  # v0.19.0
+
+      - name: 'Harden runner (block)'
+        if: runner.os == 'Linux'
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
+        with:
+          egress-policy: 'block'
+          allowed-endpoints: >
+            ${{ env.CONNECTION_ALLOW_LIST }}
+
+      # Harden-Runner blocks egress on Linux alone; on macOS it audits.
+      - name: 'Harden runner (audit)'
+        if: runner.os == 'macOS'
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
+        with:
+          egress-policy: 'audit'
+
+      - name: 'Checkout repository'
+        # yamllint disable-line rule:line-length
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: 'Plant interpreters and settings, as an earlier step could'
+        shell: bash
+        env:
+          SELECTOR: '${{ matrix.selector }}'
+        run: |
+          # Plant interpreters and settings, as an earlier step could
+          set -euo pipefail
+          marker="${RUNNER_TEMP}/bait-ran"
+          bait="${GITHUB_WORKSPACE}/.venv/bin"
+          xdg_bin="${GITHUB_WORKSPACE}/xdg-bin"
+          mkdir -p "${bait}" "${xdg_bin}" "${GITHUB_WORKSPACE}/urllib" \
+            "${GITHUB_WORKSPACE}/.venv/conda-meta"
+          for program in "${bait}/python" "${bait}/python3" \
+              "${bait}/python3.13" "${bait}/uv" "${xdg_bin}/env" \
+              "${xdg_bin}/bash"; do
+            {
+              echo '#!/bin/sh'
+              echo "echo \"ran \$0\" >> \"${marker}\""
+              echo 'exit 1'
+            } > "${program}"
+            chmod +x "${program}"
+          done
+          echo "home = ${bait}" > "${GITHUB_WORKSPACE}/.venv/pyvenv.cfg"
+          # Standard library names, and the modules site imports at start.
+          for module in json base64 sitecustomize usercustomize \
+              urllib/__init__; do
+            cat > "${GITHUB_WORKSPACE}/${module}.py" <<'EOF'
+          import os
+
+          marker = os.path.join(os.environ["RUNNER_TEMP"], "bait-ran")
+          with open(marker, "a", encoding="utf-8") as handle:
+              handle.write("import " + __name__ + "\n")
+          EOF
+          done
+          # The runner puts $GITHUB_PATH entries ahead of a PATH set in
+          # $GITHUB_ENV, so only this plant reaches the front of PATH.
+          echo "${bait}" >> "${GITHUB_PATH}"
+          case "$(uname -m)" in
+            arm64 | aarch64) arch='aarch64' ;;
+            *) arch='x86_64' ;;
+          esac
+          {
+            echo 'PYTHONPATH=pkg:.'
+            echo "PYTHONHOME=${GITHUB_WORKSPACE}"
+            echo "PYTHONUSERBASE=${GITHUB_WORKSPACE}"
+            echo "PYTHONSTARTUP=${GITHUB_WORKSPACE}/json.py"
+            echo "PYTHONEXECUTABLE=${bait}/python3"
+            echo "__PYVENV_LAUNCHER__=${bait}/python3"
+            echo 'UV_NO_CACHE=1'
+            echo "UV_PYTHON_ARCH=${arch}"
+            echo 'UV_PYTHON_INSTALL_MIRROR=https://127.0.0.1:9'
+            echo "XDG_BIN_HOME=${xdg_bin}"
+            if [ "${SELECTOR}" = 'request' ]; then
+              echo "UV_PYTHON=${bait}/python3"
+              echo "UV_PYTHON_SEARCH_PATH=${bait}"
+              echo "UV_PYTHON_INSTALL_DIR=${GITHUB_WORKSPACE}/uv-python"
+              echo 'UV_PYTHON_PREFERENCE=only-system'
+            else
+              # UV_PYTHON stays unset: it would mask environment discovery.
+              echo "VIRTUAL_ENV=${GITHUB_WORKSPACE}/.venv"
+              echo "CONDA_PREFIX=${GITHUB_WORKSPACE}/.venv"
+              echo 'CONDA_DEFAULT_ENV=base'
+              echo "UV_INTERNAL__PARENT_INTERPRETER=${bait}/python3"
+              echo 'UV_INTERNAL__TEST_PYTHON_MANAGED=1'
+              echo "UV_CACHE_DIR=${GITHUB_WORKSPACE}/uv-cache"
+            fi
+          } >> "${GITHUB_ENV}"
+
+      - name: 'Control: a Python start from the workspace runs the bait'
+        shell: bash
+        run: |
+          # Control: a Python start from the workspace runs the bait
+          set -euo pipefail
+          marker="${RUNNER_TEMP}/bait-ran"
+          # By absolute path: bash on macOS would return a hashed python3.
+          # PYTHONHOME in the workspace stops Python before any import,
+          # so it is dropped here alone; PYTHONPATH's '.' does the rest.
+          /usr/bin/env -u PYTHONHOME /usr/bin/python3 -c 'import json' \
+            || true
+          if [ ! -e "${marker}" ]; then
+            echo "::error::the bait did not run, so the test proves nothing"
+            exit 1
+          fi
+          cat "${marker}"
+          rm -f "${marker}"
+
+      - name: 'Run local action (cold)'
+        id: cold
+        uses: $/
+        with:
+          target: '${{ github.repository }}'
+          dry_run: 'true'
+          slack_channel: 'C0000000000'
+
+      - name: 'Run local action (warm)'
+        id: warm
+        uses: $/
+        with:
+          target: '${{ github.repository }}'
+          dry_run: 'true'
+          slack_channel: 'C0000000000'
+
+      - name: 'Expect no bait to run and both runs to report'
+        if: always()
+        shell: bash
+        env:
+          COLD_VERSION: '${{ steps.cold.outputs.version }}'
+          COLD_EXIT_CODE: '${{ steps.cold.outputs.exit_code }}'
+          COLD_TOTAL: '${{ steps.cold.outputs.total }}'
+          COLD_SLACK_PAYLOAD: '${{ steps.cold.outputs.slack_payload }}'
+          WARM_VERSION: '${{ steps.warm.outputs.version }}'
+          WARM_EXIT_CODE: '${{ steps.warm.outputs.exit_code }}'
+          WARM_TOTAL: '${{ steps.warm.outputs.total }}'
+          WARM_SLACK_PAYLOAD: '${{ steps.warm.outputs.slack_payload }}'
+        run: |
+          # Expect no bait to run and both runs to report
+          set -euo pipefail
+          fail() { echo "::error::$1"; exit 1; }
+          if [ -e "${RUNNER_TEMP}/bait-ran" ]; then
+            cat "${RUNNER_TEMP}/bait-ran"
+            fail 'a planted interpreter or module ran'
+          fi
+          case ":${PATH}:" in
+            *":${GITHUB_WORKSPACE}/xdg-bin:"*)
+              fail "the caller's XDG_BIN_HOME is on PATH" ;;
+          esac
+          # run, version, exit code, total, Slack payload
+          expect_outputs() {
+            echo "$1: version=$2 exit_code=$3 total=$4"
+            [ -n "$2" ] || fail "$1: no version output"
+            [ "$3" = '0' ] || fail "$1: exit code $3"
+            [[ "$4" =~ ^[0-9]+$ ]] || fail "$1: no total output"
+            [[ "$5" == *'"channel": "C0000000000"'* ]] \
+              || [[ "$5" == *'"channel":"C0000000000"'* ]] \
+              || fail "$1: no Slack payload for the channel"
+          }
+          expect_outputs cold "${COLD_VERSION}" "${COLD_EXIT_CODE}" \
+            "${COLD_TOTAL}" "${COLD_SLACK_PAYLOAD}"
+          expect_outputs warm "${WARM_VERSION}" "${WARM_EXIT_CODE}" \
+            "${WARM_TOTAL}" "${WARM_SLACK_PAYLOAD}"
+
   macos:
     # The action supports macOS runners as well as Linux; this smoke run
     # catches what differs there: the shell, BSD userland tools and the

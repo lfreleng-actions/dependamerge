@@ -23,7 +23,7 @@ import json
 import os
 import tempfile
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -114,7 +114,7 @@ def build_document(
     return {
         "schema_version": SCHEMA_VERSION,
         "tool": {"name": "dependamerge", "version": __version__},
-        "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "generated_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "target": target,
         "scope": scope,
         "preview": preview,

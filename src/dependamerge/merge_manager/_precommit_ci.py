@@ -10,7 +10,7 @@ reading means the run has stalled, and nudging it when it has, is here.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from ..models import PullRequestInfo
@@ -81,7 +81,7 @@ class _PrecommitCiMixin(_PrecommitWaitMixin):
         #    ``error``, or when it has been ``pending`` past the stuck
         #    threshold; leave a reported ``success`` / ``failure``, and
         #    a pending run still within its normal window.
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         fetched, precommit_status = await self._precommit_status(
             repo_owner, repo_name, pr_info
         )

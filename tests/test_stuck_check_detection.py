@@ -23,7 +23,7 @@ Covers:
   ``_detect_stuck_required_check`` returns True for a dependabot PR.
 """
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
@@ -39,7 +39,7 @@ from dependamerge.models import PullRequestInfo
 
 def _iso(dt: datetime) -> str:
     """Return ``dt`` in the RFC 3339 ``...Z`` form GitHub emits."""
-    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return dt.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _make_pr_info(**overrides: Any) -> PullRequestInfo:
@@ -113,7 +113,7 @@ class TestDetectStuckDcoCheckRuns:
         """A queued/in_progress DCO check older than the threshold
         on an old-enough PR is detected."""
         mgr, client = _make_manager()
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         old = now - timedelta(seconds=STUCK_CHECK_THRESHOLD_SECONDS + 30)
         pr = _make_pr_info()
 
@@ -146,7 +146,7 @@ class TestDetectStuckDcoCheckRuns:
     async def test_sub_threshold_age_is_not_stuck(self) -> None:
         """A DCO check pending for less than the threshold is not stuck."""
         mgr, client = _make_manager()
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         # PR is old enough; the check itself is too young.
         pr_age = now - timedelta(seconds=STUCK_CHECK_THRESHOLD_SECONDS + 30)
         check_started = now - timedelta(seconds=10)
@@ -182,7 +182,7 @@ class TestDetectStuckDcoCheckRuns:
     async def test_completed_dco_is_not_stuck(self) -> None:
         """A completed DCO check (success or failure) is not stuck."""
         mgr, client = _make_manager()
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         old = now - timedelta(seconds=STUCK_CHECK_THRESHOLD_SECONDS + 30)
         pr = _make_pr_info()
 
@@ -217,7 +217,7 @@ class TestDetectStuckDcoCheckRuns:
         """A stuck check that is neither DCO-shaped nor required on
         the base branch is not detected."""
         mgr, client = _make_manager()
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         old = now - timedelta(seconds=STUCK_CHECK_THRESHOLD_SECONDS + 30)
         pr = _make_pr_info()
 
@@ -255,7 +255,7 @@ class TestDetectStuckDcoCheckRuns:
         dependabot recreate recovery.
         """
         mgr, client = _make_manager()
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         old = now - timedelta(seconds=STUCK_CHECK_THRESHOLD_SECONDS + 30)
         pr = _make_pr_info()
 
@@ -298,7 +298,7 @@ class TestDetectStuckDcoCheckRuns:
         it is a required, stuck check.
         """
         mgr, client = _make_manager()
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         old = now - timedelta(seconds=STUCK_CHECK_THRESHOLD_SECONDS + 30)
         pr = _make_pr_info()
 
@@ -332,7 +332,7 @@ class TestDetectStuckDcoCheckRuns:
     async def test_pr_age_floor_blocks_detection(self) -> None:
         """A young PR (created < threshold ago) is never flagged."""
         mgr, client = _make_manager()
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         young = now - timedelta(seconds=10)
         pr = _make_pr_info()
 
@@ -371,7 +371,7 @@ class TestDetectStuckDcoCheckRuns:
         ``(False, None, 0.0)`` rather than aborting the merge run.
         """
         mgr, client = _make_manager()
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         old = now - timedelta(seconds=STUCK_CHECK_THRESHOLD_SECONDS + 30)
         pr = _make_pr_info()
 
@@ -404,7 +404,7 @@ class TestDetectStuckDcoCheckRuns:
     async def test_dco_slash_dco_name_variant_matches(self) -> None:
         """The ``dco/dco`` status-context naming is matched."""
         mgr, client = _make_manager()
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         old = now - timedelta(seconds=STUCK_CHECK_THRESHOLD_SECONDS + 30)
         pr = _make_pr_info()
 
@@ -438,7 +438,7 @@ class TestDetectStuckDcoStatusContexts:
     @pytest.mark.asyncio
     async def test_detects_stuck_dco_status_context(self) -> None:
         mgr, client = _make_manager()
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         old = now - timedelta(seconds=STUCK_CHECK_THRESHOLD_SECONDS + 30)
         pr = _make_pr_info()
 

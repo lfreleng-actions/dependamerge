@@ -101,11 +101,9 @@ class _UndispatchedWorkflowMixin(_MergeManagerBase):
             return await asyncio.wait_for(
                 self._absent_workflow_runs(pr_info, owner, repo, names), budget
             )
-        except asyncio.TimeoutError:
-            # Not the builtin ``TimeoutError``: the two are only the same
-            # class from Python 3.11, and on 3.10 ``wait_for`` raises
-            # ``asyncio.exceptions.TimeoutError``, so catching the builtin
-            # would let it escape and fail the merge outright.
+        except TimeoutError:
+            # Catch the timeout here: letting it escape would fail the
+            # merge outright.
             self.log.debug(
                 "Listing workflow runs for %s outlasted the remaining "
                 "budget; treating as unknown and waiting",

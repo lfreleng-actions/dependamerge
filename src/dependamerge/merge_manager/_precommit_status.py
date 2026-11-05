@@ -16,7 +16,7 @@ testable, with no client and no side effects.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 PRECOMMIT_CONTEXT = "pre-commit.ci - pr"
@@ -123,5 +123,5 @@ def parse_timestamp(raw: Any) -> datetime | None:
     except (ValueError, TypeError):
         return None
     if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=timezone.utc)
+        return parsed.replace(tzinfo=UTC)
     return parsed

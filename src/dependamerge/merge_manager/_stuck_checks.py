@@ -8,7 +8,7 @@ Detection of required checks that will never report.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from ..models import PullRequestInfo
@@ -217,7 +217,7 @@ class _StuckCheckMixin(_MergeManagerBase):
 
         repo_owner, repo_name = pr_info.repository_full_name.split("/", 1)
         threshold = _mm.STUCK_CHECK_THRESHOLD_SECONDS
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         # 1. PR-level age floor — don't fire on PRs we caught right
         #    after they were opened or force-pushed; checks on those

@@ -177,7 +177,6 @@ class TestGerritLabelInfo:
         assert label.rejected is True
         assert label.value == -2
 
-    @pytest.mark.xfail(strict=True, reason="query URL exact scope: issue #613")
     def test_from_api_response_rejected_uses_label_range(self):
         """A rejection reports the label's lowest vote when it is listed."""
         api_data = {
@@ -190,7 +189,6 @@ class TestGerritLabelInfo:
         assert label.rejected is True
         assert label.value == -1
 
-    @pytest.mark.xfail(strict=True, reason="query URL exact scope: issue #613")
     def test_minimum_vote_from_gerrit_37_detailed_labels(self):
         """A vote at the label's minimum shows with an empty summary."""
         api_data = {
@@ -219,7 +217,6 @@ class TestGerritLabelInfo:
             {},
         ],
     )
-    @pytest.mark.xfail(strict=True, reason="query URL exact scope: issue #613")
     def test_no_minimum_vote(self, api_data):
         """No veto without a vote at a negative minimum."""
         label = GerritLabelInfo.from_api_response("Verified", api_data)
@@ -241,7 +238,6 @@ class TestGerritLabelInfo:
 class TestGerritChangeInfo:
     """Tests for GerritChangeInfo model."""
 
-    @pytest.mark.xfail(strict=True, reason="query URL exact scope: issue #613")
     def test_submit_requirements_are_parsed(self):
         """Each submit requirement's status is kept by name."""
         change = GerritChangeInfo.from_api_response(

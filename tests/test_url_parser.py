@@ -334,7 +334,6 @@ class TestParseGerritTopicUrl:
         with pytest.raises(UrlParseError, match="URL cannot be empty"):
             parse_gerrit_topic_url("")
 
-    @pytest.mark.xfail(strict=True, reason="query URL exact scope: issue #613")
     @pytest.mark.parametrize(
         ("query", "expected"),
         [
@@ -368,7 +367,6 @@ class TestParseGerritTopicUrl:
         assert result.query == expected
         assert result.query_expression == expected
 
-    @pytest.mark.xfail(strict=True, reason="query URL exact scope: issue #613")
     @pytest.mark.parametrize(
         ("url", "base_path", "expected"),
         [
@@ -396,7 +394,6 @@ class TestParseGerritTopicUrl:
         assert result.base_path == base_path
         assert result.query == expected
 
-    @pytest.mark.xfail(strict=True, reason="query URL exact scope: issue #613")
     @pytest.mark.parametrize(
         ("query", "match"),
         [
@@ -436,7 +433,6 @@ class TestParseGerritTopicUrl:
             ('topic:x+message:"a+{+b"', 'topic:x message:"a { b"', "x"),
         ],
     )
-    @pytest.mark.xfail(strict=True, reason="query URL exact scope: issue #613")
     def test_brace_quoted_value_is_opaque(self, query, expected, topic):
         """A brace-quoted value keeps its spaces and parentheses as written."""
         result = parse_gerrit_topic_url(f"https://gerrit.example.org/q/{query}")
@@ -455,13 +451,11 @@ class TestParseGerritTopicUrl:
             ("topic:{+}", "cannot be empty"),
         ],
     )
-    @pytest.mark.xfail(strict=True, reason="query URL exact scope: issue #613")
     def test_brace_quoted_query_rejected(self, query, match):
         """A topic only inside braces, or malformed braces, is refused."""
         with pytest.raises(UrlParseError, match=match):
             parse_gerrit_topic_url(f"https://gerrit.example.org/q/{query}")
 
-    @pytest.mark.xfail(strict=True, reason="query URL exact scope: issue #613")
     def test_topic_inside_braces_does_not_look_like_a_topic_search(self):
         """Routing agrees with the parser about a brace-quoted topic: term."""
         from dependamerge.url_parser import looks_like_topic_search
@@ -473,7 +467,6 @@ class TestParseGerritTopicUrl:
             "https://gerrit.example.org/q/topic:{two+words}+branch:main"
         )
 
-    @pytest.mark.xfail(strict=True, reason="query URL exact scope: issue #613")
     def test_query_expression_falls_back_to_quoted_topic(self):
         """Without a parsed query, the topic alone is the expression."""
         from dependamerge.url_parser import ParsedGerritTopicUrl

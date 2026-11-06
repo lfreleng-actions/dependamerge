@@ -24,8 +24,6 @@ from dependamerge.gerrit import (
 )
 from dependamerge.url_parser import ParsedGerritTopicUrl, parse_gerrit_topic_url
 
-pytestmark = pytest.mark.xfail(strict=True, reason="query URL exact scope: issue #613")
-
 HOST = "gerrit.example.org"
 FULL_ACCESS = {"Code-Review": ["-2", "-1", "0", "+1", "+2"]}
 

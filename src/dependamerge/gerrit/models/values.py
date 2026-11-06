@@ -75,6 +75,38 @@ class GerritFileChange(BaseModel):
         )
 
 
+def _vote_range(values: Any) -> tuple[int, int] | None:
+    """The lowest and highest vote in a label's ``values`` map, if any."""
+    if not isinstance(values, dict):
+        return None
+    votes: list[int] = []
+    for key in values:
+        try:
+            votes.append(int(str(key).strip()))
+        except ValueError:
+            continue
+    return (min(votes), max(votes)) if votes else None
+
+
+def _minimum_vote_cast(label_data: dict[str, Any]) -> int | None:
+    """The label's minimum, when a reviewer voted it (Gerrit's ``=MIN``).
+
+    DETAILED_LABELS lists each reviewer's vote under ``all`` and the
+    label's range under ``values``.  Gerrit 3.x with submit requirements
+    leaves the legacy ``rejected`` summary out, so this is how a veto
+    such as ``Verified -1`` shows there.  A range whose minimum is not
+    negative has no veto: every reviewer without a vote sits at it.
+    """
+    vote_range = _vote_range(label_data.get("values"))
+    votes = label_data.get("all")
+    if vote_range is None or vote_range[0] >= 0 or not isinstance(votes, list):
+        return None
+    for vote in votes:
+        if isinstance(vote, dict) and vote.get("value") == vote_range[0]:
+            return vote_range[0]
+    return None
+
+
 class GerritLabelInfo(BaseModel):
     """
     Represents label (vote) information for a Gerrit change.
@@ -87,6 +119,8 @@ class GerritLabelInfo(BaseModel):
     rejected: bool = False
     value: int | None = None
     blocking: bool = False
+    #: The label's minimum when a reviewer voted it, else None.
+    minimum_vote: int | None = None
 
     @classmethod
     def from_api_response(
@@ -106,16 +140,17 @@ class GerritLabelInfo(BaseModel):
         approved = "approved" in label_data
         rejected = "rejected" in label_data
 
-        # Get the current vote value if present
+        # Get the current vote value if present.  Otherwise "approved"
+        # and "rejected" mean the label's maximum and minimum vote, which
+        # DETAILED_LABELS lists under "values" (e.g. Verified spans -1..+1).
+        vote_range = _vote_range(label_data.get("values"))
         value = None
         if "value" in label_data:
             value = label_data["value"]
         elif approved:
-            # If approved, typically means max positive vote
-            value = 2
+            value = vote_range[1] if vote_range else 2
         elif rejected:
-            # If rejected, typically means max negative vote
-            value = -2
+            value = vote_range[0] if vote_range else -2
 
         return cls(
             name=name,
@@ -123,6 +158,7 @@ class GerritLabelInfo(BaseModel):
             rejected=rejected,
             value=value,
             blocking=label_data.get("blocking", False),
+            minimum_vote=_minimum_vote_cast(label_data),
         )
 
 

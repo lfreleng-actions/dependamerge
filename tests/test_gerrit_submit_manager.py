@@ -325,7 +325,6 @@ class TestSubmitBoundToRevision:
         mock_build_client.return_value = mock_client
         return GerritSubmitManager(host="gerrit.example.org", username="user")
 
-    @pytest.mark.xfail(strict=True, reason="query URL exact scope: issue #613")
     @patch("dependamerge.gerrit.submit_manager.build_client")
     def test_reviews_and_submits_the_previewed_revision(
         self, mock_build_client, mock_client, sample_change
@@ -344,7 +343,6 @@ class TestSubmitBoundToRevision:
             "/changes/12345/revisions/abc123/submit",
         ]
 
-    @pytest.mark.xfail(strict=True, reason="query URL exact scope: issue #613")
     @patch("dependamerge.gerrit.submit_manager.build_client")
     def test_new_patchset_is_neither_reviewed_nor_submitted(
         self, mock_build_client, mock_client, sample_change
@@ -360,7 +358,6 @@ class TestSubmitBoundToRevision:
         assert "new patchset" in (results[0].error or "")
         mock_client.post.assert_not_called()
 
-    @pytest.mark.xfail(strict=True, reason="query URL exact scope: issue #613")
     @patch("dependamerge.gerrit.submit_manager.build_client")
     def test_change_without_a_revision_is_refused(
         self, mock_build_client, mock_client, sample_change
@@ -375,7 +372,6 @@ class TestSubmitBoundToRevision:
         mock_client.post.assert_not_called()
 
     @patch("dependamerge.gerrit.submit_manager.build_client")
-    @pytest.mark.xfail(strict=True, reason="query URL exact scope: issue #613")
     def test_change_submitting_outside_scope_is_not_voted_on(
         self, mock_build_client, mock_client, sample_change
     ):
@@ -403,7 +399,6 @@ class TestSubmitBoundToRevision:
         mock_client.post.assert_not_called()
 
     @patch("dependamerge.gerrit.submit_manager.build_client")
-    @pytest.mark.xfail(strict=True, reason="query URL exact scope: issue #613")
     def test_change_submitting_within_scope_is_submitted(
         self, mock_build_client, mock_client, sample_change
     ):
@@ -494,7 +489,6 @@ class TestSubmitScopedBatchByGroup:
         mock_client.get.side_effect = get
         mock_client.post.side_effect = post
 
-    @pytest.mark.xfail(strict=True, reason="query URL exact scope: issue #613")
     @pytest.mark.parametrize("parallel", [True, False])
     @patch("dependamerge.gerrit.submit_manager.build_client")
     def test_every_vote_lands_before_the_first_submit(
@@ -512,7 +506,6 @@ class TestSubmitScopedBatchByGroup:
         first_submit = kinds.index("submit")
         assert kinds[:first_submit] == ["review"] * 3
 
-    @pytest.mark.xfail(strict=True, reason="query URL exact scope: issue #613")
     @patch("dependamerge.gerrit.submit_manager.build_client")
     def test_change_merged_with_its_group_counts_as_submitted(
         self, mock_build_client, mock_client, sample_change
@@ -529,7 +522,6 @@ class TestSubmitScopedBatchByGroup:
         assert [r.success for r in results] == [True, True, True]
         assert all(r.submitted for r in results)
 
-    @pytest.mark.xfail(strict=True, reason="query URL exact scope: issue #613")
     @patch("dependamerge.gerrit.submit_manager.build_client")
     def test_refused_submit_is_rechecked_after_every_submit_returns(
         self, mock_build_client, mock_client, sample_change
@@ -545,7 +537,6 @@ class TestSubmitScopedBatchByGroup:
 
         assert [r.success for r in results] == [True, True, True]
 
-    @pytest.mark.xfail(strict=True, reason="query URL exact scope: issue #613")
     @patch("dependamerge.gerrit.submit_manager.build_client")
     def test_failed_vote_on_a_member_merged_with_its_group_succeeds(
         self, mock_build_client, mock_client, sample_change
@@ -566,7 +557,6 @@ class TestSubmitScopedBatchByGroup:
         assert results[1].reviewed is False
         assert results[0].reviewed is True
 
-    @pytest.mark.xfail(strict=True, reason="query URL exact scope: issue #613")
     @patch("dependamerge.gerrit.submit_manager.build_client")
     def test_failed_vote_on_an_unmerged_member_stays_a_failure(
         self, mock_build_client, mock_client, sample_change
@@ -589,7 +579,6 @@ class TestSubmitScopedBatchByGroup:
         assert results[1].error == "Failed to apply review"
         assert results[1].reviewed is False
 
-    @pytest.mark.xfail(strict=True, reason="query URL exact scope: issue #613")
     @patch("dependamerge.gerrit.submit_manager.build_client")
     def test_refused_submit_of_an_unmerged_change_fails(
         self, mock_build_client, mock_client, sample_change
@@ -606,7 +595,6 @@ class TestSubmitScopedBatchByGroup:
         assert [r.success for r in results] == [False, False, False]
         assert all(r.reviewed for r in results)
 
-    @pytest.mark.xfail(strict=True, reason="query URL exact scope: issue #613")
     @patch("dependamerge.gerrit.submit_manager.build_client")
     def test_change_refused_before_its_vote_is_never_submitted(
         self, mock_build_client, mock_client, sample_change
@@ -657,7 +645,6 @@ class TestSubmitScopedBatchByGroup:
         mock_client.get.side_effect = get
         mock_client.post.side_effect = post
 
-    @pytest.mark.xfail(strict=True, reason="query URL exact scope: issue #613")
     @pytest.mark.parametrize("parallel", [True, False])
     @patch("dependamerge.gerrit.submit_manager.build_client")
     def test_change_joining_the_group_after_the_votes_blocks_every_submit(
@@ -683,7 +670,6 @@ class TestSubmitScopedBatchByGroup:
         assert all(r.reviewed for r in results)
         assert all("#999" in (r.error or "") for r in results)
 
-    @pytest.mark.xfail(strict=True, reason="query URL exact scope: issue #613")
     @pytest.mark.parametrize("parallel", [True, False])
     @patch("dependamerge.gerrit.submit_manager.build_client")
     def test_new_patchset_after_the_votes_blocks_every_submit(
@@ -709,7 +695,6 @@ class TestSubmitScopedBatchByGroup:
         assert "new patchset" in (results[2].error or "")
         assert "#103" in (results[0].error or "")
 
-    @pytest.mark.xfail(strict=True, reason="query URL exact scope: issue #613")
     @patch("dependamerge.gerrit.submit_manager.build_client")
     def test_group_is_checked_again_before_each_submit(
         self, mock_build_client, mock_client, sample_change

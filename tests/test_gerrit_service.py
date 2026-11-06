@@ -1526,7 +1526,6 @@ def _query_pages(numbers: list[int]) -> list[list[dict[str, Any]]]:
     return pages
 
 
-@pytest.mark.xfail(strict=True, reason="query URL exact scope: issue #613")
 class TestGerritServiceGetOpenChangesForQuery:
     """A query URL's batch: the whole result set, or a refusal."""
 
@@ -1728,7 +1727,6 @@ class TestGerritServiceQueryBatchBlockers:
 
     @patch("dependamerge.gerrit.service.build_client")
     @patch("dependamerge.gerrit.service.create_url_builder")
-    @pytest.mark.xfail(strict=True, reason="query URL exact scope: issue #613")
     def test_requests_votes_and_submit_requirements(
         self, mock_url_builder, mock_build_client, mock_client
     ):
@@ -1748,7 +1746,6 @@ class TestGerritServiceQueryBatchBlockers:
 
     @patch("dependamerge.gerrit.service.build_client")
     @patch("dependamerge.gerrit.service.create_url_builder")
-    @pytest.mark.xfail(strict=True, reason="query URL exact scope: issue #613")
     def test_server_without_submit_requirements_is_queried_without(
         self, mock_url_builder, mock_build_client, mock_client
     ):
@@ -1771,7 +1768,6 @@ class TestGerritServiceQueryBatchBlockers:
 
     @patch("dependamerge.gerrit.service.build_client")
     @patch("dependamerge.gerrit.service.create_url_builder")
-    @pytest.mark.xfail(strict=True, reason="query URL exact scope: issue #613")
     def test_other_bad_request_is_raised(
         self, mock_url_builder, mock_build_client, mock_client
     ):
@@ -1815,7 +1811,6 @@ class TestGerritServiceSubmittedTogether:
     )
     @patch("dependamerge.gerrit.service.build_client")
     @patch("dependamerge.gerrit.service.create_url_builder")
-    @pytest.mark.xfail(strict=True, reason="query URL exact scope: issue #613")
     def test_set_within_scope_passes(
         self, mock_url_builder, mock_build_client, mock_client, response
     ):
@@ -1845,7 +1840,6 @@ class TestGerritServiceSubmittedTogether:
     )
     @patch("dependamerge.gerrit.service.build_client")
     @patch("dependamerge.gerrit.service.create_url_builder")
-    @pytest.mark.xfail(strict=True, reason="query URL exact scope: issue #613")
     def test_set_beyond_scope_is_reported(
         self, mock_url_builder, mock_build_client, mock_client, response, expected
     ):

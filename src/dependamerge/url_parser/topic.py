@@ -12,7 +12,7 @@ contract):
 from __future__ import annotations
 
 import re
-from urllib.parse import unquote, urlparse
+from urllib.parse import unquote, unquote_plus, urlparse
 
 from .gerrit_routing import (
     reject_conflicting_host_declaration,
@@ -31,18 +31,185 @@ from .shorthand import names_a_host, normalize_target
 
 
 #: Gerrit search URLs separate terms with ``+`` (rendered as a space),
-#: so ``topic:`` has to sit at a term boundary.  Shared with
-#: :func:`looks_like_topic_search` rather than approximated there: three
-#: review rounds found the approximation missing supported searches
-#: (``status:open+topic:release``) and claiming unsupported ones
-#: (``notopic:release``), which is the argument for one grammar.
+#: so ``topic:`` has to sit at a term boundary.  The expression it runs
+#: over is already decoded (:func:`_locate_query`), so every separator
+#: is whitespace there and a ``+`` left is a literal one (``%2B``).
+#: Shared with :func:`looks_like_topic_search` rather than approximated
+#: there: three review rounds found the approximation missing supported
+#: searches (``status:open+topic:release``) and claiming unsupported
+#: ones (``notopic:release``), which is the argument for one grammar.
 #:
 #: The value may be empty, but only up to a term boundary.  Requiring a
 #: non-empty one meant ``/q/topic:`` matched nothing, so the "cannot be
 #: empty" refusal below was unreachable and the CLI fell through to
 #: unrelated GitHub guidance.  The boundary is what keeps a malformed
 #: term such as ``topic:"abc`` or ``topic:a"b`` from matching a prefix.
-_TOPIC_TERM_RE = re.compile(r'(?:^|[+\s])topic:(?:"([^"]*)"|([^+\s"]*))(?=[+\s]|$)')
+#:
+#: It runs over :func:`_mask_braced` output, so a ``topic:`` inside a
+#: brace-quoted value (``message:{see topic:x}``) is text, not a term.
+_TOPIC_TERM_RE = re.compile(r'(?:^|\s)topic:(?:"([^"]*)"|([^\s"]*))(?=\s|$)')
+
+
+def _mask_braced(expr: str) -> str:
+    """Empty every brace-quoted value in *expr*: ``{a b}`` becomes ``{}``.
+
+    Gerrit quotes a value in braces as well as in double quotes, and
+    neither nests.  Braces inside double quotes are text, as are double
+    quotes inside braces.  An unterminated brace is left for
+    :func:`_tokenise_query` to refuse.
+    """
+    out: list[str] = []
+    in_quote = escaped = False
+    index = 0
+    while index < len(expr):
+        ch = expr[index]
+        if in_quote:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_quote = False
+        elif ch == '"':
+            in_quote = True
+        elif ch == "{":
+            end = expr.find("}", index + 1)
+            if end != -1:
+                out.append("{}")
+                index = end + 1
+                continue
+        out.append(ch)
+        index += 1
+    return "".join(out)
+
+
+def _tokenise_query(expr: str) -> list[str]:
+    """Split a query expression into terms and parentheses.
+
+    Terms are separated by whitespace outside quotes (the URL's ``+``
+    separators are spaces by now, and a ``+`` left is literal);
+    parentheses outside quotes are tokens of their own, as in Gerrit's
+    own grammar.  A value quoted in double quotes or in braces
+    (``file:{^src/(a|b)/}``) is opaque: its spaces and parentheses stay
+    inside the term.  A backslash escapes the next character inside
+    double quotes; braces do not nest and take no escapes.
+
+    Raises:
+        UrlParseError: On an unterminated quote or brace, a stray or
+            nested brace, or unbalanced parentheses, any of which would
+            let the expression escape the ``(...) status:open`` grouping
+            it is sent in.
+    """
+    tokens: list[str] = []
+    current: list[str] = []
+    in_quote = False
+    in_brace = False
+    escaped = False
+    depth = 0
+
+    def flush() -> None:
+        if current:
+            tokens.append("".join(current))
+            current.clear()
+
+    for ch in expr:
+        if in_quote:
+            current.append(ch)
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_quote = False
+        elif in_brace:
+            if ch == "{":
+                raise UrlParseError("Gerrit query has a '{' inside braces")
+            current.append(ch)
+            in_brace = ch != "}"
+        elif ch == '"':
+            in_quote = True
+            current.append(ch)
+        elif ch == "{":
+            in_brace = True
+            current.append(ch)
+        elif ch == "}":
+            raise UrlParseError("Gerrit query has an unmatched '}'")
+        elif ch.isspace():
+            flush()
+        elif ch in "()":
+            flush()
+            depth += 1 if ch == "(" else -1
+            if depth < 0:
+                raise UrlParseError("Gerrit query has an unmatched ')'")
+            tokens.append(ch)
+        else:
+            current.append(ch)
+    if in_quote:
+        raise UrlParseError("Gerrit query has an unterminated quote")
+    if in_brace:
+        raise UrlParseError("Gerrit query has an unterminated '{'")
+    if depth:
+        raise UrlParseError("Gerrit query has an unmatched '('")
+    flush()
+    return tokens
+
+
+def _topic_value(token: str) -> str:
+    """The topic a ``topic:`` token names, without its quotes or braces."""
+    value = token[len("topic:") :]
+    if len(value) >= 2 and (value[0], value[-1]) in (('"', '"'), ("{", "}")):
+        value = value[1:-1]
+    return value.strip()
+
+
+def _normalise_query(expr: str) -> tuple[str, str]:
+    """Return *expr* as one space-separated query, and the topic bounding it.
+
+    The expression is sent as ``(<expr>) status:open``, so it must bound
+    the result set by its topic on its own: a top-level ``OR`` or a
+    negated topic term would let other changes in.  The topic is the
+    first top-level ``topic:`` term's value; a ``topic:`` inside a quoted
+    or brace-quoted value is part of that value, not a term.
+
+    Raises:
+        UrlParseError: When the expression is malformed, or its
+            ``topic:`` term does not constrain the whole query.
+    """
+    tokens = _tokenise_query(expr)
+    depth = 0
+    topic = ""
+    empty_topic = False
+    previous = ""
+    for token in tokens:
+        if token == "(":
+            depth += 1
+        elif token == ")":
+            depth -= 1
+        elif depth == 0:
+            if token.upper() == "OR":
+                raise UrlParseError(
+                    "A top-level OR in a Gerrit query URL could match changes "
+                    "outside the topic; group it in parentheses beside the "
+                    "topic: term"
+                )
+            if token.startswith("topic:") and previous.upper() != "NOT" and not topic:
+                topic = _topic_value(token)
+                empty_topic = empty_topic or not topic
+        previous = token if depth == 0 else ""
+    if not topic:
+        if empty_topic:
+            raise UrlParseError("Gerrit topic cannot be empty")
+        raise UrlParseError(
+            "The topic: term in a Gerrit query URL must apply to the whole "
+            "query (not negated, and not inside parentheses)"
+        )
+
+    parts: list[str] = []
+    for token in tokens:
+        if parts and parts[-1] != "(" and token != ")":
+            parts.append(" ")
+        parts.append(token)
+    return "".join(parts), topic
 
 
 def _locate_query(parsed: object) -> tuple[list[str], str] | None:
@@ -51,16 +218,32 @@ def _locate_query(parsed: object) -> tuple[list[str], str] | None:
     The legacy UI keeps the query in the fragment (``/#/q/...``); the
     PolyGerrit UI keeps it in the path (``/q/...``).  Returns None when
     the URL names no ``/q/`` segment at all.
+
+    The expression is decoded as Gerrit encodes it: a raw ``+`` is a
+    space between terms and ``%2B`` a literal plus.  Percent-decoding
+    first would read ``label:Verified%2B1`` as two terms, a different
+    query from the one the URL names.
+
+    Everything after ``/q/`` is the expression, kept as written: a
+    repeated, trailing or encoded ``/`` is part of a search value
+    (``file:^src/``, ``message:"https://..."``), and dropping one would
+    send a different query.  Only the base path is normalised.
     """
-    path = unquote(getattr(parsed, "path", "")).rstrip("/")
-    fragment = unquote(getattr(parsed, "fragment", "")).rstrip("/")
+    path = getattr(parsed, "path", "")
+    fragment = unquote_plus(getattr(parsed, "fragment", ""))
     if fragment.startswith("/q/"):
-        return ([s for s in path.split("/") if s], fragment[len("/q/") :])
-    segments = [s for s in path.split("/") if s]
-    if "q" not in segments:
-        return None
-    q_index = segments.index("q")
-    return (segments[:q_index], "/".join(segments[q_index + 1 :]))
+        return (_segments(unquote(path)), fragment[len("/q/") :])
+    raw_segments = path.split("/")
+    for index, segment in enumerate(raw_segments):
+        if unquote(segment) == "q":
+            base = _segments(unquote("/".join(raw_segments[:index])))
+            return (base, unquote_plus("/".join(raw_segments[index + 1 :])))
+    return None
+
+
+def _segments(path: str) -> list[str]:
+    """The non-empty ``/``-separated segments of a decoded *path*."""
+    return [s for s in path.rstrip("/").split("/") if s]
 
 
 def looks_like_topic_search(url: str) -> bool:
@@ -89,7 +272,7 @@ def looks_like_topic_search(url: str) -> bool:
     located = _locate_query(parsed)
     if located is None:
         return False
-    return _TOPIC_TERM_RE.search(located[1]) is not None
+    return _TOPIC_TERM_RE.search(_mask_braced(located[1])) is not None
 
 
 def parse_gerrit_topic_url(url: str) -> ParsedGerritTopicUrl:
@@ -101,16 +284,20 @@ def parse_gerrit_topic_url(url: str) -> ParsedGerritTopicUrl:
         https://gerrit.onap.org/r/q/topic:some-topic
         https://gerrit.example.org/#/q/topic:some-topic  (legacy UI)
 
-    Additional search operators in the query (separated by '+' or
-    whitespace) are tolerated; only the ``topic:`` term is extracted.
-    Quoted topics (``topic:"some topic"``) and percent-encoded
-    characters are handled.
+    The query must hold a top-level ``topic:`` term, so it can never be
+    unbounded.  Additional search operators (separated by '+' or
+    whitespace) are kept: the whole expression is carried on
+    ``query`` and narrows the batch as it does in the Gerrit UI.
+    Quoted topics (``topic:"some topic"``, ``topic:{some topic}``) and
+    percent-encoded characters are handled; a brace-quoted value is
+    kept as written.
 
     Args:
         url: The URL to parse.
 
     Returns:
-        A ParsedGerritTopicUrl with the host, base path, and topic.
+        A ParsedGerritTopicUrl with the host, base path, topic, and the
+        normalised query expression.
 
     Raises:
         UrlParseError: If the URL is not a Gerrit topic search URL.
@@ -159,7 +346,7 @@ def parse_gerrit_topic_url(url: str) -> ParsedGerritTopicUrl:
             f"Gerrit search URL contains no query expression: {redact_target(original_url)}"
         )
 
-    match = _TOPIC_TERM_RE.search(query_expr)
+    match = _TOPIC_TERM_RE.search(_mask_braced(query_expr))
     if not match:
         raise UrlParseError(
             "Only topic searches are supported for Gerrit query URLs. "
@@ -167,8 +354,7 @@ def parse_gerrit_topic_url(url: str) -> ParsedGerritTopicUrl:
             f"(got: {redact_target(original_url)})"
         )
 
-    topic = (match.group(1) or match.group(2) or "").strip()
-    if not topic:
+    if not (match.group(1) or match.group(2) or "").strip():
         raise UrlParseError("Gerrit topic cannot be empty")
 
     # Only now, with the target established as a topic search, are the
@@ -195,6 +381,8 @@ def parse_gerrit_topic_url(url: str) -> ParsedGerritTopicUrl:
     # above, so a mistyped host is never reported as a malformed path.
     reject_path_parameters(parsed, original_url)
 
+    query, topic = _normalise_query(query_expr)
+
     base_path = "/".join(base_segments) if base_segments else None
 
     return ParsedGerritTopicUrl(
@@ -203,4 +391,5 @@ def parse_gerrit_topic_url(url: str) -> ParsedGerritTopicUrl:
         base_path=base_path,
         topic=topic,
         original_url=original_url,
+        query=query,
     )

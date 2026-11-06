@@ -1053,7 +1053,6 @@ class TestCLI:
         output = console.export_text()
         assert "update-settings" in output
 
-    @pytest.mark.xfail(strict=True, reason="query URL exact scope: issue #613")
     @patch("dependamerge.cli.create_gerrit_comparator")
     @patch("dependamerge.cli.create_gerrit_service")
     @patch("dependamerge.cli.resolve_gerrit_credentials")
@@ -1110,7 +1109,6 @@ class TestCLI:
         assert "Query matched 2 open changes:" in output
         assert "other-proj #201" in output
 
-    @pytest.mark.xfail(strict=True, reason="query URL exact scope: issue #613")
     @patch("dependamerge.cli.create_gerrit_comparator")
     @patch("dependamerge.cli.create_gerrit_service")
     @patch("dependamerge.cli.resolve_gerrit_credentials")

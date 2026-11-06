@@ -151,7 +151,16 @@ def _confirm_gerrit_submission(
     Returns:
         True when the user confirmed and the submission should proceed.
     """
-    continue_sha = _generate_gerrit_continue_sha(source_change)
+    return _confirm_continue_sha(_generate_gerrit_continue_sha(source_change), console)
+
+
+def _confirm_continue_sha(continue_sha: str, console: Console) -> bool:
+    """Prompt for ``continue_sha`` and report whether it was entered.
+
+    Returns:
+        True when the user typed the value back; False when they
+        cancelled, typed something else, or the run is under test.
+    """
     console.print()
     console.print(f"To proceed with merging enter: {continue_sha}")
 

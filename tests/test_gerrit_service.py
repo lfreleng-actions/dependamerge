@@ -1498,3 +1498,363 @@ only-one-file.txt"""
 
         files = service._parse_conflict_files(response_body)
         assert files == ["only-one-file.txt"]
+
+
+def _query_item(number: int, **extra: Any) -> dict[str, Any]:
+    """A minimal change as a query page lists it."""
+    return {
+        "_number": number,
+        "change_id": f"I{number:040d}",
+        "project": "proj",
+        "subject": "Test",
+        "branch": "main",
+        "status": "NEW",
+        "owner": {"username": "user"},
+        "current_revision": f"rev{number}",
+        **extra,
+    }
+
+
+def _query_pages(numbers: list[int]) -> list[list[dict[str, Any]]]:
+    """The pages a query result of *numbers* is listed in."""
+    pages = [
+        [_query_item(n) for n in numbers[start : start + 100]]
+        for start in range(0, len(numbers), 100)
+    ]
+    for page in pages[:-1]:
+        page[-1]["_more_changes"] = True
+    return pages
+
+
+@pytest.mark.xfail(strict=True, reason="query URL exact scope: issue #613")
+class TestGerritServiceGetOpenChangesForQuery:
+    """A query URL's batch: the whole result set, or a refusal."""
+
+    @patch("dependamerge.gerrit.service.build_client")
+    @patch("dependamerge.gerrit.service.create_url_builder")
+    def test_sends_the_whole_expression_grouped(
+        self, mock_url_builder, mock_build_client, mock_client
+    ):
+        """Extra terms reach Gerrit, grouped before status:open."""
+        from urllib.parse import parse_qs, urlsplit
+
+        mock_build_client.return_value = mock_client
+        mock_client.get.return_value = [_query_item(1)]
+
+        service = GerritService(host="gerrit.example.org")
+        changes = service.get_open_changes_for_query("topic:x project:a/b")
+
+        assert [c.number for c in changes] == [1]
+        endpoint = mock_client.get.call_args[0][0]
+        params = parse_qs(urlsplit(endpoint).query)
+        assert params["q"] == ["(topic:x project:a/b) status:open"]
+
+    @patch("dependamerge.gerrit.service.build_client")
+    @patch("dependamerge.gerrit.service.create_url_builder")
+    def test_encodes_characters_that_would_leave_the_parameter(
+        self, mock_url_builder, mock_build_client, mock_client
+    ):
+        """A '&' or '#' in the expression cannot add or cut parameters."""
+        from urllib.parse import parse_qs, urlsplit
+
+        mock_build_client.return_value = mock_client
+        mock_client.get.return_value = []
+
+        service = GerritService(host="gerrit.example.org")
+        service.get_open_changes_for_query("topic:a&n=1#b")
+
+        endpoint = mock_client.get.call_args[0][0]
+        params = parse_qs(urlsplit(endpoint).query)
+        assert params["q"] == ["(topic:a&n=1#b) status:open"]
+        assert params["n"] == ["100"]
+
+    @patch("dependamerge.gerrit.service.build_client")
+    @patch("dependamerge.gerrit.service.create_url_builder")
+    def test_fetches_every_page(self, mock_url_builder, mock_build_client, mock_client):
+        """Every page is fetched, following _more_changes."""
+        mock_build_client.return_value = mock_client
+        pages = _query_pages(list(range(1, 131)))
+        mock_client.get.side_effect = pages * 2
+
+        service = GerritService(host="gerrit.example.org")
+        changes = service.get_open_changes_for_query("topic:x")
+
+        assert len(changes) == 130
+        # A multi-page result is read twice, to confirm it held still.
+        assert mock_client.get.call_count == 4
+        assert "S=100" in mock_client.get.call_args_list[1][0][0]
+
+    @patch("dependamerge.gerrit.service.build_client")
+    @patch("dependamerge.gerrit.service.create_url_builder")
+    def test_single_page_is_read_once(
+        self, mock_url_builder, mock_build_client, mock_client
+    ):
+        """A result on one page is a snapshot, so it is not read again."""
+        mock_build_client.return_value = mock_client
+        mock_client.get.side_effect = _query_pages([1, 2, 3])
+
+        service = GerritService(host="gerrit.example.org")
+        changes = service.get_open_changes_for_query("topic:x")
+
+        assert [c.number for c in changes] == [1, 2, 3]
+        assert mock_client.get.call_count == 1
+
+    @patch("dependamerge.gerrit.service.build_client")
+    @patch("dependamerge.gerrit.service.create_url_builder")
+    def test_change_repeated_across_pages_is_reread(
+        self, mock_url_builder, mock_build_client, mock_client
+    ):
+        """A change moving pages mid-read is never queued twice."""
+        mock_build_client.return_value = mock_client
+        settled = list(range(1, 131))
+        # Change 130 was updated after page 1 was read: it moved to the
+        # front, so page 2 repeats change 100 and 130 is never seen.
+        shifted = _query_pages(settled)[:1] + [
+            [_query_item(n) for n in range(100, 130)]
+        ]
+        mock_client.get.side_effect = shifted + _query_pages(settled) * 2
+
+        service = GerritService(host="gerrit.example.org")
+        changes = service.get_open_changes_for_query("topic:x")
+
+        numbers = [c.number for c in changes]
+        assert sorted(numbers) == settled
+        assert mock_client.get.call_count == 6
+
+    @patch("dependamerge.gerrit.service.build_client")
+    @patch("dependamerge.gerrit.service.create_url_builder")
+    def test_change_skipped_across_pages_is_caught(
+        self, mock_url_builder, mock_build_client, mock_client
+    ):
+        """Two reads that disagree are not accepted; a third settles it."""
+        mock_build_client.return_value = mock_client
+        settled = list(range(1, 131))
+        # A change on page 1 closed mid-read: page 2 starts one later, so
+        # change 101 is skipped without any repeat to give it away.
+        skipped = _query_pages(settled)[:1] + [
+            [_query_item(n) for n in range(102, 131)]
+        ]
+        mock_client.get.side_effect = skipped + _query_pages(settled) * 2
+
+        service = GerritService(host="gerrit.example.org")
+        changes = service.get_open_changes_for_query("topic:x")
+
+        assert sorted(c.number for c in changes) == settled
+
+    @patch("dependamerge.gerrit.service.build_client")
+    @patch("dependamerge.gerrit.service.create_url_builder")
+    def test_result_that_never_settles_is_refused(
+        self, mock_url_builder, mock_build_client, mock_client
+    ):
+        """Reads that keep disagreeing refuse rather than pick one."""
+        mock_build_client.return_value = mock_client
+        mock_client.get.side_effect = (
+            _query_pages(list(range(1, 131)))
+            + _query_pages(list(range(1, 132)))
+            + _query_pages(list(range(1, 133)))
+        )
+
+        service = GerritService(host="gerrit.example.org")
+        with pytest.raises(GerritServiceError, match="kept changing"):
+            service.get_open_changes_for_query("topic:x")
+
+    @patch("dependamerge.gerrit.service.build_client")
+    @patch("dependamerge.gerrit.service.create_url_builder")
+    def test_refuses_more_than_the_ceiling(
+        self, mock_url_builder, mock_build_client, mock_client
+    ):
+        """A result over the ceiling raises rather than truncating."""
+        from dependamerge.gerrit.service import QUERY_BATCH_CEILING
+
+        assert QUERY_BATCH_CEILING >= 500
+        mock_build_client.return_value = mock_client
+        pages = []
+        for start in range(0, QUERY_BATCH_CEILING + 100, 100):
+            page = [_query_item(i) for i in range(start + 1, start + 101)]
+            page[-1]["_more_changes"] = True
+            pages.append(page)
+        mock_client.get.side_effect = pages
+
+        service = GerritService(host="gerrit.example.org")
+        with pytest.raises(GerritServiceError, match="more than"):
+            service.get_open_changes_for_query("topic:x")
+
+    @patch("dependamerge.gerrit.service.build_client")
+    @patch("dependamerge.gerrit.service.create_url_builder")
+    def test_refuses_a_page_with_an_unparsable_change(
+        self, mock_url_builder, mock_build_client, mock_client
+    ):
+        """One unparsable change refuses the batch, not skips it."""
+        mock_build_client.return_value = mock_client
+        mock_client.get.return_value = [_query_item(1), {"_number": 2, "owner": 7}]
+
+        service = GerritService(host="gerrit.example.org")
+        with pytest.raises(GerritServiceError, match="could not be parsed"):
+            service.get_open_changes_for_query("topic:x")
+
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            ("_number", None),
+            ("_number", 0),
+            ("_number", "12"),
+            ("change_id", None),
+            ("project", ""),
+            ("current_revision", None),
+            ("current_revision", ""),
+        ],
+    )
+    @patch("dependamerge.gerrit.service.build_client")
+    @patch("dependamerge.gerrit.service.create_url_builder")
+    def test_refuses_a_change_missing_an_identifier(
+        self, mock_url_builder, mock_build_client, mock_client, field, value
+    ):
+        """A change the parser would fill with a default refuses the batch."""
+        mock_build_client.return_value = mock_client
+        broken = _query_item(2)
+        if value is None:
+            del broken[field]
+        else:
+            broken[field] = value
+        mock_client.get.return_value = [_query_item(1), broken]
+
+        service = GerritService(host="gerrit.example.org")
+        with pytest.raises(GerritServiceError, match=f"could not be parsed.*{field}"):
+            service.get_open_changes_for_query("topic:x")
+
+
+class TestGerritServiceQueryBatchBlockers:
+    """The batch query asks for what Gerrit 3.x reports as blocking."""
+
+    @patch("dependamerge.gerrit.service.build_client")
+    @patch("dependamerge.gerrit.service.create_url_builder")
+    @pytest.mark.xfail(strict=True, reason="query URL exact scope: issue #613")
+    def test_requests_votes_and_submit_requirements(
+        self, mock_url_builder, mock_build_client, mock_client
+    ):
+        """DETAILED_LABELS and SUBMIT_REQUIREMENTS are both requested."""
+        from urllib.parse import parse_qs, urlsplit
+
+        mock_build_client.return_value = mock_client
+        mock_client.get.return_value = [_query_item(1)]
+
+        service = GerritService(host="gerrit.example.org")
+        service.get_open_changes_for_query("topic:x")
+
+        endpoint = mock_client.get.call_args[0][0]
+        options = parse_qs(urlsplit(endpoint).query)["o"]
+        assert "DETAILED_LABELS" in options
+        assert "SUBMIT_REQUIREMENTS" in options
+
+    @patch("dependamerge.gerrit.service.build_client")
+    @patch("dependamerge.gerrit.service.create_url_builder")
+    @pytest.mark.xfail(strict=True, reason="query URL exact scope: issue #613")
+    def test_server_without_submit_requirements_is_queried_without(
+        self, mock_url_builder, mock_build_client, mock_client
+    ):
+        """A server refusing the option is asked again without it."""
+        mock_build_client.return_value = mock_client
+        mock_client.get.side_effect = [
+            GerritRestError(
+                "Gerrit REST GET /changes/?o=SUBMIT_REQUIREMENTS failed: HTTP 400",
+                status_code=400,
+                response_body='"SUBMIT_REQUIREMENTS" is not a valid value for "-o"',
+            ),
+            [_query_item(1)],
+        ]
+
+        service = GerritService(host="gerrit.example.org")
+        changes = service.get_open_changes_for_query("topic:x")
+
+        assert [c.number for c in changes] == [1]
+        assert "SUBMIT_REQUIREMENTS" not in mock_client.get.call_args[0][0]
+
+    @patch("dependamerge.gerrit.service.build_client")
+    @patch("dependamerge.gerrit.service.create_url_builder")
+    @pytest.mark.xfail(strict=True, reason="query URL exact scope: issue #613")
+    def test_other_bad_request_is_raised(
+        self, mock_url_builder, mock_build_client, mock_client
+    ):
+        """A 400 about anything else is not retried."""
+        mock_build_client.return_value = mock_client
+        mock_client.get.side_effect = GerritRestError(
+            "Gerrit REST GET /changes/?o=SUBMIT_REQUIREMENTS failed: HTTP 400",
+            status_code=400,
+            response_body="bad query",
+        )
+
+        service = GerritService(host="gerrit.example.org")
+        with pytest.raises(GerritRestError):
+            service.get_open_changes_for_query("topic:x")
+        assert mock_client.get.call_count == 1
+
+
+def _together(*members: tuple[int, str], hidden: Any = 0) -> dict[str, Any]:
+    """A submitted_together response holding *members* (number, revision)."""
+    return {
+        "changes": [
+            {"_number": n, "project": f"proj{n}", "current_revision": rev}
+            for n, rev in members
+        ],
+        "non_visible_changes": hidden,
+    }
+
+
+class TestGerritServiceSubmittedTogether:
+    """Submitting a batch change must not submit anything outside it."""
+
+    SCOPE = {1: "rev1", 2: "rev2"}
+
+    @pytest.mark.parametrize(
+        "response",
+        [
+            _together(),
+            _together((1, "rev1")),
+            _together((2, "rev2"), (1, "rev1")),
+        ],
+    )
+    @patch("dependamerge.gerrit.service.build_client")
+    @patch("dependamerge.gerrit.service.create_url_builder")
+    @pytest.mark.xfail(strict=True, reason="query URL exact scope: issue #613")
+    def test_set_within_scope_passes(
+        self, mock_url_builder, mock_build_client, mock_client, response
+    ):
+        """Members of the batch at their previewed revisions are fine."""
+        mock_build_client.return_value = mock_client
+        mock_client.get.return_value = response
+
+        service = GerritService(host="gerrit.example.org")
+
+        assert service.submitted_together_problems(1, self.SCOPE) == []
+        endpoint = mock_client.get.call_args[0][0]
+        assert endpoint.startswith("/changes/1/submitted_together?")
+        assert "o=NON_VISIBLE_CHANGES" in endpoint
+        assert "o=CURRENT_REVISION" in endpoint
+
+    @pytest.mark.parametrize(
+        ("response", "expected"),
+        [
+            (_together((1, "rev1"), (3, "rev3")), "#3 (proj3), which is not among"),
+            (_together((1, "rev1"), (2, "new")), "#2 at a revision other than"),
+            (_together((1, "rev1"), hidden=2), "2 changes you cannot see"),
+            (_together((1, "rev1"), hidden=None), "cannot see"),
+            ({"changes": [{"project": "p"}], "non_visible_changes": 0}, "number"),
+            ([{"_number": 1, "current_revision": "rev1"}], "cannot be confirmed"),
+            ({"non_visible_changes": 0}, "cannot be confirmed"),
+        ],
+    )
+    @patch("dependamerge.gerrit.service.build_client")
+    @patch("dependamerge.gerrit.service.create_url_builder")
+    @pytest.mark.xfail(strict=True, reason="query URL exact scope: issue #613")
+    def test_set_beyond_scope_is_reported(
+        self, mock_url_builder, mock_build_client, mock_client, response, expected
+    ):
+        """An outside, re-patched, hidden or unreported member is a problem."""
+        mock_build_client.return_value = mock_client
+        mock_client.get.return_value = response
+
+        service = GerritService(host="gerrit.example.org")
+        problems = service.submitted_together_problems(1, self.SCOPE)
+
+        assert len(problems) == 1
+        assert expected in problems[0]

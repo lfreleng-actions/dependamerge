@@ -7,6 +7,8 @@ This module tests the Pydantic models for Gerrit changes, file changes,
 labels, and comparison results.
 """
 
+import pytest
+
 from dependamerge.gerrit.models import (
     GerritChangeInfo,
     GerritChangeStatus,
@@ -175,6 +177,55 @@ class TestGerritLabelInfo:
         assert label.rejected is True
         assert label.value == -2
 
+    @pytest.mark.xfail(strict=True, reason="query URL exact scope: issue #613")
+    def test_from_api_response_rejected_uses_label_range(self):
+        """A rejection reports the label's lowest vote when it is listed."""
+        api_data = {
+            "rejected": {"_account_id": 1000},
+            "values": {"-1": "Fails", " 0": "No score", "+1": "Verified"},
+        }
+
+        label = GerritLabelInfo.from_api_response("Verified", api_data)
+
+        assert label.rejected is True
+        assert label.value == -1
+
+    @pytest.mark.xfail(strict=True, reason="query URL exact scope: issue #613")
+    def test_minimum_vote_from_gerrit_37_detailed_labels(self):
+        """A vote at the label's minimum shows with an empty summary."""
+        api_data = {
+            "all": [
+                {"value": 1, "_account_id": 1},
+                {"value": 1, "_account_id": 2},
+                {"value": -1, "_account_id": 3},
+            ],
+            "values": {"-1": "Fails", " 0": "No score", "+1": "Verified"},
+        }
+
+        label = GerritLabelInfo.from_api_response("Verified", api_data)
+
+        assert label.rejected is False
+        assert label.minimum_vote == -1
+
+    @pytest.mark.parametrize(
+        "api_data",
+        [
+            {
+                "all": [{"value": 1}, {"value": 1}],
+                "values": {"-1": "Fails", " 0": "No score", "+1": "Verified"},
+            },
+            {"all": [{"value": 0}, {}], "values": {" 0": "No score", "+1": "Ok"}},
+            {"all": [{"value": -1}]},
+            {},
+        ],
+    )
+    @pytest.mark.xfail(strict=True, reason="query URL exact scope: issue #613")
+    def test_no_minimum_vote(self, api_data):
+        """No veto without a vote at a negative minimum."""
+        label = GerritLabelInfo.from_api_response("Verified", api_data)
+
+        assert label.minimum_vote is None
+
     def test_from_api_response_empty(self):
         """Test creation from empty label API response."""
         api_data = {}
@@ -189,6 +240,32 @@ class TestGerritLabelInfo:
 
 class TestGerritChangeInfo:
     """Tests for GerritChangeInfo model."""
+
+    @pytest.mark.xfail(strict=True, reason="query URL exact scope: issue #613")
+    def test_submit_requirements_are_parsed(self):
+        """Each submit requirement's status is kept by name."""
+        change = GerritChangeInfo.from_api_response(
+            {
+                "_number": 1,
+                "change_id": "I1",
+                "project": "p",
+                "subject": "s",
+                "branch": "main",
+                "status": "NEW",
+                "owner": {"username": "u"},
+                "submit_requirements": [
+                    {"name": "Verified", "status": "UNSATISFIED"},
+                    {"name": "Code-Review", "status": "SATISFIED"},
+                    {"status": "ERROR"},
+                    "junk",
+                ],
+            }
+        )
+
+        assert change.submit_requirement_status == {
+            "Verified": "UNSATISFIED",
+            "Code-Review": "SATISFIED",
+        }
 
     def test_basic_construction(self):
         """Test basic model construction."""

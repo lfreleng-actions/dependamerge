@@ -317,6 +317,431 @@ class TestSubmitSingleChange:
         mock_client.post.assert_not_called()
 
 
+class TestSubmitBoundToRevision:
+    """A query batch acts on each change only at its previewed revision."""
+
+    @staticmethod
+    def _manager(mock_build_client, mock_client) -> GerritSubmitManager:
+        mock_build_client.return_value = mock_client
+        return GerritSubmitManager(host="gerrit.example.org", username="user")
+
+    @pytest.mark.xfail(strict=True, reason="query URL exact scope: issue #613")
+    @patch("dependamerge.gerrit.submit_manager.build_client")
+    def test_reviews_and_submits_the_previewed_revision(
+        self, mock_build_client, mock_client, sample_change
+    ):
+        """Review and submit name the revision, not 'current'."""
+        change = sample_change.model_copy(update={"current_revision": "abc123"})
+        mock_client.get.return_value = {"current_revision": "abc123"}
+        manager = self._manager(mock_build_client, mock_client)
+
+        results = manager.submit_changes_parallel([(change, None)], bind_revisions=True)
+
+        assert results[0].success is True
+        endpoints = [c[0][0] for c in mock_client.post.call_args_list]
+        assert endpoints == [
+            "/changes/12345/revisions/abc123/review",
+            "/changes/12345/revisions/abc123/submit",
+        ]
+
+    @pytest.mark.xfail(strict=True, reason="query URL exact scope: issue #613")
+    @patch("dependamerge.gerrit.submit_manager.build_client")
+    def test_new_patchset_is_neither_reviewed_nor_submitted(
+        self, mock_build_client, mock_client, sample_change
+    ):
+        """A patchset uploaded after the preview is refused before voting."""
+        change = sample_change.model_copy(update={"current_revision": "abc123"})
+        mock_client.get.return_value = {"current_revision": "def456"}
+        manager = self._manager(mock_build_client, mock_client)
+
+        results = manager.submit_changes([(change, None)], bind_revisions=True)
+
+        assert results[0].success is False
+        assert "new patchset" in (results[0].error or "")
+        mock_client.post.assert_not_called()
+
+    @pytest.mark.xfail(strict=True, reason="query URL exact scope: issue #613")
+    @patch("dependamerge.gerrit.submit_manager.build_client")
+    def test_change_without_a_revision_is_refused(
+        self, mock_build_client, mock_client, sample_change
+    ):
+        """Without a previewed revision there is nothing to bind to."""
+        manager = self._manager(mock_build_client, mock_client)
+
+        results = manager.submit_changes([(sample_change, None)], bind_revisions=True)
+
+        assert results[0].success is False
+        mock_client.get.assert_not_called()
+        mock_client.post.assert_not_called()
+
+    @patch("dependamerge.gerrit.submit_manager.build_client")
+    @pytest.mark.xfail(strict=True, reason="query URL exact scope: issue #613")
+    def test_change_submitting_outside_scope_is_not_voted_on(
+        self, mock_build_client, mock_client, sample_change
+    ):
+        """Gerrit's submitted_together set is checked again before voting."""
+        change = sample_change.model_copy(update={"current_revision": "abc123"})
+        mock_client.get.side_effect = [
+            {"current_revision": "abc123"},
+            {
+                "changes": [
+                    {"_number": 12345, "current_revision": "abc123"},
+                    {"_number": 999, "project": "other", "current_revision": "x"},
+                ],
+                "non_visible_changes": 0,
+            },
+        ]
+        manager = self._manager(mock_build_client, mock_client)
+
+        results = manager.submit_changes_parallel(
+            [(change, None)], bind_revisions=True, scope={12345: "abc123"}
+        )
+
+        assert results[0].success is False
+        assert "#999 (other)" in (results[0].error or "")
+        assert "submitted_together" in mock_client.get.call_args[0][0]
+        mock_client.post.assert_not_called()
+
+    @patch("dependamerge.gerrit.submit_manager.build_client")
+    @pytest.mark.xfail(strict=True, reason="query URL exact scope: issue #613")
+    def test_change_submitting_within_scope_is_submitted(
+        self, mock_build_client, mock_client, sample_change
+    ):
+        """A set inside the batch, before the vote and the submit, goes ahead."""
+        change = sample_change.model_copy(update={"current_revision": "abc123"})
+        mock_client.get.side_effect = [
+            {"current_revision": "abc123"},
+            {"changes": [], "non_visible_changes": 0},
+        ] * 2
+        manager = self._manager(mock_build_client, mock_client)
+
+        results = manager.submit_changes(
+            [(change, None)], bind_revisions=True, scope={12345: "abc123"}
+        )
+
+        assert results[0].success is True
+        assert mock_client.post.call_count == 2
+
+    @patch("dependamerge.gerrit.submit_manager.build_client")
+    def test_unbound_submission_is_unchanged(
+        self, mock_build_client, mock_client, sample_change
+    ):
+        """A change URL's batch still acts on the current revision."""
+        manager = self._manager(mock_build_client, mock_client)
+
+        manager.submit_changes([(sample_change, None)])
+
+        endpoints = [c[0][0] for c in mock_client.post.call_args_list]
+        assert endpoints == [
+            "/changes/12345/revisions/current/review",
+            "/changes/12345/submit",
+        ]
+        mock_client.get.assert_not_called()
+
+
+class TestSubmitScopedBatchByGroup:
+    """Every change of a scoped batch gets its vote before any submit."""
+
+    SCOPE = {101: "rev101", 102: "rev102", 103: "rev103"}
+
+    @staticmethod
+    def _batch(
+        sample_change,
+    ) -> list[tuple[GerritChangeInfo, GerritComparisonResult | None]]:
+        return [
+            (
+                sample_change.model_copy(
+                    update={"number": number, "current_revision": revision}
+                ),
+                None,
+            )
+            for number, revision in TestSubmitScopedBatchByGroup.SCOPE.items()
+        ]
+
+    @classmethod
+    def _gerrit(
+        cls,
+        mock_client,
+        merged: set[int],
+        refuse_submit: set[int],
+        refuse_review: set[int] | frozenset[int] = frozenset(),
+    ):
+        """Answer as Gerrit does for a submitted-together group."""
+
+        def get(endpoint: str):
+            number = int(endpoint.split("/")[2].split("?")[0])
+            if "submitted_together" in endpoint:
+                return {
+                    "changes": [
+                        {"_number": n, "current_revision": r}
+                        for n, r in cls.SCOPE.items()
+                    ],
+                    "non_visible_changes": 0,
+                }
+            status = "MERGED" if number in merged else "NEW"
+            return {"status": status, "current_revision": cls.SCOPE[number]}
+
+        def post(endpoint: str, data=None):
+            number = int(endpoint.split("/")[2])
+            if endpoint.endswith("/review") and number in refuse_review:
+                raise GerritRestError("Vote refused", 403)
+            if endpoint.endswith("/submit"):
+                if number in refuse_submit:
+                    raise GerritRestError("Change is merged", 409)
+                merged.update(cls.SCOPE)
+            return {}
+
+        mock_client.get.side_effect = get
+        mock_client.post.side_effect = post
+
+    @pytest.mark.xfail(strict=True, reason="query URL exact scope: issue #613")
+    @pytest.mark.parametrize("parallel", [True, False])
+    @patch("dependamerge.gerrit.submit_manager.build_client")
+    def test_every_vote_lands_before_the_first_submit(
+        self, mock_build_client, mock_client, sample_change, parallel
+    ):
+        """Under submitWholeTopic a submit fails until the group is voted."""
+        mock_build_client.return_value = mock_client
+        self._gerrit(mock_client, merged=set(), refuse_submit=set())
+        manager = GerritSubmitManager(host="gerrit.example.org", username="user")
+        submit = manager.submit_changes_parallel if parallel else manager.submit_changes
+
+        submit(self._batch(sample_change), bind_revisions=True, scope=self.SCOPE)
+
+        kinds = [c[0][0].rsplit("/", 1)[1] for c in mock_client.post.call_args_list]
+        first_submit = kinds.index("submit")
+        assert kinds[:first_submit] == ["review"] * 3
+
+    @pytest.mark.xfail(strict=True, reason="query URL exact scope: issue #613")
+    @patch("dependamerge.gerrit.submit_manager.build_client")
+    def test_change_merged_with_its_group_counts_as_submitted(
+        self, mock_build_client, mock_client, sample_change
+    ):
+        """A submit refused because the group already merged it succeeds."""
+        mock_build_client.return_value = mock_client
+        self._gerrit(mock_client, merged=set(), refuse_submit={102, 103})
+        manager = GerritSubmitManager(host="gerrit.example.org", username="user")
+
+        results = manager.submit_changes(
+            self._batch(sample_change), bind_revisions=True, scope=self.SCOPE
+        )
+
+        assert [r.success for r in results] == [True, True, True]
+        assert all(r.submitted for r in results)
+
+    @pytest.mark.xfail(strict=True, reason="query URL exact scope: issue #613")
+    @patch("dependamerge.gerrit.submit_manager.build_client")
+    def test_refused_submit_is_rechecked_after_every_submit_returns(
+        self, mock_build_client, mock_client, sample_change
+    ):
+        """A submit refused before a later one merges the group still counts."""
+        mock_build_client.return_value = mock_client
+        self._gerrit(mock_client, merged=set(), refuse_submit={101})
+        manager = GerritSubmitManager(host="gerrit.example.org", username="user")
+
+        results = manager.submit_changes(
+            self._batch(sample_change), bind_revisions=True, scope=self.SCOPE
+        )
+
+        assert [r.success for r in results] == [True, True, True]
+
+    @pytest.mark.xfail(strict=True, reason="query URL exact scope: issue #613")
+    @patch("dependamerge.gerrit.submit_manager.build_client")
+    def test_failed_vote_on_a_member_merged_with_its_group_succeeds(
+        self, mock_build_client, mock_client, sample_change
+    ):
+        """An already-approved member merged by another submit counts."""
+        mock_build_client.return_value = mock_client
+        self._gerrit(
+            mock_client, merged=set(), refuse_submit=set(), refuse_review={102}
+        )
+        manager = GerritSubmitManager(host="gerrit.example.org", username="user")
+
+        results = manager.submit_changes_parallel(
+            self._batch(sample_change), bind_revisions=True, scope=self.SCOPE
+        )
+
+        assert [r.success for r in results] == [True, True, True]
+        assert results[1].submitted is True
+        assert results[1].reviewed is False
+        assert results[0].reviewed is True
+
+    @pytest.mark.xfail(strict=True, reason="query URL exact scope: issue #613")
+    @patch("dependamerge.gerrit.submit_manager.build_client")
+    def test_failed_vote_on_an_unmerged_member_stays_a_failure(
+        self, mock_build_client, mock_client, sample_change
+    ):
+        """A member neither voted on nor merged keeps its vote failure."""
+        mock_build_client.return_value = mock_client
+        self._gerrit(
+            mock_client,
+            merged=set(),
+            refuse_submit=set(self.SCOPE),
+            refuse_review={102},
+        )
+        manager = GerritSubmitManager(host="gerrit.example.org", username="user")
+
+        results = manager.submit_changes(
+            self._batch(sample_change), bind_revisions=True, scope=self.SCOPE
+        )
+
+        assert [r.success for r in results] == [False, False, False]
+        assert results[1].error == "Failed to apply review"
+        assert results[1].reviewed is False
+
+    @pytest.mark.xfail(strict=True, reason="query URL exact scope: issue #613")
+    @patch("dependamerge.gerrit.submit_manager.build_client")
+    def test_refused_submit_of_an_unmerged_change_fails(
+        self, mock_build_client, mock_client, sample_change
+    ):
+        """A change Gerrit neither submitted nor merged stays a failure."""
+        mock_build_client.return_value = mock_client
+        self._gerrit(mock_client, merged=set(), refuse_submit=set(self.SCOPE))
+        manager = GerritSubmitManager(host="gerrit.example.org", username="user")
+
+        results = manager.submit_changes_parallel(
+            self._batch(sample_change), bind_revisions=True, scope=self.SCOPE
+        )
+
+        assert [r.success for r in results] == [False, False, False]
+        assert all(r.reviewed for r in results)
+
+    @pytest.mark.xfail(strict=True, reason="query URL exact scope: issue #613")
+    @patch("dependamerge.gerrit.submit_manager.build_client")
+    def test_change_refused_before_its_vote_is_never_submitted(
+        self, mock_build_client, mock_client, sample_change
+    ):
+        """A change with a newer patchset gets neither a vote nor a submit."""
+        mock_build_client.return_value = mock_client
+        self._gerrit(mock_client, merged=set(), refuse_submit=set())
+        batch = self._batch(sample_change)
+        batch[1] = (batch[1][0].model_copy(update={"current_revision": "old"}), None)
+        manager = GerritSubmitManager(host="gerrit.example.org", username="user")
+
+        results = manager.submit_changes_parallel(
+            batch, bind_revisions=True, scope=self.SCOPE
+        )
+
+        assert results[1].success is False
+        assert "new patchset" in (results[1].error or "")
+        acted_on = {c[0][0].split("/")[2] for c in mock_client.post.call_args_list}
+        assert "102" not in acted_on
+
+    @classmethod
+    def _gerrit_moving_after_votes(cls, mock_client, group_after, revisions_after):
+        """Answer as Gerrit does when the group moves once every vote is in."""
+        state = {"votes": 0}
+
+        def moved() -> bool:
+            return bool(state["votes"] >= len(cls.SCOPE))
+
+        def get(endpoint: str):
+            number = int(endpoint.split("/")[2].split("?")[0])
+            revisions = revisions_after if moved() else cls.SCOPE
+            if "submitted_together" in endpoint:
+                group = group_after if moved() else cls.SCOPE
+                return {
+                    "changes": [
+                        {"_number": n, "current_revision": revisions.get(n, "revX")}
+                        for n in group
+                    ],
+                    "non_visible_changes": 0,
+                }
+            return {"status": "NEW", "current_revision": revisions[number]}
+
+        def post(endpoint: str, data=None):
+            if endpoint.endswith("/review"):
+                state["votes"] += 1
+            return {}
+
+        mock_client.get.side_effect = get
+        mock_client.post.side_effect = post
+
+    @pytest.mark.xfail(strict=True, reason="query URL exact scope: issue #613")
+    @pytest.mark.parametrize("parallel", [True, False])
+    @patch("dependamerge.gerrit.submit_manager.build_client")
+    def test_change_joining_the_group_after_the_votes_blocks_every_submit(
+        self, mock_build_client, mock_client, sample_change, parallel
+    ):
+        """A change entering the topic between vote and submit is not merged."""
+        mock_build_client.return_value = mock_client
+        self._gerrit_moving_after_votes(
+            mock_client,
+            group_after=[*self.SCOPE, 999],
+            revisions_after=self.SCOPE,
+        )
+        manager = GerritSubmitManager(host="gerrit.example.org", username="user")
+        submit = manager.submit_changes_parallel if parallel else manager.submit_changes
+
+        results = submit(
+            self._batch(sample_change), bind_revisions=True, scope=self.SCOPE
+        )
+
+        kinds = [c[0][0].rsplit("/", 1)[1] for c in mock_client.post.call_args_list]
+        assert kinds == ["review"] * 3
+        assert [r.success for r in results] == [False, False, False]
+        assert all(r.reviewed for r in results)
+        assert all("#999" in (r.error or "") for r in results)
+
+    @pytest.mark.xfail(strict=True, reason="query URL exact scope: issue #613")
+    @pytest.mark.parametrize("parallel", [True, False])
+    @patch("dependamerge.gerrit.submit_manager.build_client")
+    def test_new_patchset_after_the_votes_blocks_every_submit(
+        self, mock_build_client, mock_client, sample_change, parallel
+    ):
+        """A member's new patchset between vote and submit is not merged."""
+        mock_build_client.return_value = mock_client
+        self._gerrit_moving_after_votes(
+            mock_client,
+            group_after=list(self.SCOPE),
+            revisions_after={**self.SCOPE, 103: "rev103-new"},
+        )
+        manager = GerritSubmitManager(host="gerrit.example.org", username="user")
+        submit = manager.submit_changes_parallel if parallel else manager.submit_changes
+
+        results = submit(
+            self._batch(sample_change), bind_revisions=True, scope=self.SCOPE
+        )
+
+        kinds = [c[0][0].rsplit("/", 1)[1] for c in mock_client.post.call_args_list]
+        assert kinds == ["review"] * 3
+        assert [r.success for r in results] == [False, False, False]
+        assert "new patchset" in (results[2].error or "")
+        assert "#103" in (results[0].error or "")
+
+    @pytest.mark.xfail(strict=True, reason="query URL exact scope: issue #613")
+    @patch("dependamerge.gerrit.submit_manager.build_client")
+    def test_group_is_checked_again_before_each_submit(
+        self, mock_build_client, mock_client, sample_change
+    ):
+        """submitted_together is read after the last vote, before a submit."""
+        mock_build_client.return_value = mock_client
+        self._gerrit(mock_client, merged=set(), refuse_submit=set())
+        manager = GerritSubmitManager(host="gerrit.example.org", username="user")
+        calls: list[str] = []
+        mock_client.get.side_effect = _recording(mock_client.get.side_effect, calls)
+        mock_client.post.side_effect = _recording(mock_client.post.side_effect, calls)
+
+        manager.submit_changes(
+            self._batch(sample_change), bind_revisions=True, scope=self.SCOPE
+        )
+
+        first_submit = next(i for i, c in enumerate(calls) if c.endswith("/submit"))
+        last_vote = max(i for i, c in enumerate(calls) if c.endswith("/review"))
+        between = calls[last_vote + 1 : first_submit]
+        assert any("/changes/101/submitted_together" in c for c in between)
+
+
+def _recording(answer, calls: list[str]):
+    """Wrap a mock side effect so each endpoint it answers is recorded."""
+
+    def record(endpoint: str, *args, **kwargs):
+        calls.append(endpoint)
+        return answer(endpoint, *args, **kwargs)
+
+    return record
+
+
 class TestSubmitChanges:
     """Tests for the submit_changes method."""
 

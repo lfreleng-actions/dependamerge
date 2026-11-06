@@ -75,6 +75,40 @@ def _generate_gerrit_continue_sha(change: GerritChangeInfo) -> str:
     return sha_hash[:16]
 
 
+def _generate_gerrit_query_sha(
+    purpose: str,
+    host: str,
+    expression: str,
+    changes: list[GerritChangeInfo],
+) -> str:
+    """
+    Generate a SHA hash binding a value to one Gerrit query batch.
+
+    Derived from the host, the normalised query expression and each
+    matched change's number and current revision, so a new patchset or
+    a change entering or leaving the query yields a different value.
+
+    Args:
+        purpose: What the value confirms ("override" or "continue"), so
+            one cannot stand in for the other.
+        host: The Gerrit host the query ran on.
+        expression: The normalised query expression.
+        changes: Every change the query matched.
+
+    Returns:
+        First 16 hex characters of a SHA256 hash string.
+    """
+    members = ",".join(
+        f"{number}@{revision}"
+        for number, revision in sorted(
+            (change.number, change.current_revision) for change in changes
+        )
+    )
+    combined_data = f"query-{purpose}:{host.lower()}:{expression.strip()}:{members}"
+    sha_hash = hashlib.sha256(combined_data.encode("utf-8")).hexdigest()
+    return sha_hash[:16]
+
+
 def _validate_override_sha(
     provided_sha: str, pr_info: PullRequestInfo, commit_message_first_line: str
 ) -> bool:

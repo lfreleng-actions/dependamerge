@@ -36,6 +36,74 @@ dependamerge merge --no-confirm \
     https://gerrit.linuxfoundation.org/infra/c/releng/gerrit_to_platform/+/74080
 ```
 
+### Two Modes, Chosen by URL Shape
+
+A **change URL** (`/c/<project>/+/<number>`) anchors on that change. The
+tool finds similar open changes, scoped to the change's topic or to
+`--topic`, scores them with the comparator against `--threshold`, and
+submits the source change with the matches. This mirrors how a single
+GitHub Dependabot pull request URL finds its siblings.
+
+A **query URL** (`/q/...`) has no anchor. Its batch is every open change
+the query returns, and nothing else:
+
+- `url_parser/topic.py` requires a top-level, non-negated `topic:` term
+  and refuses a top-level `OR`, so the query stays bounded. It carries
+  the whole normalised expression on `ParsedGerritTopicUrl.query`.
+  Values in double quotes or braces (`file:{^src/(a|b)/}`) stay opaque:
+  their spaces and parentheses never split terms, and a `topic:` inside
+  them does not count as the topic term.
+- `GerritService.get_open_changes_for_query()` sends
+  `(<expression>) status:open`, fetches every page, and raises rather
+  than return a partial set when the result exceeds
+  `QUERY_BATCH_CEILING` (500) or a change fails to parse or lacks its
+  number, Change-Id, project or current revision. Offset pages are no
+  snapshot, so it reads a multi-page result again and refuses it
+  unless two reads agree with no change repeated.
+- The batch query requests `DETAILED_LABELS` and `SUBMIT_REQUIREMENTS`
+  (dropping the latter when a pre-3.5 server refuses it). Gerrit 3.x
+  with submit requirements leaves the legacy label summary keys
+  (`rejected` and the rest) empty, so a change counts as blocked when
+  work in progress, when a vote in `labels.<L>.all` sits at the lowest
+  value of `labels.<L>.values`, when it has a `rejected` summary, when
+  one of its submit requirements reports `UNSATISFIED` or `ERROR`, or
+  when it reports `mergeable: false`. Code-Review's own entry does not
+  block when `UNSATISFIED`, since the +2 this run gives is what it
+  lacks; it blocks when `ERROR`, a failure to compute it that no vote
+  fixes.
+- `cli/_gerrit_query.py` lists every change with its permission
+  warnings. Gerrit offers the submit action on a submittable change
+  and hides it before then, so the preview counts the changes not yet
+  submittable as having unverified submit permission rather than
+  confirming it. It gates the whole batch on automation authorship,
+  and binds `--override` to the host, the query and each change's
+  number and current revision.
+- Before any vote, dry runs included, it checks every change's
+  `submitted_together` set (`o=NON_VISIBLE_CHANGES`,
+  `o=CURRENT_REVISION`): each member must be in the batch to submit, at
+  its listed revision, with no hidden changes. Otherwise it refuses the
+  run, since submitting would reach changes the preview, the human gate
+  and the revision checks never saw.
+- The submit manager reviews and submits each change at its listed
+  revision (`bind_revisions`), after confirming Gerrit still reports it
+  as current and repeating the `submitted_together` check against the
+  batch (`scope`), so a patchset uploaded since the preview never gets
+  a vote. It votes on every change before submitting any: a group Gerrit
+  submits together (unmerged ancestors, or a topic under
+  `change.submitWholeTopic`) refuses a submit until each member has its
+  +2. Both checks run again before each submit, since a change can join
+  the group, or a member gain a patchset, while the rest of the batch
+  gets its votes; a change that fails them keeps its vote but does not
+  get submitted. Once every submit has returned, a change that failed,
+  at its vote or its submit, still counts when it now reports `MERGED`
+  at its listed revision, since another change of the batch submitted
+  it; the result keeps whether this run voted on it.
+- No similarity scoring, owner matching or rebase runs. A blocked change
+  gets listed, skipped without a vote, and counted; the run then exits
+  `MERGE_ERROR`.
+- `--topic` gets refused, and `--threshold` prints a note that it does not
+  apply.
+
 ---
 
 ## Phase 1: URL Detection and Parsing

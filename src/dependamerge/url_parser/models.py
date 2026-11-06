@@ -85,10 +85,11 @@ class ParsedGerritTopicUrl:
     """
     Parsed Gerrit topic search URL.
 
-    Represents a Gerrit query URL that scopes work to a topic, e.g.
-    ``https://gerrit.onap.org/r/q/topic:update-settings``.  Only
-    ``topic:`` queries are supported; other search operators in the
-    query are ignored for parsing purposes.
+    Represents a Gerrit query URL scoped by a topic, e.g.
+    ``https://gerrit.onap.org/r/q/topic:update-settings+project:a/b``.
+    The query must hold a top-level ``topic:`` term, so it can never be
+    unbounded; every other term it holds narrows the result set exactly
+    as it does in the Gerrit UI.
 
     Attributes:
         source: The code review platform (always Gerrit).
@@ -97,6 +98,8 @@ class ParsedGerritTopicUrl:
                    or None when the server is mounted at the root.
         topic: The Gerrit topic name extracted from the query.
         original_url: The original URL that was parsed.
+        query: The whole decoded query expression, terms separated by
+               single spaces, or None when only the topic is known.
     """
 
     source: ChangeSource
@@ -104,11 +107,27 @@ class ParsedGerritTopicUrl:
     base_path: str | None
     topic: str
     original_url: str
+    query: str | None = None
 
     @property
     def is_gerrit(self) -> bool:
         """Check if this URL is from Gerrit."""
         return self.source == ChangeSource.GERRIT
+
+    @property
+    def query_expression(self) -> str:
+        """The query to run: the parsed expression, else the topic alone.
+
+        A topic holding whitespace or a quote is quoted, as
+        ``GerritService.get_changes_by_topic`` quotes it, so it stays
+        one term.
+        """
+        if self.query:
+            return self.query
+        if '"' in self.topic or any(ch.isspace() for ch in self.topic):
+            escaped = self.topic.replace("\\", "\\\\").replace('"', '\\"')
+            return f'topic:"{escaped}"'
+        return f"topic:{self.topic}"
 
 
 @dataclass(frozen=True)

@@ -334,6 +334,153 @@ class TestParseGerritTopicUrl:
         with pytest.raises(UrlParseError, match="URL cannot be empty"):
             parse_gerrit_topic_url("")
 
+    @pytest.mark.parametrize(
+        ("query", "expected"),
+        [
+            ("topic:x", "topic:x"),
+            ("topic:x+project:a/b", "topic:x project:a/b"),
+            ("topic:gha-sonar-migration+is:open", "topic:gha-sonar-migration is:open"),
+            (
+                "status:open+topic:x+-label:Verified-1",
+                "status:open topic:x -label:Verified-1",
+            ),
+            ('topic:"two words"+branch:main', 'topic:"two words" branch:main'),
+            ("topic:x+(project:a+OR+project:b)", "topic:x (project:a OR project:b)"),
+            # '+' separates terms; '%2B' is a literal plus inside one.
+            ("topic:x+message:C%2B%2B", "topic:x message:C++"),
+            ("topic:x+label:Verified%2B1", "topic:x label:Verified+1"),
+            ("topic:%22two+words%22+branch:main", 'topic:"two words" branch:main'),
+            # Slashes inside a search value are kept as written.
+            ("topic:x+file:^src%2F", "topic:x file:^src/"),
+            ("topic:x+file:^src/", "topic:x file:^src/"),
+            ("topic:x+file:a//b", "topic:x file:a//b"),
+            (
+                'topic:x+message:"https://example.org/a"',
+                'topic:x message:"https://example.org/a"',
+            ),
+        ],
+    )
+    def test_topic_url_carries_whole_query(self, query, expected):
+        """Every term of the query is kept, normalised to single spaces."""
+        result = parse_gerrit_topic_url(f"https://gerrit.example.org/q/{query}")
+
+        assert result.query == expected
+        assert result.query_expression == expected
+
+    @pytest.mark.parametrize(
+        ("url", "base_path", "expected"),
+        [
+            (
+                "https://gerrit.example.org/#/q/topic:x+file:^src%2F",
+                None,
+                "topic:x file:^src/",
+            ),
+            (
+                "https://gerrit.example.org/r/#/q/topic:x+file:a//b/",
+                "r",
+                "topic:x file:a//b/",
+            ),
+            (
+                'https://gerrit.example.org//r//q/topic:x+message:"https://e.org/"',
+                "r",
+                'topic:x message:"https://e.org/"',
+            ),
+        ],
+    )
+    def test_topic_url_keeps_slashes_in_query(self, url, base_path, expected):
+        """Only the base path is normalised; the query keeps every slash."""
+        result = parse_gerrit_topic_url(url)
+
+        assert result.base_path == base_path
+        assert result.query == expected
+
+    @pytest.mark.parametrize(
+        ("query", "match"),
+        [
+            ("topic:x+OR+status:open", "top-level OR"),
+            ("topic:x+or+status:open", "top-level OR"),
+            ("NOT+topic:x+project:a", "must apply to the whole"),
+            ("project:a+NOT+topic:x", "must apply to the whole"),
+            ("topic:x)+OR+(status:open", "unmatched"),
+            ("topic:x+(project:a", "unmatched"),
+            ('topic:x+message:"open', "unterminated"),
+        ],
+    )
+    def test_topic_url_query_that_could_widen_rejected(self, query, match):
+        """A query whose topic term does not bound it is refused."""
+        with pytest.raises(UrlParseError, match=match):
+            parse_gerrit_topic_url(f"https://gerrit.example.org/q/{query}")
+
+    @pytest.mark.parametrize(
+        ("query", "expected", "topic"),
+        [
+            (
+                "topic:x+file:{^src/(foo|bar)/}",
+                "topic:x file:{^src/(foo|bar)/}",
+                "x",
+            ),
+            ('topic:x+message:{say+"hi}', 'topic:x message:{say "hi}', "x"),
+            (
+                "topic:{two+words}+branch:main",
+                "topic:{two words} branch:main",
+                "two words",
+            ),
+            (
+                "message:{a+topic:x+b}+topic:y",
+                "message:{a topic:x b} topic:y",
+                "y",
+            ),
+            ('topic:x+message:"a+{+b"', 'topic:x message:"a { b"', "x"),
+        ],
+    )
+    def test_brace_quoted_value_is_opaque(self, query, expected, topic):
+        """A brace-quoted value keeps its spaces and parentheses as written."""
+        result = parse_gerrit_topic_url(f"https://gerrit.example.org/q/{query}")
+
+        assert result.query == expected
+        assert result.topic == topic
+
+    @pytest.mark.parametrize(
+        ("query", "match"),
+        [
+            ("message:{note+topic:x+here}", "Only topic searches"),
+            ("topic:x+file:{a", "unterminated"),
+            ("topic:x+file:a}", "unmatched"),
+            ("topic:x+file:{a{b}}", "inside braces"),
+            ("topic:{}", "cannot be empty"),
+            ("topic:{+}", "cannot be empty"),
+        ],
+    )
+    def test_brace_quoted_query_rejected(self, query, match):
+        """A topic only inside braces, or malformed braces, is refused."""
+        with pytest.raises(UrlParseError, match=match):
+            parse_gerrit_topic_url(f"https://gerrit.example.org/q/{query}")
+
+    def test_topic_inside_braces_does_not_look_like_a_topic_search(self):
+        """Routing agrees with the parser about a brace-quoted topic: term."""
+        from dependamerge.url_parser import looks_like_topic_search
+
+        assert not looks_like_topic_search(
+            "https://gerrit.example.org/q/message:{note+topic:x+here}"
+        )
+        assert looks_like_topic_search(
+            "https://gerrit.example.org/q/topic:{two+words}+branch:main"
+        )
+
+    def test_query_expression_falls_back_to_quoted_topic(self):
+        """Without a parsed query, the topic alone is the expression."""
+        from dependamerge.url_parser import ParsedGerritTopicUrl
+
+        parsed = ParsedGerritTopicUrl(
+            source=ChangeSource.GERRIT,
+            host="gerrit.example.org",
+            base_path=None,
+            topic="two words",
+            original_url="https://gerrit.example.org/q/topic:%22two+words%22",
+        )
+
+        assert parsed.query_expression == 'topic:"two words"'
+
 
 class TestInvalidUrls:
     """Tests for invalid URL handling."""

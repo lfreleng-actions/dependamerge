@@ -195,10 +195,12 @@ from ._sha import (
     _generate_continue_sha,
     _generate_gerrit_continue_sha,
     _generate_gerrit_override_sha,
+    _generate_gerrit_query_sha,
     _generate_override_sha,
     _validate_override_sha,
 )
 from ._similarity import (
+    _confirm_continue_sha,
     _confirm_gerrit_submission,
     _display_change_info,
     _format_condensed_similarity,
@@ -276,6 +278,7 @@ __all__ = [
     "_MergeContext",
     "__version__",
     "_check_merge_permissions",
+    "_confirm_continue_sha",
     "_confirm_gerrit_submission",
     "_display_blocked_results",
     "_display_change_info",
@@ -294,6 +297,7 @@ __all__ = [
     "_generate_continue_sha",
     "_generate_gerrit_continue_sha",
     "_generate_gerrit_override_sha",
+    "_generate_gerrit_query_sha",
     "_generate_override_sha",
     "_handle_gerrit_merge",
     "_handle_org_merge",

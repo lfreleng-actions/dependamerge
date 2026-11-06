@@ -236,9 +236,10 @@ def merge(
         None,
         "--topic",
         help=(
-            "Gerrit only: scope the similar-change search to this topic. "
-            "When omitted, the topic is extracted automatically from a "
-            "Gerrit topic search URL or from the source change itself."
+            "Gerrit change URLs only: scope the similar-change search to "
+            "this topic. When omitted, the source change's own topic is "
+            "used. Refused with a Gerrit query URL, whose query already "
+            "names the batch."
         ),
     ),
     dry_run: bool = typer.Option(
@@ -301,7 +302,9 @@ def merge(
       https://github.com/orgs/owner
       https://github.com/orgs/owner/repositories
 
-    For Gerrit changes, this command will:
+    Gerrit URLs work in one of two modes, chosen by the URL's shape.
+
+    A change URL (/c/<project>/+/<number>) anchors on that change:
 
     1. Analyze the provided change
 
@@ -310,10 +313,13 @@ def merge(
 
     3. Review (+2 Code-Review) and submit matching changes
 
-    Gerrit topic search URLs are also accepted; all open changes
-    sharing the topic form the batch:
+    A query URL (/q/...) acts on exactly the open changes its query
+    matches, with no anchor, scoring or rebase; it needs a topic: term.
+    Blocked changes (WIP, a minimum vote, an unmet submit requirement,
+    a conflict) are skipped unvoted and fail the run; one Gerrit would
+    submit with changes outside the batch refuses it. --topic refused:
       https://gerrit.example.org/q/topic:some-topic
-      https://gerrit.onap.org/r/q/topic:some-topic
+      https://gerrit.onap.org/r/q/topic:some-topic+project:ci-management
 
     Merges similar PRs/changes from the same automation tool.
 

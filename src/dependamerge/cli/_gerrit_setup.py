@@ -5,8 +5,10 @@
 Credential, change and candidate resolution for Gerrit.
 
 Everything a Gerrit submission needs before the first vote is cast:
-resolving credentials, locating the source change, honouring an override,
-rebasing when the change is behind, and collecting the topic's changes.
+resolving credentials, locating the source change of a change URL,
+honouring an override, rebasing when the change is behind, and
+collecting the topic's changes.  A query URL takes none of the
+source-change steps: ``_gerrit_query`` handles it.
 """
 
 from pathlib import Path
@@ -48,6 +50,7 @@ def _print_gerrit_final_summary(
     results: list[GerritSubmitResult],
     all_changes: list[tuple[GerritChangeInfo, GerritComparisonResult | None]],
     console: Console,
+    skipped: list[tuple[GerritChangeInfo, str]] | None = None,
 ) -> None:
     """Print the post-run 🚀 Final Results line and failure recap.
 
@@ -64,15 +67,26 @@ def _print_gerrit_final_summary(
             failure recap (``GerritSubmitResult`` carries only the
             project and number).
         console: Rich console to print to.
+        skipped: Changes left out of submission, each with its reason.
+            When given (a query batch), the tally counts them and the
+            recap lists them; None leaves both out.
     """
     submitted = sum(1 for r in results if r.submitted)
     failed = [r for r in results if not r.success]
     reviewed_only = sum(1 for r in results if r.reviewed and not r.submitted)
 
     parts = [f"{submitted} submitted", f"{len(failed)} failed"]
+    if skipped is not None:
+        parts.append(f"{len(skipped)} skipped")
     if reviewed_only > 0:
         parts.append(f"{reviewed_only} reviewed (not submitted)")
     console.print(f"\n🚀 Final Results: {', '.join(parts)}")
+
+    if skipped:
+        console.print("\n⏭️ Skipped changes:")
+        for change, reason in skipped:
+            label = change.url or f"{change.project} #{change.number}"
+            console.print(f"   • {label}\n     {reason}", markup=False)
 
     if not failed:
         return
@@ -141,41 +155,21 @@ def _resolve_gerrit_credentials_or_exit(
 
 def _resolve_gerrit_source_change(
     service: GerritService,
-    parsed_url: ParsedUrl | ParsedGerritTopicUrl,
-    topic: str | None,
+    parsed_url: ParsedUrl,
     credentials: GerritCredentials,
     console: Console,
-) -> tuple[GerritChangeInfo, list[GerritChangeInfo] | None]:
-    """Fetch and display the source change, validating its state.
-
-    For a topic search URL there is no explicit change number: the
-    first open change in the topic anchors the batch and the rest
-    become candidates.
+) -> GerritChangeInfo:
+    """Fetch and display the change a change URL names, validating it.
 
     Returns:
-        The source change and, when a topic URL was given, the list of
-        open changes sharing that topic (else None).
+        The source change.
 
     Raises:
         typer.Exit: When no change is found, or the source change is
             already merged or abandoned.
     """
-    topic_changes: list[GerritChangeInfo] | None = None
-    if isinstance(parsed_url, ParsedGerritTopicUrl):
-        search_topic = topic or parsed_url.topic
-        console.print(f"📋 Fetching changes with topic '{search_topic}'...")
-        topic_changes = [
-            c for c in service.get_changes_by_topic(search_topic) if c.is_open
-        ]
-        if not topic_changes:
-            console.print(f"❌ No open changes found with topic '{search_topic}'")
-            raise typer.Exit(1)
-        # Refetch the anchor change: list queries omit the label,
-        # permission, and action detail the checks below rely on.
-        source_change = service.get_change_info(topic_changes[0].number)
-    else:
-        console.print(f"📋 Fetching change {parsed_url.change_number}...")
-        source_change = service.get_change_info(parsed_url.change_number)
+    console.print(f"📋 Fetching change {parsed_url.change_number}...")
+    source_change = service.get_change_info(parsed_url.change_number)
 
     if source_change is None:
         console.print("❌ Change not found")
@@ -196,7 +190,7 @@ def _resolve_gerrit_source_change(
         console.print("\n❌ Change has been abandoned.")
         raise typer.Exit(1)
 
-    return source_change, topic_changes
+    return source_change
 
 
 def _resolve_gerrit_only_automation(
@@ -319,21 +313,18 @@ def _maybe_rebase_gerrit_change(
 def _resolve_gerrit_candidates(
     service: GerritService,
     source_change: GerritChangeInfo,
-    parsed_url: ParsedUrl | ParsedGerritTopicUrl,
+    parsed_url: ParsedUrl,
     topic: str | None,
-    topic_changes: list[GerritChangeInfo] | None,
     console: Console,
 ) -> list[GerritChangeInfo] | None:
     """Resolve the candidate changes to compare against, by topic.
 
-    An explicit --topic wins, then the topic from a search URL, then
-    the source change's own topic. A server-side topic query is far
-    cheaper and more reliable than scanning every open change; when no
-    topic is available, None lets the caller fall back to a full scan.
+    An explicit --topic wins, then the source change's own topic. A
+    server-side topic query is far cheaper and more reliable than
+    scanning every open change; when no topic is available, None lets
+    the caller fall back to a full scan.
     """
     effective_topic = topic or source_change.topic
-    if isinstance(parsed_url, ParsedGerritTopicUrl):
-        effective_topic = topic or parsed_url.topic
 
     if not effective_topic:
         console.print(f"\n🔍 Searching for similar changes on {parsed_url.host}...")
@@ -343,7 +334,4 @@ def _resolve_gerrit_candidates(
         f"\n🔍 Searching for changes with topic "
         f"'{effective_topic}' on {parsed_url.host}..."
     )
-    # topic_changes (when set) was fetched with this same topic
-    if topic_changes is not None:
-        return topic_changes
     return [c for c in service.get_changes_by_topic(effective_topic) if c.is_open]

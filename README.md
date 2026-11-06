@@ -76,8 +76,57 @@ https://gerrit.example.org/c/project/name/+/12345
 https://gerrit.example.org/base/c/project/name/+/12345
 ```
 
+Given a Gerrit query URL instead, the tool acts on the open
+changes the query matches, and no others:
+
+```text
+https://gerrit.example.org/q/topic:some-topic
+https://gerrit.onap.org/r/q/topic:gha-sonar-migration+is:open
+```
+
+- The query must contain a `topic:` term, so it cannot match every open
+  change on the server; it cannot have a top-level `OR` or negate the
+  topic term. A `topic:` inside a quoted or brace-quoted value
+  (`message:{see topic:x}`) is text, not a term, and the tool keeps a
+  brace-quoted value such as `file:{^src/(a|b)/}` as written
+- Other terms, such as `project:`, `branch:` or `-label:Verified-1`,
+  narrow the batch as they do in the Gerrit UI
+- No change acts as an anchor: no similarity scoring, no owner matching
+  and no rebase
+- The preview lists every matched change; a change Gerrit already
+  reports as blocked gets skipped without a vote, counted in the final
+  tally, and makes the run exit `7`. Blocked means work in progress, a
+  vote at a label's lowest value such as `Verified -1` (or a `rejected`
+  label on servers without submit requirements), one of the change's
+  submit requirements reporting `UNSATISFIED` or `ERROR`, or a merge
+  conflict. Code-Review reporting `UNSATISFIED` does not count, since the
+  run's own +2 meets it; Code-Review reporting `ERROR` does
+- The tool fetches every page, and refuses to act on a result over 500
+  changes or one it cannot parse in full; a result spanning pages gets
+  read again, and refused unless two reads agree
+- Each change gets reviewed and submitted at the revision the preview
+  listed; one with a newer patchset gets neither, and fails the run
+- Every change gets its vote before any gets submitted, so a group
+  Gerrit submits together goes in once each member has its +2; a change
+  already merged along with another one of the batch counts as submitted,
+  even when the tool's own vote on it failed
+- The preview warns on each change you may lack +2 Code-Review on.
+  Gerrit reveals submit permission on a change once that change becomes
+  submittable, so the preview counts the changes where it could not
+  check submit permission
+- Before any vote, the tool asks Gerrit which changes each one would
+  submit with it (its unmerged ancestors, or its whole topic under
+  `change.submitWholeTopic`), and refuses the run when that reaches a
+  change outside the batch, at another revision, or hidden from you;
+  it asks again before each change's own vote
+- `--topic` gets refused, since it would replace the query, and
+  `--threshold` does not apply
+- Unless every change comes from automation, the batch needs
+  `--include-human-prs` and an `--override` value bound to the host, the
+  query and each change's number and current revision
+
 The tool automatically detects whether a URL is for GitHub or Gerrit based on
-the URL pattern (`/pull/` for GitHub, `/c/.../+/` for Gerrit).
+the URL pattern (`/pull/` for GitHub, `/c/.../+/` or `/q/` for Gerrit).
 
 ## Status
 
@@ -1010,6 +1059,10 @@ export GERRIT_PASSWORD="your_http_password"
 # Merge similar changes
 dependamerge merge \
   https://gerrit.linuxfoundation.org/infra/c/releng/lftools/+/12345
+
+# Merge the open changes a query matches, and no others
+dependamerge merge --dry-run \
+  "https://gerrit.onap.org/r/q/topic:gha-sonar-migration+is:open"
 ```
 
 ### Human-Authored PRs
@@ -1034,7 +1087,9 @@ dependamerge merge https://github.com/owner/repo/pull/123 \
 ```
 
 For a source pull request, or a Gerrit change, the value derives from its
-author and the first line of its commit message. For a repository or owner,
+author and the first line of its commit message. For a Gerrit query URL,
+it derives from the host, the query and each matched change's number and
+current revision. For a repository or owner,
 it derives from the target and each human-authored PR's number and head
 commit, so a new push or another PR changes it. A dry run prints the value
 without requiring it.

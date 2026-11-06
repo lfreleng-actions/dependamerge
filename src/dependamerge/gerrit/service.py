@@ -12,8 +12,9 @@ methods for:
 - Finding similar changes for bulk operations
 - Pagination handling for large result sets
 
-The change queries, the rebase call and the fallback comparison scoring
-live in the sibling modules ``_service_queries``, ``_service_rebase`` and
+The change queries, a query URL's batch query, the rebase call and the
+fallback comparison scoring live in the sibling modules
+``_service_queries``, ``_service_query_batch``, ``_service_rebase`` and
 ``_service_compare``, and are mixed back into ``GerritService`` here, so
 this module's surface is unchanged.  ``create_url_builder`` and
 ``build_client`` are deliberately resolved in *this* module's namespace
@@ -51,6 +52,8 @@ from ._service_queries import CHANGE_ID_MATCH_LIMIT as CHANGE_ID_MATCH_LIMIT
 from ._service_queries import DEFAULT_CHANGE_ID_OPTIONS as DEFAULT_CHANGE_ID_OPTIONS
 from ._service_queries import DEFAULT_LIST_OPTIONS as DEFAULT_LIST_OPTIONS
 from ._service_queries import _GerritQueryMixin
+from ._service_query_batch import QUERY_BATCH_CEILING as QUERY_BATCH_CEILING
+from ._service_query_batch import _GerritQueryBatchMixin
 from ._service_rebase import _GerritRebaseMixin
 
 if TYPE_CHECKING:
@@ -62,6 +65,7 @@ log = logging.getLogger("dependamerge.gerrit.service")
 
 class GerritService(
     _GerritQueryMixin,
+    _GerritQueryBatchMixin,
     _GerritChangeDetailsMixin,
     _GerritRebaseMixin,
     _GerritCompareMixin,
@@ -260,6 +264,7 @@ __all__ = [
     "DEFAULT_CHANGE_ID_OPTIONS",
     "DEFAULT_CHANGE_OPTIONS",
     "DEFAULT_LIST_OPTIONS",
+    "QUERY_BATCH_CEILING",
     "GerritService",
     "GerritServiceError",
     "create_gerrit_service",

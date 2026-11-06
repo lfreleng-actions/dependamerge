@@ -1056,21 +1056,16 @@ class TestCLI:
     @patch("dependamerge.cli.create_gerrit_comparator")
     @patch("dependamerge.cli.create_gerrit_service")
     @patch("dependamerge.cli.resolve_gerrit_credentials")
-    def test_gerrit_merge_topic_url_anchors_first_open_change(
+    def test_gerrit_merge_topic_url_acts_on_whole_query_result(
         self,
         mock_resolve_credentials,
         mock_create_service,
         mock_create_comparator,
     ):
-        """Test a topic search URL anchors on the first open topic change."""
+        """Test a topic search URL lists every open change, with no anchor."""
         from dependamerge.url_parser import ParsedGerritTopicUrl
 
-        anchor_listed = self._automation_gerrit_change(
-            number=200, topic="update-settings"
-        )
-        anchor_full = self._automation_gerrit_change(
-            number=200, topic="update-settings"
-        )
+        first = self._automation_gerrit_change(number=200, topic="update-settings")
         sibling = self._automation_gerrit_change(
             number=201, project="other-proj", topic="update-settings"
         )
@@ -1079,9 +1074,8 @@ class TestCLI:
         mock_resolve_credentials.return_value = credentials
 
         service = Mock(is_authenticated=True)
-        service.get_changes_by_topic.return_value = [anchor_listed, sibling]
-        service.get_change_info.return_value = anchor_full
-        service.find_similar_changes.return_value = []
+        service.get_open_changes_for_query.return_value = [first, sibling]
+        service.submitted_together_problems.return_value = []
         mock_create_service.return_value = service
 
         comparator = Mock()
@@ -1106,16 +1100,14 @@ class TestCLI:
             dry_run=True,
         )
 
-        # The anchor change is refetched for full details
-        service.get_change_info.assert_called_once_with(200)
-        # The topic changes are reused as candidates (no second query)
-        service.get_changes_by_topic.assert_called_once_with("update-settings")
-        service.find_similar_changes.assert_called_once_with(
-            anchor_full,
-            comparator,
-            only_automation=True,
-            candidates=[anchor_listed, sibling],
+        service.get_open_changes_for_query.assert_called_once_with(
+            "topic:update-settings"
         )
+        service.get_change_info.assert_not_called()
+        service.find_similar_changes.assert_not_called()
+        output = console.export_text()
+        assert "Query matched 2 open changes:" in output
+        assert "other-proj #201" in output
 
     @patch("dependamerge.cli.create_gerrit_comparator")
     @patch("dependamerge.cli.create_gerrit_service")
@@ -1134,7 +1126,7 @@ class TestCLI:
         mock_resolve_credentials.return_value = credentials
 
         service = Mock(is_authenticated=True)
-        service.get_changes_by_topic.return_value = []
+        service.get_open_changes_for_query.return_value = []
         mock_create_service.return_value = service
 
         console = Console(record=True, width=120)
@@ -1155,7 +1147,7 @@ class TestCLI:
             )
 
         assert exc_info.value.exit_code == 1
-        assert "No open changes found with topic 'empty-topic'" in (
+        assert "No open changes match query 'topic:empty-topic'" in (
             console.export_text()
         )
 

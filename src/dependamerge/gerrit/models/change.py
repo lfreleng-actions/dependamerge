@@ -75,6 +75,13 @@ class GerritChangeInfo(BaseModel):
     submit_requirements_met: bool = Field(
         default=True, description="Whether all submit requirements are satisfied"
     )
+    submit_requirement_status: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Each submit requirement's status by name (SATISFIED, "
+            "UNSATISFIED, ERROR, ...), when SUBMIT_REQUIREMENTS was requested"
+        ),
+    )
 
     # Permissions - for checking what the current user can do
     permitted_labels: dict[str, list[str]] = Field(
@@ -172,6 +179,13 @@ class GerritChangeInfo(BaseModel):
                 submit_requirements_met = False
                 break
 
+        submit_requirement_status: dict[str, str] = {}
+        for requirement in data.get("submit_requirements") or []:
+            if isinstance(requirement, dict) and requirement.get("name"):
+                submit_requirement_status[str(requirement["name"])] = str(
+                    requirement.get("status", "")
+                )
+
         # Construct URL via the centralised builder to ensure base_path
         # is handled consistently (see GerritUrlBuilder).
         url = ""
@@ -208,6 +222,7 @@ class GerritChangeInfo(BaseModel):
             created=created,
             updated=updated,
             submit_requirements_met=submit_requirements_met,
+            submit_requirement_status=submit_requirement_status,
             permitted_labels=permitted_labels,
             actions=actions,
         )

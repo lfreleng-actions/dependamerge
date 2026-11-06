@@ -4,8 +4,10 @@
 """
 Reviewing and submitting a batch of Gerrit changes.
 
-Prints the changes that match the source, previews what submission would
-do, and --- once confirmed --- votes and submits them.
+Prints the changes in scope, previews what submission would do, and ---
+once confirmed --- votes and submits them.  A change URL scopes the
+batch to the changes similar to it; a query URL scopes it to exactly
+the open changes its query matches (see ``_gerrit_query``).
 """
 
 from pathlib import Path
@@ -27,6 +29,7 @@ from ..gerrit import (
     GerritRestError,
     GerritService,
     GerritServiceError,
+    GerritSubmitResult,
 )
 from ..netrc import (
     GerritCredentials,
@@ -35,6 +38,12 @@ from ..progress_tracker import MergeProgressTracker
 from ..url_parser import (
     ParsedGerritTopicUrl,
     ParsedUrl,
+)
+from ._gerrit_query import (
+    _batch_scope,
+    _check_query_options,
+    _GerritRunOptions,
+    _prepare_gerrit_query_batch,
 )
 from ._gerrit_setup import (
     _maybe_rebase_gerrit_change,
@@ -127,8 +136,18 @@ def _run_gerrit_submission(
     all_changes: list[tuple[GerritChangeInfo, GerritComparisonResult | None]],
     show_progress: bool,
     console: Console,
+    skipped: list[tuple[GerritChangeInfo, str]] | None = None,
+    scope: dict[int, str] | None = None,
 ) -> None:
     """Submit all changes in parallel and print the final summary.
+
+    ``skipped`` holds the changes of a query batch left out of
+    submission, each with its reason; they are counted in the final
+    tally and, like failures, make the run exit non-zero.
+    ``scope`` maps each change of a query batch to its previewed
+    revision: each is reviewed and submitted only at that revision, so a
+    patchset uploaded since is never approved, and only while Gerrit
+    would submit nothing outside ``scope`` with it.
 
     Live in-place progress mirrors the GitHub merge path: the submit
     manager records each change's transitory and terminal states
@@ -140,6 +159,10 @@ def _run_gerrit_submission(
     submission setup or the run itself raises.
     """
     console.print(f"\n🚀 Submitting {len(all_changes)} changes...")
+    if skipped and not all_changes:
+        # Every change of the query batch is blocked: nothing to submit.
+        _finish_gerrit_submission([], all_changes, console, skipped)
+        return
 
     progress_tracker: MergeProgressTracker | None = None
     if show_progress:
@@ -162,21 +185,117 @@ def _run_gerrit_submission(
     try:
         if progress_tracker is not None:
             progress_tracker.start()
-        results = submit_manager.submit_changes_parallel(all_changes)
+        results = submit_manager.submit_changes_parallel(
+            all_changes, bind_revisions=scope is not None, scope=scope
+        )
     finally:
         if progress_tracker is not None:
             progress_tracker.stop()
 
-    _print_gerrit_final_summary(results, all_changes, console)
+    _finish_gerrit_submission(results, all_changes, console, skipped)
 
-    # As for a GitHub run: a change left unsubmitted needs a human, and
-    # an exit of 0 would tell a script or scheduled workflow otherwise.
+
+def _finish_gerrit_submission(
+    results: list[GerritSubmitResult],
+    all_changes: list[tuple[GerritChangeInfo, GerritComparisonResult | None]],
+    console: Console,
+    skipped: list[tuple[GerritChangeInfo, str]] | None,
+) -> None:
+    """Print the final summary and exit non-zero if anything was left.
+
+    As for a GitHub run: a change left unsubmitted needs a human, and an
+    exit of 0 would tell a script or scheduled workflow otherwise.
+    """
+    _print_gerrit_final_summary(results, all_changes, console, skipped)
+
+    code = int(ExitCode.MERGE_ERROR)
     failed = sum(1 for result in results if not result.success)
+    if skipped:
+        console.print(
+            f"\n❌ {failed + len(skipped)} changes not submitted "
+            f"({failed} failed, {len(skipped)} skipped); exit code {code}"
+        )
+        raise typer.Exit(code=code)
     if failed:
-        code = int(ExitCode.MERGE_ERROR)
         noun = "change" if failed == 1 else "changes"
         console.print(f"\n❌ {failed} {noun} failed; exit code {code}")
         raise typer.Exit(code=code)
+
+
+def _merge_gerrit_query(
+    service: GerritService,
+    parsed_url: ParsedGerritTopicUrl,
+    credentials: GerritCredentials,
+    comparator: GerritChangeComparator,
+    console: Console,
+    run: _GerritRunOptions,
+) -> None:
+    """Submit exactly the open changes a query URL matches, bar blocked ones."""
+    batch = _prepare_gerrit_query_batch(service, parsed_url, comparator, console, run)
+    if batch is None:
+        return
+    to_submit, skipped = batch
+    _run_gerrit_submission(
+        parsed_url,
+        credentials,
+        to_submit,
+        run.show_progress,
+        console,
+        skipped=skipped,
+        scope=_batch_scope(to_submit),
+    )
+
+
+def _merge_gerrit_change(
+    service: GerritService,
+    parsed_url: ParsedUrl,
+    credentials: GerritCredentials,
+    comparator: GerritChangeComparator,
+    console: Console,
+    run: _GerritRunOptions,
+) -> None:
+    """Submit a change URL's change with the open changes similar to it."""
+    source_change = _resolve_gerrit_source_change(
+        service, parsed_url, credentials, console
+    )
+    only_automation = _resolve_gerrit_only_automation(
+        source_change,
+        comparator,
+        run.override,
+        console,
+        include_human_prs=run.include_human_prs,
+        dry_run=run.dry_run,
+    )
+
+    source_change = _maybe_rebase_gerrit_change(
+        service, source_change, credentials, console, dry_run=run.dry_run
+    )
+
+    candidates = _resolve_gerrit_candidates(
+        service, source_change, parsed_url, run.topic, console
+    )
+    similar_changes = _find_and_print_similar_changes(
+        service, comparator, source_change, candidates, only_automation, console
+    )
+
+    # Prepare list of changes to submit (similar + source)
+    source_entry: tuple[GerritChangeInfo, GerritComparisonResult | None] = (
+        source_change,
+        None,
+    )
+    all_changes: list[tuple[GerritChangeInfo, GerritComparisonResult | None]] = [
+        *similar_changes,
+        source_entry,
+    ]
+
+    if not _preview_gerrit_submission(
+        source_change, all_changes, run.no_confirm, run.dry_run, console
+    ):
+        return
+
+    _run_gerrit_submission(
+        parsed_url, credentials, all_changes, run.show_progress, console
+    )
 
 
 def _handle_gerrit_merge(
@@ -195,13 +314,18 @@ def _handle_gerrit_merge(
     include_human_prs: bool = False,
 ) -> None:
     """
-    Handle merge operation for a Gerrit change or topic search URL.
+    Handle merge operation for a Gerrit change or query URL.
+
+    A change URL anchors on that change and submits it with the changes
+    similar to it.  A query URL submits exactly the open changes its
+    query matches: no anchor, no similarity scoring, no rebase.
 
     Args:
         parsed_url: Parsed Gerrit change URL (host, project, change
-            number) or topic search URL (host, topic).
+            number) or query URL (host, topic, query expression).
         no_confirm: If True, skip confirmation prompt.
-        similarity_threshold: Threshold for matching similar changes.
+        similarity_threshold: Threshold for matching similar changes;
+            a change URL only.
         verbose: Enable verbose output.
         console: Rich console for output.
         no_netrc: If True, skip .netrc credential lookup.
@@ -209,22 +333,28 @@ def _handle_gerrit_merge(
         netrc_optional: If True, don't fail if netrc not found.
         dry_run: If True, preview only and never review or submit any
             change, even when ``no_confirm`` is also set.
-        override: Confirms a non-automation source change, with the value
-            a run without it prints; needs ``include_human_prs``.
-        topic: Explicit topic to scope the similar-change search to.
-            When omitted, the topic is taken from the search URL (if
-            given) or from the source change itself.
+        override: Confirms a non-automation source change, or a query
+            batch holding one, with the value a run without it prints;
+            needs ``include_human_prs``.
+        topic: Explicit topic to scope a change URL's similar-change
+            search to; when omitted, the source change's own topic.
+            Refused with a query URL, whose query it would replace.
         show_progress: If True, drive a live Rich progress tracker
             during submission (in-place counters, matching the GitHub
             merge path) instead of printing per-change status lines.
         include_human_prs: Bring a non-automation source change, and the
             changes similar to it, into scope once ``override`` confirms.
     """
+    is_query = isinstance(parsed_url, ParsedGerritTopicUrl)
+    if is_query:
+        _check_query_options(topic, similarity_threshold, console)
+
     credentials = _resolve_gerrit_credentials_or_exit(
         parsed_url, no_netrc, netrc_file, verbose, console
     )
 
-    console.print(f"🔍 Examining Gerrit change on {parsed_url.host}...")
+    kind = "query" if is_query else "change"
+    console.print(f"🔍 Examining Gerrit {kind} on {parsed_url.host}...")
 
     try:
         service = _pkg.create_gerrit_service(
@@ -237,51 +367,25 @@ def _handle_gerrit_merge(
         if not service.is_authenticated:
             console.print("⚠️ Warning: Service created but may not be authenticated")
 
-        source_change, topic_changes = _resolve_gerrit_source_change(
-            service, parsed_url, topic, credentials, console
-        )
-
         comparator = _pkg.create_gerrit_comparator(
             similarity_threshold=similarity_threshold
         )
-        only_automation = _resolve_gerrit_only_automation(
-            source_change,
-            comparator,
-            override,
-            console,
-            include_human_prs=include_human_prs,
+        run = _GerritRunOptions(
+            no_confirm=no_confirm,
             dry_run=dry_run,
+            override=override,
+            include_human_prs=include_human_prs,
+            show_progress=show_progress,
+            topic=topic,
         )
-
-        source_change = _maybe_rebase_gerrit_change(
-            service, source_change, credentials, console, dry_run=dry_run
-        )
-
-        candidates = _resolve_gerrit_candidates(
-            service, source_change, parsed_url, topic, topic_changes, console
-        )
-        similar_changes = _find_and_print_similar_changes(
-            service, comparator, source_change, candidates, only_automation, console
-        )
-
-        # Prepare list of changes to submit (similar + source)
-        source_entry: tuple[GerritChangeInfo, GerritComparisonResult | None] = (
-            source_change,
-            None,
-        )
-        all_changes: list[tuple[GerritChangeInfo, GerritComparisonResult | None]] = [
-            *similar_changes,
-            source_entry,
-        ]
-
-        if not _preview_gerrit_submission(
-            source_change, all_changes, no_confirm, dry_run, console
-        ):
-            return
-
-        _run_gerrit_submission(
-            parsed_url, credentials, all_changes, show_progress, console
-        )
+        if isinstance(parsed_url, ParsedGerritTopicUrl):
+            _merge_gerrit_query(
+                service, parsed_url, credentials, comparator, console, run
+            )
+        else:
+            _merge_gerrit_change(
+                service, parsed_url, credentials, comparator, console, run
+            )
 
     except typer.Exit:
         # Re-raise typer.Exit without treating it as an error

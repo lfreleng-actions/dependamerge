@@ -66,7 +66,7 @@ jobs:
             config: '{"target": "${{ github.repository_owner }}", "include_repos": ["${{ github.event.repository.name }}"], "max_wait": 0}'
     steps:
       # yamllint disable-line rule:line-length
-      - uses: lfreleng-actions/harden-runner-block-action@2fed66c9c36c4687c31ca349b925b81ec629673f  # v0.15.0
+      - uses: lfreleng-actions/harden-runner-block-action@36a02f4a61b27e7a0a91e1df2134abe9545cf54e  # v0.16.1
         with:
           # yamllint disable-line rule:line-length
           config: 'lfreleng-actions//.github/harden-runner/lfreleng-actions/allow_list.txt@6d4a65c5601afd6c2fbe52bda4b0024b132f265d'  # v0.19.0
@@ -156,7 +156,7 @@ jobs:
         pythonpath: ['', ':']
     steps:
       # yamllint disable-line rule:line-length
-      - uses: lfreleng-actions/harden-runner-block-action@2fed66c9c36c4687c31ca349b925b81ec629673f  # v0.15.0
+      - uses: lfreleng-actions/harden-runner-block-action@36a02f4a61b27e7a0a91e1df2134abe9545cf54e  # v0.16.1
         with:
           # yamllint disable-line rule:line-length
           config: 'lfreleng-actions//.github/harden-runner/lfreleng-actions/allow_list.txt@6d4a65c5601afd6c2fbe52bda4b0024b132f265d'  # v0.19.0
@@ -252,7 +252,7 @@ jobs:
         selector: ['request', 'active-environment']
     steps:
       # yamllint disable-line rule:line-length
-      - uses: lfreleng-actions/harden-runner-block-action@2fed66c9c36c4687c31ca349b925b81ec629673f  # v0.15.0
+      - uses: lfreleng-actions/harden-runner-block-action@36a02f4a61b27e7a0a91e1df2134abe9545cf54e  # v0.16.1
         if: runner.os == 'Linux'
         with:
           # yamllint disable-line rule:line-length
@@ -509,7 +509,7 @@ jobs:
       pull-requests: read  # Discover open PRs to evaluate (read-only).
     steps:
       # yamllint disable-line rule:line-length
-      - uses: lfreleng-actions/harden-runner-block-action@2fed66c9c36c4687c31ca349b925b81ec629673f  # v0.15.0
+      - uses: lfreleng-actions/harden-runner-block-action@36a02f4a61b27e7a0a91e1df2134abe9545cf54e  # v0.16.1
         with:
           # yamllint disable-line rule:line-length
           config: 'lfreleng-actions//.github/harden-runner/lfreleng-actions/allow_list.txt@6d4a65c5601afd6c2fbe52bda4b0024b132f265d'  # v0.19.0

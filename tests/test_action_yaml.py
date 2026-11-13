@@ -861,13 +861,11 @@ def _run_refusal_step(
     )
 
 
-@pytest.mark.xfail(strict=True, reason="no step refuses UV_NO_MODIFY_PATH yet")
 def test_uv_no_modify_path_is_refused_before_setup_uv(steps) -> None:
     ids = [step.get("id") for step in steps]
     assert ids.index("no-modify-path") < ids.index("setup-uv")
 
 
-@pytest.mark.xfail(strict=True, reason="no step refuses UV_NO_MODIFY_PATH yet")
 @pytest.mark.parametrize("value", ["1", "0", ""])
 def test_an_inherited_uv_no_modify_path_stops_the_action(steps, value) -> None:
     # setup-uv leaves PATH alone when it is set, so a bare uv would then
@@ -877,7 +875,6 @@ def test_an_inherited_uv_no_modify_path_stops_the_action(steps, value) -> None:
     assert "UV_NO_MODIFY_PATH" in finished.stdout
 
 
-@pytest.mark.xfail(strict=True, reason="no step refuses UV_NO_MODIFY_PATH yet")
 def test_the_action_runs_without_uv_no_modify_path(steps) -> None:
     finished = _run_refusal_step(steps, {})
     assert finished.returncode == 0, finished.stderr

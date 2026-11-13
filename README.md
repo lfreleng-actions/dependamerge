@@ -425,8 +425,9 @@ Nothing an earlier step leaves in the job's environment, such as `PATH`,
 interpreter that builds and runs dependamerge, and the action ignores a
 `UV_CACHE_DIR` the job sets. The action does trust the job's `PATH` for the
 tools the runner and setup-uv start, such as `bash` and `tar`, so a caller that
-puts its own executables there, including its own `uv` with
-`UV_NO_MODIFY_PATH` set, controls the job before this action runs. A runner
+puts its own executables there controls the job before this action runs. The
+action fails at once when the job sets `UV_NO_MODIFY_PATH`, in any value, since
+setup-uv would then leave `PATH` to name the `uv` a bare call finds. A runner
 that restricts egress must allow uv's Python download as well as PyPI.
 
 Each run writes a results table to the step summary, failures first, then

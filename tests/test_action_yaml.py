@@ -845,3 +845,36 @@ def test_python_steps_ignore_interpreter_selectors(
     assert not marker.exists(), marker.read_text()
     assert finished.returncode == 0, finished.stderr
     assert output.read_text().strip(), "the step wrote its outputs"
+
+
+def _run_refusal_step(
+    steps: list[dict[str, Any]], inherited: dict[str, str]
+) -> subprocess.CompletedProcess[str]:
+    (step,) = [s for s in steps if s.get("id") == "no-modify-path"]
+    env = {k: v for k, v in os.environ.items() if k != "UV_NO_MODIFY_PATH"}
+    return subprocess.run(
+        ["bash", "-e", "-c", step["run"]],
+        env={**env, **inherited},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def test_uv_no_modify_path_is_refused_before_setup_uv(steps) -> None:
+    ids = [step.get("id") for step in steps]
+    assert ids.index("no-modify-path") < ids.index("setup-uv")
+
+
+@pytest.mark.parametrize("value", ["1", "0", ""])
+def test_an_inherited_uv_no_modify_path_stops_the_action(steps, value) -> None:
+    # setup-uv leaves PATH alone when it is set, so a bare uv would then
+    # be whichever one the caller's PATH names.
+    finished = _run_refusal_step(steps, {"UV_NO_MODIFY_PATH": value})
+    assert finished.returncode == 1, finished.stderr
+    assert "UV_NO_MODIFY_PATH" in finished.stdout
+
+
+def test_the_action_runs_without_uv_no_modify_path(steps) -> None:
+    finished = _run_refusal_step(steps, {})
+    assert finished.returncode == 0, finished.stderr

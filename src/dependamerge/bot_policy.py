@@ -270,6 +270,10 @@ def parse_policy_document(text: str, *, label: str, level: PolicyLevel) -> Polic
         document = json.loads(text)
     except ValueError as exc:
         raise BotPolicyError(label, [f"not valid JSON ({exc})"]) from None
+    except RecursionError:
+        # Python 3.11's decoder recurses once per level of nesting, so a
+        # small document of nested arrays exhausts the stack.
+        raise BotPolicyError(label, ["not valid JSON (nested too deeply)"]) from None
     if not isinstance(document, dict):
         raise BotPolicyError(label, ["must be a JSON object"])
 

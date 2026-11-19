@@ -551,6 +551,19 @@ class TestInvalidUrls:
         with pytest.raises(UrlParseError, match="URL must include a hostname"):
             parse_change_url(url)
 
+    @pytest.mark.parametrize(
+        "prefix",
+        [
+            "https://github.com/acme/widget/pull/",
+            "https://gerrit.example.org/c/widget/+/",
+            "https://gerrit.example.org/infra/c/widget/+/",
+        ],
+    )
+    def test_overlong_change_number(self, prefix):
+        """A number past Python's digit limit is refused as UrlParseError."""
+        with pytest.raises(UrlParseError, match="Change number is too long"):
+            parse_change_url(prefix + "9" * 5000)
+
 
 class TestDetectSource:
     """Tests for the detect_source convenience function."""

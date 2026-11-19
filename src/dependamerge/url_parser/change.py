@@ -229,6 +229,19 @@ def _is_gerrit_url(host: str, path: str) -> bool:
     return False
 
 
+def _change_number(digits: str) -> int:
+    """Convert a matched run of digits to a change number.
+
+    Raises:
+        UrlParseError: If the number is too long for ``int`` to convert,
+            rather than the ``ValueError`` Python's digit limit raises.
+    """
+    try:
+        return int(digits)
+    except ValueError:
+        raise UrlParseError("Change number is too long") from None
+
+
 def _parse_github_url(
     host: str, path: str, original_url: str, *, from_url: bool
 ) -> ParsedUrl:
@@ -247,7 +260,7 @@ def _parse_github_url(
 
     owner = require_owner_from_path(match.group(1), host)
     repo = require_repo_from_path(match.group(2), from_url=from_url)
-    pr_number = int(match.group(3))
+    pr_number = _change_number(match.group(3))
 
     return ParsedUrl(
         source=ChangeSource.GITHUB,
@@ -279,7 +292,7 @@ def _parse_gerrit_url(host: str, path: str, original_url: str) -> ParsedUrl:
         if match:
             base_path = None
             project = match.group(1)
-            change_number = int(match.group(2))
+            change_number = _change_number(match.group(2))
         else:
             raise UrlParseError(
                 f"Invalid Gerrit change URL format. Expected: "
@@ -289,7 +302,7 @@ def _parse_gerrit_url(host: str, path: str, original_url: str) -> ParsedUrl:
     else:
         base_path = match.group(1)  # May be None
         project = match.group(2)
-        change_number = int(match.group(3))
+        change_number = _change_number(match.group(3))
 
     if not project:
         raise UrlParseError("Gerrit URL must include a project name")

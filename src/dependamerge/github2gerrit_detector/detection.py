@@ -177,7 +177,7 @@ def _looks_like_mapping(body: str) -> bool:
     Heuristic check: does this comment body look like a GitHub2Gerrit
     mapping comment even without HTML markers?
     """
-    has_change_id = bool(_CHANGE_ID_PATTERN.search(body))
+    has_change_id = bool(_change_id_tokens(body))
     has_topic = bool(_TOPIC_PATTERN.search(body))
     has_mode = bool(_MODE_PATTERN.search(body))
 
@@ -269,9 +269,24 @@ def _parse_marker_block(body: str) -> GitHub2GerritMapping | None:
     return _parse_block_lines(block, body)
 
 
+def _change_id_tokens(body: str) -> list[str]:
+    """Return the whitespace-separated tokens of *body* that are Change-IDs.
+
+    A whole token, as the marker parser takes it, not a prefix:
+    ``\\b`` also holds before a "-" or ".", so ``findall`` took
+    ``I<40 hex>-extra`` as an ID, letting a marked block the marker
+    parser refused for one still map through this fallback.
+    """
+    return [
+        token
+        for token in (raw.strip("_*") for raw in body.split())
+        if _CHANGE_ID_PATTERN.fullmatch(token)
+    ]
+
+
 def _parse_heuristic(body: str) -> GitHub2GerritMapping | None:
     """Parse mapping fields from a comment body using regex patterns."""
-    change_ids = _CHANGE_ID_PATTERN.findall(body)
+    change_ids = _change_id_tokens(body)
     if not change_ids:
         return None
 
@@ -347,7 +362,9 @@ def _parse_block_lines(block: str, full_body: str) -> GitHub2GerritMapping | Non
             in_change_ids = False
         elif in_change_ids and clean_line.startswith("I"):
             cid = clean_line.split()[0]
-            if _CHANGE_ID_PATTERN.match(cid) and cid not in change_ids:
+            # The whole token, not a prefix: ``\b`` also holds before a
+            # "-" or ".", so ``match`` took "I<40 hex>-extra" as an ID.
+            if _CHANGE_ID_PATTERN.fullmatch(cid) and cid not in change_ids:
                 change_ids.append(cid)
 
     if not all([mode, topic, change_ids]):

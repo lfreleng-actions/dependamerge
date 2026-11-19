@@ -402,6 +402,18 @@ class TestParseBlockLines:
         )
         assert _parse_block_lines(block, "") is None
 
+    def test_skips_change_id_with_trailing_text(self):
+        block = (
+            "Mode: squash\n"
+            "Topic: GH-repo-1\n"
+            "Change-Ids:\n"
+            "  I6a9987bd1b1cf1e4975dd5da2fb26b6b35ee0048-extra\n"
+            "  I1111111111111111111111111111111111111111\n"
+        )
+        mapping = _parse_block_lines(block, "")
+        assert mapping is not None
+        assert mapping.change_ids == ("I1111111111111111111111111111111111111111",)
+
 
 # ===========================================================================
 # Heuristic parsing tests
@@ -536,6 +548,16 @@ class TestDetectGitHub2GerritComments:
         result = detect_github2gerrit_comments(comments)
         assert result.has_mapping is True
         assert result.detection_source == "heuristic"
+
+    def test_heuristic_refuses_a_suffixed_change_id(self):
+        # The marker parser refuses this block, and the bot-authored
+        # comment then reaches the heuristic, which must refuse it too.
+        body = SAMPLE_MAPPING_COMMENT_BODY.replace(
+            "I6a9987bd1b1cf1e4975dd5da2fb26b6b35ee0048",
+            "I6a9987bd1b1cf1e4975dd5da2fb26b6b35ee0048-extra",
+        )
+        comments = [_make_rest_comment(body)]
+        assert detect_github2gerrit_comments(comments).has_mapping is False
 
     def test_empty_comments(self):
         result = detect_github2gerrit_comments([])

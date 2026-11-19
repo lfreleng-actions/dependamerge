@@ -23,13 +23,18 @@ _TOKEN_PATTERNS = [
     re.compile(r"ghp_[A-Za-z0-9]{20,}", re.IGNORECASE),  # GitHub PAT (classic)
     re.compile(r"ghs_[A-Za-z0-9]{20,}", re.IGNORECASE),  # GitHub App installation
     re.compile(r"ghu_[A-Za-z0-9]{20,}", re.IGNORECASE),  # GitHub user-to-server
+    re.compile(r"gho_[A-Za-z0-9]{20,}", re.IGNORECASE),  # GitHub OAuth access
+    re.compile(r"ghr_[A-Za-z0-9]{20,}", re.IGNORECASE),  # GitHub refresh token
     re.compile(r"github_pat_[A-Za-z0-9_]{20,}", re.IGNORECASE),  # fine-grained
     re.compile(r"glpat-[A-Za-z0-9_-]{20,}", re.IGNORECASE),  # GitLab PAT
     # JWT-like long tokens (best-effort)
     re.compile(r"[A-Za-z0-9-_]{20,}\.[A-Za-z0-9-_]{20,}\.[A-Za-z0-9-_]{10,}"),
 ]
-# http(s)://user:password@host
-_BASIC_AUTH_IN_URL = re.compile(r"(https?://[^:/@\s]+:)([^@/\s]+)(@)", re.IGNORECASE)
+# http(s)://user:password@host.  The password runs to the last "@"
+# before the next "/", where url_parser's normalize_target ends the
+# userinfo, so one holding a literal "@" is masked whole rather than
+# up to its first "@".
+_BASIC_AUTH_IN_URL = re.compile(r"(https?://[^:/@\s]+:)([^/\s]+)(@)", re.IGNORECASE)
 # x-access-token:<token>@ in URL
 _X_ACCESS_TOKEN_IN_URL = re.compile(r"(x-access-token:)([^@]+)(@)", re.IGNORECASE)
 

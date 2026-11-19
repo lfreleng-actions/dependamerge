@@ -1953,7 +1953,8 @@ accidental exposure:
 - **Token Redaction** — All git operations redact tokens from logs and
   error messages. The `git_ops` module recognises GitHub classic tokens
   (`ghp_`), fine-grained tokens (`github_pat_`), App installation tokens
-  (`ghs_`), user-to-server tokens (`ghu_`), GitLab tokens (`glpat-`),
+  (`ghs_`), user-to-server tokens (`ghu_`), OAuth access tokens
+  (`gho_`), refresh tokens (`ghr_`), GitLab tokens (`glpat-`),
   basic-auth URLs, and `x-access-token` URLs
 - **Safe Object Representation** — All classes that store credentials
   (`GitHubClient`, `GitHubAsync`, `AsyncMergeManager`, `AsyncCloseManager`,

@@ -23,11 +23,14 @@ import re
 
 __all__ = ["redact_target"]
 
-#: The userinfo a URL may carry, in both the ``scheme://`` and the
-#: scheme-less ``//host/path`` forms.  Both name an authority, so both
-#: can hide a credential in front of it; requiring an authority marker
-#: is what leaves a bare ``a@b`` *path* segment alone.
-_USERINFO_RE = re.compile(r"\A((?:[A-Za-z][A-Za-z0-9+.-]*:)?//)[^/@\s]+@")
+#: The authority a URL may carry, in both the ``scheme://`` and the
+#: scheme-less ``//host/path`` forms, up to the path.  Both name an
+#: authority, so both can hide a credential in front of it; requiring an
+#: authority marker is what leaves a bare ``a@b`` *path* segment alone.
+_AUTHORITY_RE = re.compile(r"\A((?:[A-Za-z][A-Za-z0-9+.-]*:)?//)([^/\s]*)")
+
+#: Where the authority ends before the path: a query or a fragment.
+_QUERY_OR_FRAGMENT_RE = re.compile(r"[?#]")
 
 #: Where a redacted target stops mid-segment: a path parameter, or an
 #: encoded character that may be hiding one.
@@ -79,7 +82,35 @@ def redact_target(value: str) -> str:
     """
     if not value:
         return value
-    redacted = _USERINFO_RE.sub(r"\1***@", value)
+    redacted = _mask_userinfo(value)
     redacted = redacted.split("?", 1)[0].split("#", 1)[0]
     cut = _MARKED_CUT_RE.search(redacted)
     return redacted if cut is None else f"{redacted[: cut.end()]}…"
+
+
+def _mask_userinfo(value: str) -> str:
+    """Mask the userinfo in front of a URL's host, if it has any.
+
+    The userinfo runs to the *last* ``@`` before the host, where
+    :func:`~dependamerge.url_parser.shorthand.normalize_target` ends it
+    when it strips it.  Stopping at the first one showed the rest of a
+    password holding a literal ``@``: ``https://u:p@ss@h`` came out as
+    ``https://***@ss@h``.
+
+    A ``?`` or ``#`` ends the authority, so an ``@`` after one belongs
+    to the query or the fragment: ``https://h?token=a@b`` has no
+    userinfo, and masking up to that ``@`` showed ``b``.  Yet a
+    malformed password may hold a ``?`` or ``#`` too, as in
+    ``https://u:p?w@h``, where the text in front of the ``?`` is the
+    password.  The two cannot be told apart, so when an ``@`` follows a
+    ``?`` or ``#`` before the path, the whole authority is masked.
+    """
+    match = _AUTHORITY_RE.match(value)
+    if match is None or "@" not in match.group(2):
+        return value
+    region = match.group(2)
+    boundary = _QUERY_OR_FRAGMENT_RE.search(region)
+    authority = region if boundary is None else region[: boundary.start()]
+    tail = region[len(authority) :]
+    masked = "***" if "@" in tail else "***@" + authority.rsplit("@", 1)[1]
+    return f"{match.group(1)}{masked}{tail}{value[match.end() :]}"

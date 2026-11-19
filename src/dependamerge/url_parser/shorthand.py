@@ -365,14 +365,36 @@ def normalize_target(value: str, *, default_host: str | None = None) -> str:
 
 
 def _strip_userinfo(authority_and_path: str, *, strip_port: bool) -> str:
-    """Drop ``user@`` --- and optionally ``:port`` --- from ``host/path``."""
+    """Drop ``user@`` --- and optionally ``:port`` --- from ``host/path``.
+
+    The userinfo runs to the last ``@`` in the authority, which a ``/``,
+    ``?`` or ``#`` ends.  Ending it at ``/`` alone read an ``@`` in the
+    query of a URL with no path as the end of the userinfo:
+    ``https://h?token=a@b`` became ``https://b``, naming a different
+    host and showing what followed the ``@``.
+
+    Raises:
+        UrlParseError: When an ``@`` follows a ``?`` or ``#`` before
+            the path.  ``https://u:p?w@h`` is a query to a URL parser
+            but a password to a reader, and guessing either way either
+            shows the password or acts on another host.
+    """
     parts = authority_and_path.split("/", 1)
-    authority = parts[0]
+    region = parts[0]
     rest = parts[1] if len(parts) > 1 else ""
+    boundary = re.search(r"[?#]", region)
+    authority = region if boundary is None else region[: boundary.start()]
+    tail = region[len(authority) :]
+    if "@" in tail:
+        raise UrlParseError(
+            "Ambiguous URL authority: an '@' follows a '?' or '#' before "
+            "the path. Percent-encode the '@', '?' or '#' it holds."
+        )
     if "@" in authority:
         authority = authority.rsplit("@", 1)[1]
     if strip_port:
         authority = _PORT_SUFFIX_RE.sub("", authority)
+    authority += tail
     return f"{authority}/{rest}" if rest else authority
 
 

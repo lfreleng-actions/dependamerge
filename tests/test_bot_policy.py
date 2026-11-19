@@ -126,6 +126,11 @@ class TestDocuments:
         with pytest.raises(BotPolicyError):
             parse_policy_document(text, label="x", level=PolicyLevel.OWNER)
 
+    @pytest.mark.parametrize("text", ["[" * 5000, "[" * 8000 + "]" * 8000])
+    def test_deeply_nested_documents_are_refused(self, text: str) -> None:
+        with pytest.raises(BotPolicyError, match="not valid JSON|JSON object"):
+            parse_policy_document(text, label="x", level=PolicyLevel.OWNER)
+
     def test_list_values_must_be_strings(self) -> None:
         with pytest.raises(BotPolicyError, match="list of strings"):
             _owner_source(include_bots=[1, 2])

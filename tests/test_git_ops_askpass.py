@@ -218,6 +218,16 @@ class TestRedactText:
         redacted = redact_text("https://user:hunter2@example.com/repo.git")
         assert "hunter2" not in redacted
 
+    def test_redacts_basic_auth_password_holding_at_sign(self) -> None:
+        redacted = redact_text("clone https://user:hun@ter2@example.com/r.git")
+        assert "ter2" not in redacted
+        assert redacted == "clone https://user:***@example.com/r.git"
+
+    @pytest.mark.parametrize("prefix", ["gho_", "ghr_"])
+    def test_redacts_oauth_and_refresh_tokens(self, prefix: str) -> None:
+        secret = prefix + "A" * 36
+        assert redact_text(f"token {secret} in a log") == "token *** in a log"
+
     def test_plain_text_unchanged(self) -> None:
         assert redact_text("https://github.com/o/r.git") == (
             "https://github.com/o/r.git"

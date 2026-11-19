@@ -348,6 +348,31 @@ After making changes you can run:
 uv run dependamerge --help
 ```
 
+### Fuzzing
+
+Three [Atheris](https://github.com/google/atheris) harnesses in `tests/fuzz/`
+exercise the code that reads input this tool does not control:
+
+- `fuzz_url_parser.py`: change URLs, shorthand targets, owner and
+  repository names, the `.git` suffix helpers and `redact_target`
+- `fuzz_untrusted_content.py`: policy files, GitHub2Gerrit comments,
+  `.gitreview` and `.netrc`
+- `fuzz_redaction.py`: `redact_text` and `summarise_error`
+
+Each module docstring names the contracts its harness checks. Atheris is
+not a project dependency; bring it for the run:
+
+```bash
+# Fuzz for a minute, keeping new inputs in corpus/
+uv run --with atheris python tests/fuzz/fuzz_url_parser.py corpus/ -max_total_time=60
+
+# Replay one input and exit
+uv run --with atheris python tests/fuzz/fuzz_url_parser.py crash-<hash>
+```
+
+`tests/test_fuzz_replay.py` replays every seed through each check in the
+normal test suite, without Atheris.
+
 ### Building & Publishing
 
 Dynamic version comes from Git tags (e.g. tag `v0.2.0` → version `0.2.0`):
@@ -1953,7 +1978,8 @@ accidental exposure:
 - **Token Redaction** — All git operations redact tokens from logs and
   error messages. The `git_ops` module recognises GitHub classic tokens
   (`ghp_`), fine-grained tokens (`github_pat_`), App installation tokens
-  (`ghs_`), user-to-server tokens (`ghu_`), GitLab tokens (`glpat-`),
+  (`ghs_`), user-to-server tokens (`ghu_`), OAuth access tokens
+  (`gho_`), refresh tokens (`ghr_`), GitLab tokens (`glpat-`),
   basic-auth URLs, and `x-access-token` URLs
 - **Safe Object Representation** — All classes that store credentials
   (`GitHubClient`, `GitHubAsync`, `AsyncMergeManager`, `AsyncCloseManager`,

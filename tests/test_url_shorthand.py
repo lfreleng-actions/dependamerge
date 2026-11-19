@@ -213,6 +213,21 @@ class TestCredentialsAreNotCarried:
             == "http://ghe.example.com:8443/acme/widget"
         )
 
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            "https://ghe.example.com?token=head@PRIVATE",
+            "https://u:pw@ghe.example.com#token=head@PRIVATE",
+            "https://u:p?w@ghe.example.com/acme/widget",
+        ],
+    )
+    def test_an_at_after_a_query_or_fragment_is_refused(self, raw):
+        with pytest.raises(UrlParseError) as excinfo:
+            normalize_target(raw)
+
+        assert "PRIVATE" not in str(excinfo.value)
+        assert "p?w" not in str(excinfo.value)
+
 
 class TestConfiguredHostWithAPort:
     """A configured host naming a port is a configuration error.
@@ -398,6 +413,18 @@ class TestNoTargetReachesOutputWithCredentials:
             # so a scheme-anchored pattern left its userinfo intact ---
             # in the very helper written to stop that happening.
             ("//u:pw@h/a/b", "//***@h/a/b"),
+            # A literal "@" in a password: the userinfo ends at the
+            # last one, so no part of the password is shown.
+            ("https://u:p@ss@h/a/b", "https://***@h/a/b"),
+            # An "@" after a "?" or "#" belongs to the query or the
+            # fragment, so masking up to it showed what followed it.
+            ("https://u:pw@h?token=head@PRIVATE", "https://***"),
+            ("https://u:pw@h#token=head@PRIVATE", "https://***"),
+            ("https://h?token=head@PRIVATE", "https://***"),
+            # ... yet a password may hold a "?", so the whole authority
+            # goes rather than the text in front of it.
+            ("https://u:p?w@h/a", "https://***"),
+            ("https://u:pw@h?token=x", "https://***@h"),
             ("https://h/a/b?token=x", "https://h/a/b"),
             ("https://h/a/b#token=x", "https://h/a/b"),
             ("https://h/a/b", "https://h/a/b"),

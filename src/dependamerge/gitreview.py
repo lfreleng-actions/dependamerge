@@ -124,7 +124,8 @@ def parse_gitreview(text: str) -> GitReviewInfo | None:
       the value (e.g. ``host=h # primary`` yields ``"h # primary"``).
     * ``port=`` matches digits only, so a line carrying a trailing
       comment fails to match and the parser falls back to
-      :data:`DEFAULT_GERRIT_PORT` rather than raising.
+      :data:`DEFAULT_GERRIT_PORT` rather than raising.  So does a run
+      of digits too long for ``int()`` to convert.
 
     This mirrors ``git-review``'s own behaviour and is deliberately
     distinct from the netrc parser, which *does* strip inline comments.
@@ -146,8 +147,15 @@ def parse_gitreview(text: str) -> GitReviewInfo | None:
         log.debug(".gitreview: host= line is empty")
         return None
 
+    port = DEFAULT_GERRIT_PORT
     port_match = _PORT_RE.search(text)
-    port = int(port_match.group(1)) if port_match else DEFAULT_GERRIT_PORT
+    if port_match:
+        try:
+            port = int(port_match.group(1))
+        except ValueError:
+            # Longer than ``int()`` will convert (sys.int_info's digit
+            # limit), which no real port is.
+            log.debug(".gitreview: port= value is too long to read")
 
     project = ""
     project_match = _PROJECT_RE.search(text)

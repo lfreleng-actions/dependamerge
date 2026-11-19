@@ -169,6 +169,12 @@ class TestParseGitreview:
         assert info.port == 29419
         assert info.project == "apps/widgets"
 
+    def test_overlong_port_falls_back_to_default(self) -> None:
+        info = parse_gitreview("host=gerrit.example.org\nport=" + "1" * 5000 + "\n")
+        assert info is not None
+        assert info.host == "gerrit.example.org"
+        assert info.port == DEFAULT_GERRIT_PORT
+
     def test_no_host_returns_none(self) -> None:
         assert parse_gitreview(NO_HOST) is None
 

@@ -309,6 +309,15 @@ class TestNetrcParserComments:
         assert creds is not None
         assert creds.login == "user"
 
+    def test_hash_after_escaped_backslash_stays_quoted(self) -> None:
+        """A quoted value ending in ``\\`` does not reopen its quote."""
+        content = 'machine example.org login "user\\\\" password "pa#ss" # note'
+        parser = NetrcParser(content)
+        creds = parser.get_credentials("example.org")
+        assert creds is not None
+        assert creds.login == "user\\"
+        assert creds.password == "pa#ss"
+
 
 class TestNetrcParserEdgeCases:
     """Tests for edge cases in NetrcParser."""

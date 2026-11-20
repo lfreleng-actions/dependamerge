@@ -21,6 +21,19 @@ from urllib.parse import quote
 from ._base import _GitHubAsyncBase
 
 
+def required_check_app(check: dict[str, Any]) -> int | None:
+    """The GitHub App a required check is bound to, or None for any App.
+
+    Rulesets name it ``integration_id`` and classic branch protection
+    ``app_id``, where ``-1`` means any App.
+    """
+    for key in ("integration_id", "app_id"):
+        value = check.get(key)
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+            return value
+    return None
+
+
 class _RequiredChecksMixin(_GitHubAsyncBase):
     """Required-check and branch-protection lookups for ``GitHubAsync``."""
 
@@ -135,16 +148,22 @@ class _RequiredChecksMixin(_GitHubAsyncBase):
         except Exception as e:
             return checks, "404" in str(e)
         if isinstance(data, dict):
-            for ctx in data.get("contexts", []):
-                if isinstance(ctx, str) and ctx:
-                    checks.append({"context": ctx})
-            for check in data.get("checks", []):
+            # ``checks`` restates ``contexts`` with each one's App binding,
+            # so a context listed in both is taken from ``checks``.
+            bound: dict[str, dict[str, Any]] = {}
+            raw_checks = data.get("checks")
+            for check in raw_checks if isinstance(raw_checks, list) else []:
                 if (
                     isinstance(check, dict)
                     and isinstance(check.get("context"), str)
                     and check["context"]
                 ):
-                    checks.append(check)
+                    bound.setdefault(check["context"], check)
+            raw_contexts = data.get("contexts")
+            for ctx in raw_contexts if isinstance(raw_contexts, list) else []:
+                if isinstance(ctx, str) and ctx:
+                    checks.append(bound.pop(ctx, {"context": ctx}))
+            checks.extend(bound.values())
         return checks, True
 
     async def get_required_status_checks(
@@ -173,8 +192,10 @@ class _RequiredChecksMixin(_GitHubAsyncBase):
         the two are unioned, because GitHub enforces both: they are
         cumulative rather than alternatives.
         Returns ``(checks, reliable)``, where each check is a dict with
-        'context' and optionally 'integration_id', deduplicated by
-        ``context``.
+        'context' and optionally its App binding ('integration_id' from a
+        ruleset, 'app_id' from branch protection), deduplicated by
+        ``context``.  A context bound to different Apps by different
+        requirements is returned bound to none.
 
         ``reliable`` is False when any lookup failed, which is what makes
         the empty list interpretable.  A token that cannot read rulesets
@@ -216,16 +237,23 @@ class _RequiredChecksMixin(_GitHubAsyncBase):
             return list(cached), True
 
         required_checks: list[dict[str, Any]] = []
-        seen_contexts: set[str] = set()
+        seen_contexts: dict[str, int] = {}
 
         def _add(candidates: list[dict[str, Any]]) -> None:
+            # A context two requirements bind to different Apps waits on
+            # each App's report, so it is kept bound to none.
             for check in candidates:
                 ctx = check.get("context")
                 if not isinstance(ctx, str) or not ctx:
                     continue
-                if ctx not in seen_contexts:
-                    seen_contexts.add(ctx)
+                index = seen_contexts.get(ctx)
+                if index is None:
+                    seen_contexts[ctx] = len(required_checks)
                     required_checks.append(check)
+                elif required_check_app(required_checks[index]) != (
+                    required_check_app(check)
+                ):
+                    required_checks[index] = {"context": ctx}
 
         # Resolve the repo's actual default branch so that ~DEFAULT_BRANCH
         # ruleset conditions are evaluated correctly (not hardcoded to

@@ -7,10 +7,11 @@ Detection of required checks that will never report.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
+from ..github_async._required_checks import required_check_app
 from ..models import PullRequestInfo
 from ._base import _MergeManagerBase
 
@@ -27,6 +28,9 @@ class _StuckCheckContext:
     pr_updated: datetime
     threshold: float
     required_contexts: set[str]
+    # Required contexts bound to one GitHub App, by lower-cased name: a
+    # run of that name from any other App cannot satisfy them.
+    required_apps: dict[str, int] = field(default_factory=dict)
 
 
 def _parse_ts(value: Any) -> datetime | None:
@@ -121,19 +125,85 @@ def _pr_reference_time(
     return pr_updated
 
 
+def _run_source(run: dict[str, Any]) -> tuple[Any, str]:
+    """The GitHub App and name that together identify a check."""
+    app = run.get("app")
+    app_id = app.get("id") if isinstance(app, dict) else None
+    return app_id, str(run.get("name") or "")
+
+
+def _int_id(run: dict[str, Any]) -> int | None:
+    """A run's ``id`` when it is a usable integer."""
+    value = run.get("id")
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    return None
+
+
+def _started_after(other: dict[str, Any], run: dict[str, Any]) -> bool:
+    """Whether *other* provably began after *run*.
+
+    Two keys order runs: ``started_at``, and ``id``, which GitHub assigns
+    in creation order.  *other* is later when at least one key the pair
+    shares says so and none says the opposite: an older run can sit
+    queued and start after a newer one, so start time and id that
+    disagree leave the pair unordered.  Completion time is deliberately
+    not used: an older run can finish after a newer one starts.  A pair
+    where only one run has a start time is unordered too: comparing ids
+    alone could contradict a third run's start times and make the order
+    cyclic.  When nothing orders the pair the answer is no, so an
+    unordered pending run stays judged.
+    """
+    other_ts = _parse_ts(other.get("started_at"))
+    run_ts = _parse_ts(run.get("started_at"))
+    if (other_ts is None) != (run_ts is None):
+        return False
+    later = earlier = False
+    if other_ts is not None and run_ts is not None:
+        later, earlier = other_ts > run_ts, other_ts < run_ts
+    other_id, run_id = _int_id(other), _int_id(run)
+    if other_id is not None and run_id is not None:
+        later = later or other_id > run_id
+        earlier = earlier or other_id < run_id
+    return later and not earlier
+
+
+def _current_runs(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Runs that no later run of the same App and name supersedes.
+
+    A run from another App never supersedes one: it cannot satisfy a
+    requirement bound to the first App.
+    """
+    by_source: dict[tuple[Any, str], list[dict[str, Any]]] = {}
+    for run in runs:
+        if isinstance(run, dict):
+            by_source.setdefault(_run_source(run), []).append(run)
+    return [
+        run
+        for group in by_source.values()
+        for run in group
+        if not any(_started_after(other, run) for other in group)
+    ]
+
+
 def _stuck_run_candidate(
-    runs: Any, ctx: _StuckCheckContext
+    runs: list[dict[str, Any]] | None, ctx: _StuckCheckContext
 ) -> tuple[str | None, float]:
-    """Find the longest-pending eligible check run, if any."""
+    """Find the longest-pending eligible check run, if any.
+
+    Only the current run of each App and name counts: an older run left
+    ``in_progress`` beside a newer one that finished is superseded, not
+    stuck, while a newer pending rerun is still judged.  A run of a
+    required check bound to one App counts only when that App posted it.
+    """
     candidate_name: str | None = None
     candidate_age = 0.0
-    if not isinstance(runs, dict):
-        return candidate_name, candidate_age
-    for run in runs.get("check_runs") or []:
-        if not isinstance(run, dict):
-            continue
+    for run in _current_runs(runs or []):
         name = run.get("name", "")
         if not _is_eligible(name, ctx.required_contexts):
+            continue
+        required_app = ctx.required_apps.get(str(name or "").strip().lower())
+        if required_app is not None and _run_source(run)[0] != required_app:
             continue
         status = run.get("status")
         if status not in ("queued", "in_progress"):
@@ -151,18 +221,23 @@ def _stuck_run_candidate(
 
 
 def _stuck_status_candidate(
-    statuses: Any, ctx: _StuckCheckContext
+    statuses: list[dict[str, Any]] | None, ctx: _StuckCheckContext
 ) -> tuple[str | None, float]:
-    """Find the longest-pending eligible status context, if any."""
+    """Find the longest-pending eligible status context, if any.
+
+    A context required from one App is skipped: its source is unknown.
+    """
     candidate_name: str | None = None
     candidate_age = 0.0
-    if not isinstance(statuses, dict):
-        return candidate_name, candidate_age
-    for s in statuses.get("statuses") or []:
+    for s in statuses or []:
         if not isinstance(s, dict):
             continue
         ctx_name = s.get("context", "")
         if not _is_eligible(ctx_name, ctx.required_contexts):
+            continue
+        # A status does not name the App that posted it, so one cannot
+        # be judged for a required check bound to a particular App.
+        if str(ctx_name or "").strip().lower() in ctx.required_apps:
             continue
         if s.get("state") != "pending":
             continue
@@ -229,10 +304,14 @@ class _StuckCheckMixin(_MergeManagerBase):
 
         # 2. Determine which checks are *required* on the base branch
         #    so a non-blocking check is never treated as stuck.
-        required_contexts = await self._stuck_required_contexts(
-            repo_owner, repo_name, pr_info
+        required = await self._stuck_required_contexts(repo_owner, repo_name, pr_info)
+        ctx = _StuckCheckContext(
+            now,
+            pr_updated,
+            threshold,
+            set(required),
+            {name: app for name, app in required.items() if app is not None},
         )
-        ctx = _StuckCheckContext(now, pr_updated, threshold, required_contexts)
 
         # 3. Examine check-runs and status contexts on the head SHA.
         runs = await self._stuck_check_runs(repo_owner, repo_name, pr_info)
@@ -268,13 +347,15 @@ class _StuckCheckMixin(_MergeManagerBase):
 
     async def _stuck_required_contexts(
         self, repo_owner: str, repo_name: str, pr_info: PullRequestInfo
-    ) -> set[str]:
+    ) -> dict[str, int | None]:
         """Return the base branch's required status contexts.
 
-        On any failure this falls back to an empty set, leaving the DCO
-        safety net in :func:`_is_eligible` as the only eligible matcher.
+        Maps each lower-cased context to the id of the GitHub App it is
+        bound to, or None when any App may satisfy it.  On any failure
+        this falls back to an empty mapping, leaving the DCO safety net
+        in :func:`_is_eligible` as the only eligible matcher.
         """
-        required_contexts: set[str] = set()
+        required_contexts: dict[str, int | None] = {}
         if not self._github_client:
             return required_contexts
         try:
@@ -282,11 +363,14 @@ class _StuckCheckMixin(_MergeManagerBase):
                 repo_owner, repo_name, pr_info.base_branch or "main"
             )
             if isinstance(required, list):
-                required_contexts = {
-                    str(c.get("context", "")).strip().lower()
-                    for c in required
-                    if isinstance(c, dict) and c.get("context")
-                }
+                for c in required:
+                    if not isinstance(c, dict) or not c.get("context"):
+                        continue
+                    name = str(c["context"]).strip().lower()
+                    app = required_check_app(c)
+                    if name in required_contexts and required_contexts[name] != app:
+                        app = None
+                    required_contexts[name] = app
         except Exception as exc:
             self.log.debug(
                 "_detect_stuck_required_check: required-checks fetch failed "
@@ -295,18 +379,18 @@ class _StuckCheckMixin(_MergeManagerBase):
                 pr_info.number,
                 exc,
             )
-            required_contexts = set()
+            required_contexts = {}
         return required_contexts
 
     async def _stuck_check_runs(
         self, repo_owner: str, repo_name: str, pr_info: PullRequestInfo
-    ) -> Any:
-        """Fetch the head SHA's check runs, returning None on failure."""
+    ) -> list[dict[str, Any]] | None:
+        """Fetch every check run on the head SHA, returning None on failure."""
         if not self._github_client:
             return None
         try:
-            return await self._github_client.get(
-                f"/repos/{repo_owner}/{repo_name}/commits/{pr_info.head_sha}/check-runs"
+            return await self._github_client.get_check_runs_for_ref(
+                repo_owner, repo_name, pr_info.head_sha
             )
         except Exception as exc:
             self.log.debug(
@@ -319,13 +403,13 @@ class _StuckCheckMixin(_MergeManagerBase):
 
     async def _stuck_check_statuses(
         self, repo_owner: str, repo_name: str, pr_info: PullRequestInfo
-    ) -> Any:
-        """Fetch the head SHA's status contexts, returning None on failure."""
+    ) -> list[dict[str, Any]] | None:
+        """Fetch every status context on the head SHA, returning None on failure."""
         if not self._github_client:
             return None
         try:
-            return await self._github_client.get(
-                f"/repos/{repo_owner}/{repo_name}/commits/{pr_info.head_sha}/status"
+            return await self._github_client.get_commit_statuses(
+                repo_owner, repo_name, pr_info.head_sha
             )
         except Exception as exc:
             self.log.debug(

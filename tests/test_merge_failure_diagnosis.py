@@ -27,6 +27,7 @@ workflows-template#55        ``blocked``       failed
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
@@ -916,9 +917,19 @@ class TestTheLiveReadingIsNotTruncated:
         from dependamerge.github_async import GitHubAsync
 
         pages = [
-            {"statuses": [{"context": f"check-{i}", "state": "success"}]}
+            {
+                "total_count": 31,
+                "statuses": [{"id": i, "context": f"check-{i}", "state": "success"}],
+            }
             for i in range(30)
-        ] + [{"statuses": [{"context": "pre-commit.ci - pr", "state": "failure"}]}]
+        ] + [
+            {
+                "total_count": 31,
+                "statuses": [
+                    {"id": 30, "context": "pre-commit.ci - pr", "state": "failure"}
+                ],
+            }
+        ]
 
         async with GitHubAsync(token="t") as api:
 
@@ -935,10 +946,21 @@ class TestTheLiveReadingIsNotTruncated:
     async def test_check_runs_are_paginated(self) -> None:
         from dependamerge.github_async import GitHubAsync
 
+        def _run(run_id: int, name: str, conclusion: str) -> dict[str, Any]:
+            return {
+                "id": run_id,
+                "name": name,
+                "status": "completed",
+                "conclusion": conclusion,
+            }
+
         pages = [
-            {"check_runs": [{"name": f"job-{i}", "conclusion": "success"}]}
+            {"total_count": 101, "check_runs": [_run(i, f"job-{i}", "success")]}
             for i in range(100)
-        ] + [{"check_runs": [{"name": "Zizmor Scan 🌈", "conclusion": "failure"}]}]
+        ]
+        pages.append(
+            {"total_count": 101, "check_runs": [_run(100, "Zizmor Scan 🌈", "failure")]}
+        )
 
         async with GitHubAsync(token="t") as api:
 

@@ -15,6 +15,7 @@ from dependamerge.github_service import GitHubService
 from dependamerge.models import FileChange, PullRequestInfo
 
 
+@pytest.mark.usefixtures("listings_via_get")
 class TestAsyncIntegration:
     """Test integration between async components."""
 

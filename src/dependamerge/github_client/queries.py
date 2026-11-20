@@ -71,11 +71,17 @@ async def _fetch_pr_files(
                     )
                 )
     except Exception as exc:
-        # If pagination of files fails, continue with what we have
-        api.log.debug(
-            f"File pagination failed for PR #{pr_number}: {exc}",
-            exc_info=True,
+        # The transport has already retried; keep what was read, but say
+        # the list is incomplete.
+        api.log.warning(
+            "File list for %s/%s#%d is incomplete (%d read): %s",
+            owner,
+            repo,
+            pr_number,
+            len(files_changed),
+            exc,
         )
+        api.log.debug("File pagination failure detail", exc_info=True)
     return files_changed
 
 

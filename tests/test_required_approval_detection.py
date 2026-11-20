@@ -472,16 +472,16 @@ class TestEffectiveBranchRequiresApproval:
         mgr, client = make_merge_manager()
         seen: list[str] = []
 
-        async def _get(path: str):
+        async def _get_paginated(path: str, **_kwargs: Any):
             seen.append(path)
-            return [
+            yield [
                 {
                     "type": "pull_request",
                     "parameters": {"required_approving_review_count": 1},
                 }
             ]
 
-        client.get = AsyncMock(side_effect=_get)
+        client.get_paginated = _get_paginated
 
         requires = await mgr._effective_branch_requires_approval(
             "lfreleng-actions", "lftools-uv", "release/v1"

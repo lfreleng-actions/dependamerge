@@ -270,7 +270,6 @@ def _branch_rules_route(*, second_page: list[dict[str, Any]] | Exception) -> Rou
 
 
 class TestEffectiveBranchRules:
-    @pytest.mark.xfail(strict=True, reason="only the first page is read")
     @pytest.mark.asyncio
     async def test_a_pull_request_rule_on_the_second_page_counts(self) -> None:
         rule = {

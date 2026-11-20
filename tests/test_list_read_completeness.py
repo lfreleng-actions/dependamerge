@@ -69,7 +69,6 @@ def _closed_prs(
 class TestMergedPullRequestsSince:
     """Closed pull requests come newest-updated first."""
 
-    @pytest.mark.xfail(strict=True, reason="read does not stop early yet")
     @pytest.mark.asyncio
     async def test_stops_at_a_page_reaching_past_the_since_date(self) -> None:
         page1 = _closed_prs(99, updated="2026-03-01T00:00:00Z", merged="2026-02-01")
@@ -105,7 +104,6 @@ class TestMergedPullRequestsSince:
         assert len(merged) == 100
         assert [page for _, page in seen] == [1, 2]
 
-    @pytest.mark.xfail(strict=True, reason="ceiling is not reported yet")
     @pytest.mark.asyncio
     async def test_warns_when_the_ceiling_cuts_the_read_short(
         self, caplog: pytest.LogCaptureFixture
@@ -148,7 +146,6 @@ class TestPullRequestFiles:
 
 
 class TestLatestRelease:
-    @pytest.mark.xfail(strict=True, reason="only the first page is read")
     @pytest.mark.asyncio
     async def test_a_full_release_after_a_page_of_prereleases(self) -> None:
         prereleases = [
@@ -172,6 +169,41 @@ class TestLatestRelease:
             latest = await svc._get_latest_release("acme", "widget")
 
         assert latest == ("v1.0.0", "2026/02/03")
+
+    @pytest.mark.asyncio
+    async def test_warns_when_the_ceiling_cuts_the_search_short(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        prereleases = [
+            {"tag_name": f"v2.0.0-rc{n}", "prerelease": True, "draft": False}
+            for n in range(100)
+        ]
+
+        async with GitHubAsync(token="t") as gh:
+            seen = _wire(gh, lambda _path, _page: (prereleases, True))
+            svc = GitHubService(token="t", client=gh)
+            with caplog.at_level(logging.WARNING):
+                latest = await svc._get_latest_release("acme", "widget")
+
+        assert latest == (None, None)
+        assert len(seen) == 3
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert any("acme/widget" in r.getMessage() for r in warnings)
+
+    @pytest.mark.asyncio
+    async def test_no_warning_when_the_list_ends_without_a_release(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        drafts = [{"tag_name": "v3.0.0", "prerelease": False, "draft": True}]
+
+        async with GitHubAsync(token="t") as gh:
+            _wire(gh, lambda _path, _page: (drafts, False))
+            svc = GitHubService(token="t", client=gh)
+            with caplog.at_level(logging.WARNING):
+                latest = await svc._get_latest_release("acme", "widget")
+
+        assert latest == (None, None)
+        assert not [r for r in caplog.records if r.levelno == logging.WARNING]
 
 
 def _ruleset_route(*, second_page_fails: bool) -> Route:

@@ -16,6 +16,10 @@ from ..bot_identity import (
 )
 from ._base import _GitHubServiceBase
 
+# Bounds the cost of the merged-since read: 10 pages of 100.
+_MERGED_PRS_PER_PAGE = 100
+_MERGED_PRS_MAX_PAGES = 10
+
 
 class _StatusStatsMixin(_GitHubServiceBase):
     """PR statistics for ``GitHubService``."""
@@ -155,50 +159,59 @@ class _StatusStatsMixin(_GitHubServiceBase):
     async def _get_merged_prs_since(
         self, owner: str, name: str, since_date: str
     ) -> list[dict[str, Any]]:
-        """Get merged PRs since a specific date."""
+        """Get merged PRs since a specific date.
+
+        Closed pull requests are read newest-updated first.  A pull
+        request's ``merged_at`` is never later than its ``updated_at``,
+        so the read stops at the first page whose oldest update precedes
+        the since-date.  A page ceiling bounds the cost; when it cuts
+        the read short a warning says the merged counts may be low.
+        """
         try:
             # Convert date format from YYYY/MM/DD to ISO format
             date_obj = datetime.strptime(since_date, "%Y/%m/%d")
             iso_date = date_obj.strftime("%Y-%m-%dT%H:%M:%SZ")
 
-            # Use REST API to get merged PRs
-            merged_prs = []
-            page = 1
-            per_page = 100
+            merged_prs: list[dict[str, Any]] = []
+            pages_read = 0
+            last_page_full = False
+            reached_since = False
 
-            while True:
-                params = {
-                    "state": "closed",
-                    "sort": "updated",
-                    "direction": "desc",
-                    "per_page": per_page,
-                    "page": page,
-                }
-
-                prs_data = await self._api.get(
-                    f"/repos/{owner}/{name}/pulls", params=params
-                )
-
-                if not isinstance(prs_data, list) or len(prs_data) == 0:
+            async for prs_data in self._api.get_paginated(
+                f"/repos/{owner}/{name}/pulls",
+                params={"state": "closed", "sort": "updated", "direction": "desc"},
+                per_page=_MERGED_PRS_PER_PAGE,
+                max_pages=_MERGED_PRS_MAX_PAGES,
+            ):
+                if not isinstance(prs_data, list):
                     break
+                pages_read += 1
+                last_page_full = len(prs_data) >= _MERGED_PRS_PER_PAGE
 
                 for pr in prs_data:
-                    # Check if PR was merged
                     merged_at = pr.get("merged_at")
-                    if merged_at:
-                        # Check if merged after the since_date
-                        if merged_at >= iso_date:
-                            merged_prs.append(pr)
+                    if merged_at and merged_at >= iso_date:
+                        merged_prs.append(pr)
 
-                # Check if we've reached the last page
-                if len(prs_data) < per_page:
+                updated = [pr["updated_at"] for pr in prs_data if pr.get("updated_at")]
+                if updated and min(updated) < iso_date:
+                    reached_since = True
                     break
 
-                page += 1
-
-                # Limit to avoid excessive API calls
-                if page > 10:
-                    break
+            if (
+                not reached_since
+                and last_page_full
+                and pages_read >= _MERGED_PRS_MAX_PAGES
+            ):
+                self.log.warning(
+                    "Read the %d most recently updated closed pull requests "
+                    "of %s/%s without reaching %s; its merged pull request "
+                    "counts may be understated",
+                    pages_read * _MERGED_PRS_PER_PAGE,
+                    owner,
+                    name,
+                    since_date,
+                )
 
             return merged_prs
 

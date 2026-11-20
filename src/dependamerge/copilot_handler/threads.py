@@ -23,6 +23,30 @@ from typing import Any
 
 from ..bot_identity import is_copilot
 
+# Phrases typical of automation suggestions that are safe to resolve
+SAFE_PATTERNS = (
+    "use: ubuntu-24.04",
+    "consider using",
+    "you might want to",
+    "suggestion:",
+    "performance:",
+    "style:",
+    "formatting",
+    "indentation",
+    "whitespace",
+)
+
+# Keywords that might need human attention; any one keeps a thread open
+UNSAFE_PATTERNS = (
+    "security",
+    "vulnerability",
+    "critical",
+    "error",
+    "bug",
+    "broken",
+    "incorrect",
+)
+
 
 class _CopilotThreadMixin:
     """Thread-level Copilot handling shared into ``CopilotCommentHandler``."""
@@ -86,34 +110,93 @@ class _CopilotThreadMixin:
 
     def is_copilot_thread(self, thread: dict[str, Any]) -> bool:
         """
-        Check if a review thread contains Copilot comments.
+        Check if Copilot opened a review thread.
+
+        Only the author of the thread's first comment counts: a reply by
+        Copilot, or a body that mentions Copilot, does not make a human
+        reviewer's thread Copilot's.
 
         Args:
             thread: Review thread data
 
         Returns:
-            True if thread contains Copilot comments
+            True if Copilot wrote the thread's first comment
         """
-        comments = (thread.get("comments") or {}).get("nodes", [])
+        comments = (thread.get("comments") or {}).get("nodes") or []
+        if not comments:
+            return False
+        author = (comments[0] or {}).get("author") or {}
+        return is_copilot(author.get("login"))
 
-        for comment in comments:
-            author = comment.get("author", {})
-            if author and is_copilot(author.get("login")):
-                return True
+    async def read_all_thread_comments(self, thread: dict[str, Any]) -> bool:
+        """
+        Read every page of a review thread's comments into ``thread``.
 
-            # Also check comment body for Copilot patterns
-            body = comment.get("body", "").lower()
-            if any(
-                pattern in body
-                for pattern in ["github copilot", "copilot suggestion", "🤖"]
-            ):
-                return True
+        The comments fetched with the thread are only the first page.  The
+        remaining pages are appended to ``thread["comments"]["nodes"]`` and
+        its ``pageInfo`` is updated to match, so
+        :meth:`is_safe_copilot_thread_to_resolve` can tell a complete read
+        from a partial one.
 
-        return False
+        Args:
+            thread: Review thread data, updated in place
+
+        Returns:
+            True if every comment of the thread has been read
+        """
+        from ..github_graphql import GET_REVIEW_THREAD_COMMENTS
+
+        thread_id = thread.get("id")
+        comments = thread.get("comments")
+        if not isinstance(comments, dict):
+            self.log.debug(f"Thread {thread_id} carries no comments object")
+            return False
+        nodes = comments.get("nodes")
+        page_info = comments.get("pageInfo")
+        if not isinstance(nodes, list) or not isinstance(page_info, dict):
+            self.log.debug(f"Thread {thread_id} carries no comment page data")
+            return False
+
+        seen_cursors: set[str] = set()
+        while page_info.get("hasNextPage"):
+            cursor = page_info.get("endCursor")
+            if not thread_id or not cursor or cursor in seen_cursors:
+                self.log.debug(
+                    f"Cannot read further comments of thread {thread_id}: "
+                    f"no usable cursor ({cursor!r})"
+                )
+                return False
+            seen_cursors.add(cursor)
+            try:
+                result = await self.github_client.graphql(
+                    GET_REVIEW_THREAD_COMMENTS,
+                    {"threadId": thread_id, "cursor": cursor},
+                )
+                page = result["node"]["comments"]
+                page_nodes = page["nodes"]
+                next_info = page["pageInfo"]
+                if not isinstance(page_nodes, list) or not isinstance(next_info, dict):
+                    raise TypeError("malformed comments page")
+            except Exception as e:
+                self.log.debug(
+                    f"Failed to read further comments of thread {thread_id}: {e}"
+                )
+                return False
+            nodes.extend(page_nodes)
+            page_info = next_info
+            comments["pageInfo"] = page_info
+
+        return True
 
     def is_safe_copilot_thread_to_resolve(self, thread: dict[str, Any]) -> bool:
         """
         Check if a Copilot thread is safe to auto-resolve.
+
+        A thread is not safe when it is already resolved, when its
+        comments have not all been read, when any comment is not an object
+        with a string body, or when any comment contains an unsafe keyword;
+        the keyword test applies to outdated threads too.
+        Every other thread is safe.
 
         Args:
             thread: Review thread data
@@ -121,47 +204,47 @@ class _CopilotThreadMixin:
         Returns:
             True if safe to resolve automatically
         """
+        thread_id = thread.get("id")
+
         if thread.get("isResolved", False):
             return False  # Already resolved
+
+        comments_data = thread.get("comments") or {}
+        page_info = comments_data.get("pageInfo")
+        comments = comments_data.get("nodes")
+        if (
+            not isinstance(page_info, dict)
+            or page_info.get("hasNextPage") is not False
+            or not isinstance(comments, list)
+        ):
+            self.log.debug(
+                f"Thread {thread_id} not safe to resolve: its comments were not all read"
+            )
+            return False
+
+        bodies: list[str] = []
+        for comment in comments:
+            body = comment.get("body") if isinstance(comment, dict) else None
+            if not isinstance(body, str):
+                self.log.debug(
+                    f"Thread {thread_id} not safe to resolve: a comment has no readable body"
+                )
+                return False
+            bodies.append(body.lower())
+
+        for body in bodies:
+            unsafe = [p for p in UNSAFE_PATTERNS if p in body]
+            if unsafe:
+                self.log.debug(
+                    f"Thread {thread_id} not safe to resolve: unsafe keyword {unsafe[0]!r}"
+                )
+                return False
 
         if thread.get("isOutdated", False):
             return True  # Outdated threads are usually safe to resolve
 
-        # Check if this is a common/safe Copilot suggestion
-        comments = (thread.get("comments") or {}).get("nodes", [])
-
-        for comment in comments:
-            body = comment.get("body", "").lower()
-
-            # Safe patterns that are typically automation suggestions
-            safe_patterns = [
-                "use: ubuntu-24.04",
-                "consider using",
-                "you might want to",
-                "suggestion:",
-                "performance:",
-                "style:",
-                "formatting",
-                "indentation",
-                "whitespace",
-            ]
-
-            if any(pattern in body for pattern in safe_patterns):
-                return True
-
-            # Unsafe patterns that might need human attention
-            unsafe_patterns = [
-                "security",
-                "vulnerability",
-                "critical",
-                "error",
-                "bug",
-                "broken",
-                "incorrect",
-            ]
-
-            if any(pattern in body for pattern in unsafe_patterns):
-                return False
+        if any(p in body for body in bodies for p in SAFE_PATTERNS):
+            self.log.debug(f"Thread {thread_id} matches a safe Copilot phrase")
 
         # Default to safe for general Copilot suggestions
         return True
@@ -242,11 +325,14 @@ class _CopilotThreadMixin:
         # Filter for unresolved Copilot threads that are safe to resolve
         copilot_threads = []
         for thread in all_threads:
-            if (
-                self.is_copilot_thread(thread)
-                and not thread.get("isResolved", False)
-                and self.is_safe_copilot_thread_to_resolve(thread)
-            ):
+            if not self.is_copilot_thread(thread) or thread.get("isResolved", False):
+                continue
+            if not await self.read_all_thread_comments(thread):
+                self.log.debug(
+                    f"Skipping thread {thread.get('id')}: its comments could not all be read"
+                )
+                continue
+            if self.is_safe_copilot_thread_to_resolve(thread):
                 copilot_threads.append(thread)
 
         if not copilot_threads:

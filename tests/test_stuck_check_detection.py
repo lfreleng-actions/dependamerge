@@ -467,6 +467,65 @@ class TestDetectStuckDcoStatusContexts:
         assert age >= STUCK_CHECK_THRESHOLD_SECONDS
 
 
+class TestDetectStuckBeyondTheFirstPage:
+    """A stuck required check is found wherever it sits in the listing."""
+
+    @staticmethod
+    async def _detect(
+        check_runs: list[dict[str, Any]], statuses: list[dict[str, Any]]
+    ) -> tuple[bool, str | None, float]:
+        from dependamerge.github_async import GitHubAsync
+        from tests.conftest import FakeCommitListings
+
+        mgr, _client = _make_manager()
+        old = datetime.now(UTC) - timedelta(seconds=STUCK_CHECK_THRESHOLD_SECONDS + 30)
+        fake = FakeCommitListings(
+            check_runs,
+            statuses,
+            other={"/pulls/342": {"created_at": _iso(old), "updated_at": _iso(old)}},
+        )
+        async with GitHubAsync(token="t") as api:
+            fake.install(api)
+            api.get_required_status_checks = AsyncMock(  # type: ignore[method-assign]
+                return_value=[{"context": "build"}]
+            )
+            mgr._github_client = api
+            result: tuple[bool, str | None, float]
+            result = await mgr._detect_stuck_required_check(_make_pr_info())
+            return result
+
+    @staticmethod
+    def _fillers(count: int) -> list[dict[str, Any]]:
+        return [
+            {"name": f"job-{i}", "status": "completed", "conclusion": "success"}
+            for i in range(count)
+        ]
+
+    @pytest.mark.xfail(strict=True, reason="stuck detection reads one page")
+    @pytest.mark.asyncio
+    async def test_stuck_required_run_on_second_page(self) -> None:
+        old = datetime.now(UTC) - timedelta(seconds=STUCK_CHECK_THRESHOLD_SECONDS + 30)
+        runs = self._fillers(120) + [
+            {"name": "build", "status": "in_progress", "started_at": _iso(old)}
+        ]
+
+        is_stuck, name, _age = await self._detect(runs, [])
+
+        assert (is_stuck, name) == (True, "build")
+
+    @pytest.mark.xfail(strict=True, reason="stuck detection reads one page")
+    @pytest.mark.asyncio
+    async def test_stuck_required_status_on_second_page(self) -> None:
+        old = datetime.now(UTC) - timedelta(seconds=STUCK_CHECK_THRESHOLD_SECONDS + 30)
+        statuses = [{"context": f"ctx-{i}", "state": "success"} for i in range(120)] + [
+            {"context": "DCO", "state": "pending", "updated_at": _iso(old)}
+        ]
+
+        is_stuck, name, _age = await self._detect([], statuses)
+
+        assert (is_stuck, name) == (True, "DCO")
+
+
 class TestDetectStuckDcoRobustness:
     """Defensive behaviour when the GitHub API misbehaves."""
 

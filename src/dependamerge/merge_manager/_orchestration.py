@@ -68,6 +68,7 @@ class _OrchestrationMixin(_MergeManagerBase):
         self._last_merge_was_answered.clear()
         self._local_rebase_refused.clear()
         self._rebase_requested.clear()
+        self._rebase_suppressed.clear()
         # The block-reason memo lives on the client rather than here,
         # but it is run-scoped for the same reason and its expiry window
         # can outlast the gap between two runs.

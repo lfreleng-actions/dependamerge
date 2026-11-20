@@ -65,9 +65,18 @@ class _MergeConflictWaitMixin(_FailureSummaryFromExceptionMixin):
         best-effort here — a subsequent dependabot force-push dismisses
         it when the branch enables "dismiss stale reviews", which is the
         documented trade-off of not waiting to approve the rebased head.
+
+        A request the cooldown held back still arms auto-merge, but
+        neither the status line nor the result claims a rebase.
         """
-        if not already_rebasing:
+        note: str | None = None
+        if already_rebasing:
+            self._rebase_suppressed.pop(f"{owner}/{repo}#{pr_info.number}", None)
+        else:
             await self._request_dependabot_rebase(pr_info, owner, repo)
+            note = self._rebase_suppressed.get(
+                f"{pr_info.repository_full_name}#{pr_info.number}"
+            )
         try:
             await self._approve_pr(owner, repo, pr_info.number)
         except PullRequestStopSignal:
@@ -84,7 +93,11 @@ class _MergeConflictWaitMixin(_FailureSummaryFromExceptionMixin):
         auto_ok = await self._enable_auto_merge_for_pr(pr_info, owner, repo)
         if auto_ok:
             result.status = MergeStatus.AUTO_MERGE_PENDING
-            result.error = "auto-merge pending: conflict rebase requested (no-wait)"
+            result.error = (
+                f"auto-merge pending: merge conflicts; {note} (no-wait)"
+                if note
+                else "auto-merge pending: conflict rebase requested (no-wait)"
+            )
             self._pr_status(
                 f"⏳ Auto-merge armed (no-wait): {pr_info.html_url}",
                 level="info",
@@ -97,7 +110,9 @@ class _MergeConflictWaitMixin(_FailureSummaryFromExceptionMixin):
             # but will not merge on its own.
             result.status = MergeStatus.BLOCKED
             result.error = (
-                "auto-merge unavailable (no-wait); PR approved and "
+                f"auto-merge unavailable (no-wait); PR approved but not merged; {note}"
+                if note
+                else "auto-merge unavailable (no-wait); PR approved and "
                 "rebase requested but not merged"
             )
             self._pr_status(
@@ -135,10 +150,9 @@ class _MergeConflictWaitMixin(_FailureSummaryFromExceptionMixin):
         else:
             continue_states = ("blocked", "behind", "unstable", "unknown", "")
         # The rebase landed; what remains is a wait on required checks.
-        # No counting here: ``_request_dependabot_rebase`` above owns
-        # the cumulative "Rebased" total, and deliberately counts
-        # nothing when its duplicate guard finds a macro an earlier run
-        # already posted.
+        # No counting here: ``_request_dependabot_rebase`` owns the
+        # cumulative "Rebased" total, and deliberately counts nothing
+        # when it finds a request in flight or cooling down.
         self._track_pr_state(pr_info, "waiting")
         try:
             return await self._wait_for_auto_merge(

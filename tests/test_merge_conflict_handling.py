@@ -14,10 +14,12 @@ and enabling auto-merge.  Any other author is reported and failed fast
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from dependamerge.github_async import IssueComments
 from dependamerge.merge_manager import MergeResult, MergeStatus
 from dependamerge.models import PullRequestInfo
 from tests.conftest import make_merge_manager
@@ -75,13 +77,29 @@ class TestRequestDependabotRebase:
 
     @pytest.mark.asyncio
     async def test_skips_when_rebase_comment_exists(self) -> None:
-        """An existing rebase request is treated as in-flight (no dup)."""
+        """A recent rebase request on an unmoved head is in flight (no dup)."""
         mgr, client = make_merge_manager()
-        client.get = AsyncMock(return_value=[{"body": "@dependabot rebase"}])
+        client.list_issue_comments = AsyncMock(
+            return_value=IssueComments(
+                [
+                    {
+                        "body": "@dependabot rebase",
+                        "created_at": "2026-11-20T11:34:58Z",
+                    }
+                ]
+            )
+        )
+        client.get = AsyncMock(
+            return_value={"commit": {"committer": {"date": "2026-11-20T11:00:00Z"}}}
+        )
         client.post_issue_comment = AsyncMock()
         pr = _make_pr()
 
-        ok = await mgr._request_dependabot_rebase(pr, "owner", "repo")
+        with patch(
+            "dependamerge.merge_manager._rebase_request._utcnow",
+            return_value=datetime(2026, 11, 20, 11, 36, 58, tzinfo=UTC),
+        ):
+            ok = await mgr._request_dependabot_rebase(pr, "owner", "repo")
 
         assert ok is True
         client.post_issue_comment.assert_not_called()
@@ -90,7 +108,7 @@ class TestRequestDependabotRebase:
     async def test_posts_when_comment_listing_fails(self) -> None:
         """If we cannot list comments, post anyway (dup is harmless)."""
         mgr, client = make_merge_manager()
-        client.get = AsyncMock(side_effect=RuntimeError("boom"))
+        client.list_issue_comments = AsyncMock(side_effect=RuntimeError("boom"))
         client.post_issue_comment = AsyncMock()
         pr = _make_pr()
 

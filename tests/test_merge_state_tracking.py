@@ -16,12 +16,14 @@ point mapping ``MergeStatus`` onto the terminal counters.
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from dependamerge import rebase as rebase_module
+from dependamerge.github_async import IssueComments
 from dependamerge.merge_manager import MergeStatus
 from dependamerge.models import PullRequestInfo
 from dependamerge.progress_tracker import (
@@ -482,13 +484,24 @@ class TestMacroSitesRecordActivity:
 
     @pytest.mark.asyncio
     async def test_existing_rebase_comment_counts_nothing(self) -> None:
-        """A rebase requested by an earlier run is not ours to claim."""
+        """A rebase requested by an earlier run, still in flight, is not ours."""
         tracker = MagicMock()
         mgr, client = make_merge_manager(progress_tracker=tracker)
-        client.get = AsyncMock(return_value=[{"body": "@dependabot rebase"}])
+        client.list_issue_comments = AsyncMock(
+            return_value=IssueComments(
+                [{"body": "@dependabot rebase", "created_at": "2026-11-20T11:34:58Z"}]
+            )
+        )
+        client.get = AsyncMock(
+            return_value={"commit": {"committer": {"date": "2026-11-20T11:00:00Z"}}}
+        )
         client.post_issue_comment = AsyncMock()
 
-        assert await mgr._request_dependabot_rebase(_make_pr(), "org", "repo")
+        with patch(
+            "dependamerge.merge_manager._rebase_request._utcnow",
+            return_value=datetime(2026, 11, 20, 11, 40, tzinfo=UTC),
+        ):
+            assert await mgr._request_dependabot_rebase(_make_pr(), "org", "repo")
 
         tracker.record_rebase.assert_not_called()
         tracker.record_retrigger.assert_not_called()

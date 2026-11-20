@@ -34,7 +34,7 @@ from ..pr_poller import PullRequestStatePoller
 from ..progress_tracker import MergeProgressTracker
 from ..url_parser import default_github_host, derive_api_urls
 from ._base import _MergeManagerBase
-from ._constants import DEFAULT_MERGE_TIMEOUT
+from ._constants import DEFAULT_MERGE_TIMEOUT, DEFAULT_REBASE_COOLDOWN_HOURS
 from ._types import MergeResult
 
 
@@ -63,6 +63,7 @@ class _LifecycleMixin(_MergeManagerBase):
         host: str | None = None,
         preflight_repository: str | None = None,
         bot_policy: BotPolicy | None = None,
+        rebase_cooldown: float = DEFAULT_REBASE_COOLDOWN_HOURS,
     ):
         # Resolved through the package at call time rather than bound at
         # import time, so that a test rebinding the constant on
@@ -135,6 +136,7 @@ class _LifecycleMixin(_MergeManagerBase):
 
         # Centralised merge-operation timing
         self._init_merge_timing(merge_timeout)
+        self._init_rebase_cooldown(rebase_cooldown)
 
         # Track merge operations
         self._merge_semaphore = asyncio.Semaphore(concurrency)
@@ -293,6 +295,28 @@ class _LifecycleMixin(_MergeManagerBase):
             1, math.ceil(self._merge_timeout / self._merge_recheck_interval)
         )
 
+    def _init_rebase_cooldown(self, rebase_cooldown: float) -> None:
+        """Validate ``rebase_cooldown`` (hours) and store it in seconds.
+
+        ``0`` disables the cooldown.  A negative, non-finite or
+        non-numeric value (a Typer ``OptionInfo`` leaking through a
+        direct call, say) falls back to the default.
+        """
+        from dependamerge import merge_manager as _mm
+
+        try:
+            hours = float(rebase_cooldown)
+            if not math.isfinite(hours) or hours < 0:
+                raise ValueError(f"out of range: {hours}")
+        except (TypeError, ValueError):
+            self.log.warning(
+                "Invalid rebase_cooldown=%r; falling back to default of %g hours",
+                rebase_cooldown,
+                _mm.DEFAULT_REBASE_COOLDOWN_HOURS,
+            )
+            hours = _mm.DEFAULT_REBASE_COOLDOWN_HOURS
+        self._rebase_cooldown_seconds = hours * 3600.0
+
     def _init_failure_tracking(self) -> None:
         """Create the per-PR state that explains why a merge failed."""
         # Track last merge exception per PR for better error reporting
@@ -319,6 +343,11 @@ class _LifecycleMixin(_MergeManagerBase):
         # found under way).  Once the rebase lands, a refresh no longer
         # says "behind", so the pending classifier reads this instead.
         self._rebase_requested: set[str] = set()
+        # PRs whose ``@dependabot rebase`` was held back by the cooldown,
+        # mapped to the note that says when it was last requested and
+        # when the next request is allowed.  Neither requested nor
+        # "could not be posted": callers neither wait nor fall back.
+        self._rebase_suppressed: dict[str, str] = {}
 
     def __repr__(self) -> str:
         """Safe repr that never exposes the token value."""

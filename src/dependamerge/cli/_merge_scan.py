@@ -204,6 +204,7 @@ def _run_parallel_merge(
             fix_out_of_date=not ctx.no_fix,
             fix_semantic_title=ctx.fix_semantic_title,
             merge_timeout=ctx.merge_timeout,
+            rebase_cooldown=ctx.rebase_cooldown,
             progress_tracker=ctx.progress_tracker,
             preview_mode=preview,
             dismiss_copilot=ctx.dismiss_copilot,

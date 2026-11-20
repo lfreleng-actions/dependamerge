@@ -247,6 +247,8 @@ class _SinglePrOutcomeMixin(_SinglePrRecreateMixin):
             # A refused rebase never lands, so auto-merge cannot finish
             # the job; report the refusal instead of a pending merge.
             and flow.pr_key not in self._local_rebase_refused
+            # Nor does one the cooldown held back.
+            and flow.pr_key not in self._rebase_suppressed
         ):
             return None
         result.status = MergeStatus.AUTO_MERGE_PENDING

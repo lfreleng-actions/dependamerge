@@ -19,7 +19,7 @@ import dependamerge.cli as _pkg
 
 from ..bot_policy import BotPolicy
 from ..bot_policy_files import PolicyFiles
-from ..merge_manager import MergeResult
+from ..merge_manager import DEFAULT_REBASE_COOLDOWN_HOURS, MergeResult
 from ..models import ComparisonResult, PullRequestInfo
 from ..progress_tracker import MergeProgressTracker
 from ..repo_selection import RepoSelection
@@ -64,6 +64,8 @@ class _MergeContext:
     # Applies to owner/user-wide runs; ignored for single-PR and
     # single-repository merges.
     max_wait: float = DEFAULT_MAX_WAIT
+    # Hours between ``@dependabot rebase`` requests on one PR; 0 = none.
+    rebase_cooldown: float = DEFAULT_REBASE_COOLDOWN_HOURS
     # Owner-wide only: the repositories --include-repos or --exclude-repos
     # name.  ``None`` acts on every in-scope repository of the owner.
     repo_selection: RepoSelection | None = None

@@ -149,10 +149,13 @@ async def _run_dependabot_macro_path(
       GitHub merges server-side once the rebase lands and checks pass.
     - Auto-merge unavailable → leave the PR unmarked so Step 5.5
       still runs its bounded wait for the rebase + checks.
+    - Request held back by the cooldown → nothing to wait for and no
+      fallback: the PR goes on to the merge attempt as it stands, and
+      ``_rebased_prs`` stays unset (the manager skips Step 5.5 itself).
 
-    Returns True when the macro was posted (or was already pending);
-    False when it could not be requested — the caller then falls back
-    to the local-rebase path.
+    Returns True when the macro was posted, was already pending, or was
+    held back by the cooldown; False when it could not be requested ---
+    the caller then falls back to the local-rebase path.
     """
     if ctx.request_dependabot_rebase is None:
         return False
@@ -172,7 +175,13 @@ async def _run_dependabot_macro_path(
         )
         requested = False
     if not requested:
-        return False
+        if f"{owner}/{repo}#{pr_info.number}" not in ctx.suppressed_rebases:
+            return False
+        ctx.log.debug(
+            "Dependabot rebase cooling down, not rebasing: %s", pr_info.html_url
+        )
+        _set_tracker_state(ctx, pr_info, None)
+        return True
 
     try:
         auto_merge_ok = await ctx.enable_auto_merge(pr_info, owner, repo)
@@ -194,9 +203,9 @@ async def _run_dependabot_macro_path(
     ctx.log.debug("Rebase requested (dependabot macro): %s", pr_info.html_url)
     # No counting here: ``ctx.request_dependabot_rebase`` owns the
     # cumulative totals and records them only when it actually posts
-    # the macro (its duplicate guard returns True without posting when
-    # an earlier run already requested the rebase).  Counting again
-    # here would double the posted case and invent the guarded one.
+    # the macro (it returns True without posting while an earlier
+    # request is still in flight).  Counting again here would double
+    # the posted case and invent the in-flight one.
     _set_tracker_state(ctx, pr_info, None)
     return True
 

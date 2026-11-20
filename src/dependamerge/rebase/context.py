@@ -15,8 +15,8 @@ the dependabot macro path and the REST path alike.
 from __future__ import annotations
 
 import logging
-from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from rich.console import Console
@@ -69,14 +69,14 @@ class RebaseContext:
     # module performs itself — the local force-push path and the REST
     # ``update-branch`` path.  The ``@dependabot rebase`` macro path is
     # *not* counted here: ``request_dependabot_rebase`` owns the
-    # accounting for the macro (including its duplicate guard, which
+    # accounting for the macro (a request in flight or cooling down
     # counts nothing), and counting again would double it.
     record_rebase: Callable[[], None] | None = None
     # Optional async callable equivalent to
     # ``manager._request_dependabot_rebase``: posts ``@dependabot
-    # rebase`` on the PR (idempotent — the manager implementation
-    # skips duplicate comments) and returns True when the rebase is
-    # considered requested.  When provided, dependabot PRs that would
+    # rebase`` on the PR (paced: the manager implementation posts
+    # nothing while a recent request is in flight or cooling down) and
+    # returns True when the rebase is considered requested.  When provided, dependabot PRs that would
     # otherwise take the local-rebase path use the macro instead:
     # dependabot force-pushes a freshly *signed* rebase, so there is
     # no need to clone + rebase + sign locally (which can require
@@ -86,6 +86,12 @@ class RebaseContext:
     request_dependabot_rebase: (
         Callable[[PullRequestInfo, str, str], Awaitable[bool]] | None
     ) = None
+    # The manager's ``_rebase_suppressed``: PRs whose macro the cooldown
+    # held back, keyed ``owner/repo#number``.  A False from
+    # ``request_dependabot_rebase`` for a PR listed here means "no rebase
+    # is due", not "could not be posted", so the macro path neither
+    # falls back to a local or REST rebase nor records a refusal.
+    suppressed_rebases: Mapping[str, str] = field(default_factory=dict)
 
 
 @dataclass

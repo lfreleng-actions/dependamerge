@@ -299,6 +299,7 @@ class TestGraphQLRollupExtraction:
         assert GitHubService._extract_failing_checks({}) == []
 
 
+@pytest.mark.usefixtures("listings_via_get")
 class TestRestCheckRunPath:
     """The REST path is what produced the reports seen in the field."""
 

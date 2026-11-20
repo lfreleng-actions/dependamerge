@@ -187,6 +187,107 @@ def _detach_from_github_actions(monkeypatch):
         monkeypatch.delenv(name, raising=False)
 
 
+class FakeCommitListings:
+    """Serve a commit's check runs and statuses the way GitHub pages them.
+
+    ``get`` answers an unpaginated request with the first page at
+    GitHub's default size of 30; ``get_paginated`` honours ``per_page``
+    and stops after the last page.  ``fail_on`` names ``(listing,
+    page)`` pairs, with listing ``"check-runs"`` or ``"status"``, whose
+    request raises.  ``requests`` records each listing request made.
+    Any other path is answered from ``other``, keyed by path suffix.
+    """
+
+    def __init__(
+        self,
+        check_runs: list[dict[str, Any]] | None = None,
+        statuses: list[dict[str, Any]] | None = None,
+        *,
+        fail_on: set[tuple[str, int]] | None = None,
+        other: dict[str, Any] | None = None,
+    ) -> None:
+        self.listings = {
+            "check-runs": ("check_runs", self._numbered(check_runs)),
+            "status": ("statuses", self._numbered(statuses)),
+        }
+        self.fail_on = fail_on or set()
+        self.other = other or {}
+        self.requests: list[tuple[str, int]] = []
+
+    @staticmethod
+    def _numbered(entries: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+        """Give each entry an ``id``, as GitHub does, unless it has one."""
+        return [{"id": index, **entry} for index, entry in enumerate(entries or [], 1)]
+
+    def install(self, api: Any) -> None:
+        """Route *api*'s ``get`` and ``get_paginated`` through this fake."""
+        api.get = self.get
+        api.get_paginated = self.get_paginated
+
+    def _page(self, listing: str, page: int, per_page: int) -> dict[str, Any]:
+        self.requests.append((listing, page))
+        if (listing, page) in self.fail_on:
+            raise RuntimeError(f"502 Bad Gateway on {listing} page {page}")
+        key, entries = self.listings[listing]
+        start = (page - 1) * per_page
+        return {
+            "total_count": len(entries),
+            key: entries[start : start + per_page],
+        }
+
+    @staticmethod
+    def _listing(path: str) -> str | None:
+        for listing in ("check-runs", "status"):
+            if path.endswith(f"/{listing}"):
+                return listing
+        return None
+
+    async def get(self, path: str, params: dict[str, Any] | None = None) -> Any:
+        listing = self._listing(path)
+        if listing is not None:
+            return self._page(listing, 1, 30)
+        for suffix, value in self.other.items():
+            if path.endswith(suffix):
+                return value
+        return {}
+
+    async def get_paginated(
+        self,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+        per_page: int = 100,
+        max_pages: int | None = None,
+    ):
+        listing = self._listing(path)
+        assert listing is not None, path
+        total = len(self.listings[listing][1])
+        page = 1
+        while True:
+            yield self._page(listing, page, per_page)
+            if page * per_page >= total:
+                return
+            page += 1
+
+
+@pytest.fixture
+def listings_via_get(monkeypatch):
+    """Serve ``GitHubAsync.get_paginated`` as one page from its ``get``.
+
+    For tests that route a mocked ``get`` by URL.  The check-run and
+    commit-status listings are read through ``get_paginated``, which
+    would otherwise reach the real transport.
+    """
+    from dependamerge.github_async import GitHubAsync
+
+    async def _one_page(self, path, *, params=None, per_page=100, max_pages=None):
+        page = await self.get(path)
+        if page:
+            yield page
+
+    monkeypatch.setattr(GitHubAsync, "get_paginated", _one_page)
+
+
 @pytest.fixture(scope="session")
 def _empty_config_home(tmp_path_factory: pytest.TempPathFactory) -> Path:
     return Path(tmp_path_factory.mktemp("config-home"))

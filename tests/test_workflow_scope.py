@@ -296,6 +296,7 @@ class TestDetectBranchProtectionKind:
         assert "release/v1" not in seen_paths[0]
 
 
+@pytest.mark.usefixtures("listings_via_get")
 class TestAnalyzeBlockReasonFallback:
     """The catch-all fallback must be ruleset-aware and non-asserting."""
 

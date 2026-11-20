@@ -23,6 +23,7 @@ import httpx
 from aiolimiter import AsyncLimiter
 
 if TYPE_CHECKING:
+    from ._commit_listings import CommitReading
     from ._content_limiter import ContentLimiter
     from ._errors import PermissionError
     from ._throttling import _Budget, _ResizableSemaphore
@@ -152,6 +153,14 @@ class _GitHubAsyncBase:
         async def get_branch_protection(
             self, owner: str, repo: str, branch: str
         ) -> dict[str, Any]: ...
+
+        async def read_check_runs_for_ref(
+            self, owner: str, repo: str, ref: str
+        ) -> CommitReading: ...
+
+        async def read_commit_statuses(
+            self, owner: str, repo: str, ref: str
+        ) -> CommitReading: ...
 
         async def _resolve_default_branch(
             self, owner: str, repo: str

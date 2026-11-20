@@ -63,8 +63,12 @@ class _RequiredChecksMixin(_GitHubAsyncBase):
         ruleset request failed (so the caller must not cache the verdict).
         """
         checks: list[dict[str, Any]] = []
+        rulesets: list[Any] = []
         try:
-            rulesets = await self.get(f"/repos/{owner}/{repo}/rulesets?per_page=100")
+            async for page in self.get_paginated(f"/repos/{owner}/{repo}/rulesets"):
+                if not isinstance(page, list):
+                    break
+                rulesets.extend(page)
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -73,8 +77,6 @@ class _RequiredChecksMixin(_GitHubAsyncBase):
                 exc_info=True,
             )
             return checks, False
-        if not isinstance(rulesets, list):
-            return checks, True
 
         reliable = True
         for ruleset in rulesets:

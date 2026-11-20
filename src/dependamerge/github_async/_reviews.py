@@ -13,6 +13,7 @@ branch from its base, and closing a pull request.
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass, field
 from typing import (
     Any,
 )
@@ -33,6 +34,23 @@ from ._errors import (
     _retry_after_seconds,
     github_error_detail,
 )
+
+#: Page size and page ceiling for :meth:`_ReviewsMixin.list_issue_comments`.
+ISSUE_COMMENTS_PAGE_SIZE = 100
+ISSUE_COMMENTS_MAX_PAGES = 10
+
+
+@dataclass(frozen=True)
+class IssueComments:
+    """A pull request's issue comments, and whether all of them were read.
+
+    ``complete`` is False when a request failed, a payload or comment was
+    malformed, or the page ceiling was reached, so ``comments`` may lack
+    entries.
+    """
+
+    comments: list[dict[str, Any]] = field(default_factory=list)
+    complete: bool = True
 
 
 class _ReviewsMixin(_GitHubAsyncBase):
@@ -239,6 +257,54 @@ class _ReviewsMixin(_GitHubAsyncBase):
             # If we can't get review comments, return empty list
             self.log.debug(f"Could not fetch review comments for PR {number}: {e}")
             return []
+
+    async def list_issue_comments(
+        self, owner: str, repo: str, number: int
+    ) -> IssueComments:
+        """Read every issue comment on a pull request, oldest first.
+
+        REST: GET /repos/{owner}/{repo}/issues/{issue_number}/comments
+
+        The endpoint has no ``direction`` parameter: it always answers in
+        ascending order, so the newest comments sit on the *last* page.
+        Reading stops at ``ISSUE_COMMENTS_MAX_PAGES``; a full final page
+        there, a failed request, an unexpected payload or a comment that
+        is not an object leaves the reading incomplete, and callers
+        decide what an unknown tail means.
+        """
+        comments: list[dict[str, Any]] = []
+        pages = 0
+        last_full = False
+        malformed = False
+        try:
+            async for page in self.get_paginated(
+                f"/repos/{owner}/{repo}/issues/{number}/comments",
+                per_page=ISSUE_COMMENTS_PAGE_SIZE,
+                max_pages=ISSUE_COMMENTS_MAX_PAGES,
+                yield_malformed=True,
+            ):
+                if not isinstance(page, list):
+                    return IssueComments(comments, complete=False)
+                pages += 1
+                for comment in page:
+                    if isinstance(comment, dict):
+                        comments.append(comment)
+                    else:
+                        malformed = True
+                last_full = len(page) >= ISSUE_COMMENTS_PAGE_SIZE
+        except Exception as exc:
+            self.log.debug(
+                "Could not read every comment on %s/%s#%s: %s",
+                owner,
+                repo,
+                number,
+                exc,
+            )
+            return IssueComments(comments, complete=False)
+        complete = not malformed and not (
+            pages >= ISSUE_COMMENTS_MAX_PAGES and last_full
+        )
+        return IssueComments(comments, complete=complete)
 
     async def post_issue_comment(
         self, owner: str, repo: str, number: int, body: str

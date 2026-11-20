@@ -435,7 +435,8 @@ jobs:
 
 The action always runs non-interactively (`--no-confirm --no-progress`) on
 Linux and macOS runners; it refuses Windows runners. It acts on GitHub alone: it
-skips GitHub2Gerrit PRs and reports them as skipped, and it withholds any Gerrit
+skips GitHub2Gerrit PRs and reports them as skipped (as it does a PR whose
+comments it cannot read in full to rule out a mapping), and it withholds any Gerrit
 credentials it inherits, so a Gerrit target fails rather than submitting
 changes. It always addresses the GitHub server running the workflow: it refuses
 a target on any other host and ignores host settings inherited from the caller.

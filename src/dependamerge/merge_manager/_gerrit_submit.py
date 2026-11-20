@@ -43,7 +43,14 @@ class _GerritSubmitMixin(_GerritSubmitStepsMixin):
         pr_number: int,
     ) -> GitHub2GerritDetectionResult:
         """
-        Fetch issue comments for a PR and check for GitHub2Gerrit mapping.
+        Read a PR's issue comments and check for a GitHub2Gerrit mapping.
+
+        Every page is read.  When the reading is incomplete (a failed
+        request, or the page ceiling), the result carries
+        ``complete=False`` whether or not a mapping was found: the part
+        that was not read may hold a mapping, or a newer one than the
+        mapping found, so neither its absence nor the latest mapping is
+        established.
 
         Args:
             repo_owner: Repository owner.
@@ -53,20 +60,15 @@ class _GerritSubmitMixin(_GerritSubmitStepsMixin):
         Returns:
             Detection result with mapping data if found.
         """
+        if self._github_client is None:
+            return GitHub2GerritDetectionResult(complete=False)
+
         try:
-            if self._github_client is None:
-                raise RuntimeError("GitHub client not initialized")
-
-            # Fetch issue comments (not review comments) via REST API
-            comments = await self._github_client.get(
-                f"/repos/{repo_owner}/{repo_name}/issues/{pr_number}/comments"
+            reading = await self._github_client.list_issue_comments(
+                repo_owner, repo_name, pr_number
             )
-
-            if not isinstance(comments, list):
-                return GitHub2GerritDetectionResult()
-
-            return detect_github2gerrit_comments(comments)
-
+            result = detect_github2gerrit_comments(list(reading.comments))
+            complete = bool(reading.complete)
         except Exception as exc:
             self.log.debug(
                 "Failed to check GitHub2Gerrit comments for %s/%s#%d: %s",
@@ -75,7 +77,17 @@ class _GerritSubmitMixin(_GerritSubmitStepsMixin):
                 pr_number,
                 exc,
             )
-            return GitHub2GerritDetectionResult()
+            return GitHub2GerritDetectionResult(complete=False)
+        if not complete:
+            self.log.debug(
+                "Could not read every comment on %s/%s#%d to establish its "
+                "latest GitHub2Gerrit mapping",
+                repo_owner,
+                repo_name,
+                pr_number,
+            )
+            result.complete = False
+        return result
 
     async def _submit_gerrit_change(
         self,

@@ -63,21 +63,27 @@ class _StaleHeadRecoveryMixin(_MergeManagerBase):
 
         Returns:
             True when retrying the merge now cannot help: a dependabot
-            rebase is under way with auto-merge armed to finish it, or the
-            rebase was refused.  False when nothing conclusive happened (a
-            macro that could not be posted, or auto-merge that could not
-            be armed), so a bounded back-off should decide instead of
-            reporting a running rebase as failed.
+            rebase is under way with auto-merge armed to finish it, the
+            rebase was refused, or the cooldown held the request back.
+            False when nothing conclusive happened (a macro that could
+            not be posted, or auto-merge that could not be armed), so a
+            bounded back-off should decide instead of reporting a running
+            rebase as failed.
         """
         # GitHub says the PR is behind, so correct the shared snapshot
         # first: later classification (auto-merge pending) reads it too.
         pr_info.mergeable_state = "behind"
-        if is_dependabot(pr_info.author) and (
-            self._dependabot_is_rebasing(pr_info.body)
-            or await self._request_dependabot_rebase(pr_info, owner, repo)
-        ):
-            self._rebase_requested.add(f"{owner}/{repo}#{pr_info.number}")
-            return await self._enable_auto_merge_with_approval(pr_info, owner, repo)
+        if is_dependabot(pr_info.author):
+            # The request helper honours dependabot's "rebasing" notice
+            # itself, and clears any suppression an earlier step left.
+            if await self._request_dependabot_rebase(pr_info, owner, repo):
+                self._rebase_requested.add(f"{owner}/{repo}#{pr_info.number}")
+                return await self._enable_auto_merge_with_approval(pr_info, owner, repo)
+            if f"{owner}/{repo}#{pr_info.number}" in self._rebase_suppressed:
+                # The cooldown held the request back: no rebase is coming
+                # and none is refused, so retrying cannot help and the
+                # rejection is reported as it stands.
+                return True
         return await self._refuse_unsigned_rebase(pr_info, owner, repo)
 
     async def _recover_stale_head_rejection(

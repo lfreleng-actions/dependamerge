@@ -23,6 +23,15 @@ from __future__ import annotations
 DEFAULT_MERGE_TIMEOUT: float = 300.0  # seconds (5 minutes)
 DEFAULT_MERGE_RECHECK_INTERVAL: float = 10.0  # seconds between polls
 
+# ``@dependabot rebase`` pacing.  A request younger than
+# ``REBASE_IN_FLIGHT_SECONDS``, on a head that has not moved since, is a
+# rebase still under way: callers wait for it rather than ask again.
+# Past that, a request younger than the cooldown (``--rebase-cooldown``,
+# in hours; 0 disables it) is not repeated, so a pull request is asked at
+# most three times a day by default however often runs come round.
+REBASE_IN_FLIGHT_SECONDS: float = 1800.0
+DEFAULT_REBASE_COOLDOWN_HOURS: float = 8.0
+
 # After a sibling PR merges (or a concurrent dependamerge run lands a
 # change), GitHub recomputes a PR's mergeability asynchronously and
 # briefly reports ``mergeable=null`` / ``mergeable_state="unknown"`` —

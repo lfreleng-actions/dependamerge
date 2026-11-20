@@ -77,6 +77,7 @@ class _SinglePrRebaseMixin(_MergeManagerBase):
             track_pr_state=self._track_pr_state,
             record_rebase=self._record_rebase,
             request_dependabot_rebase=self._request_dependabot_rebase,
+            suppressed_rebases=self._rebase_suppressed,
         )
         outcome = await rebase.perform_step5_rebase(
             ctx=rebase_ctx,

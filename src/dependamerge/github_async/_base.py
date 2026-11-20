@@ -110,6 +110,7 @@ class _GitHubAsyncBase:
             params: dict[str, Any] | None = None,
             per_page: int = 100,
             max_pages: int | None = None,
+            yield_malformed: bool = False,
         ) -> AsyncIterator[dict[str, Any] | list[Any]]: ...
 
         def _track_error(self, error_type: str) -> None: ...

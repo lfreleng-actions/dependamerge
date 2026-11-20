@@ -75,6 +75,7 @@ class _MergeManagerBase:
     _last_merge_was_answered: dict[str, bool]
     _local_rebase_refused: set[str]
     _rebase_requested: set[str]
+    _rebase_suppressed: dict[str, str]
     _max_wait: float | None
     _merge_dispatch_locks: dict[str, asyncio.Lock]
     _merge_dispatch_locks_lock: asyncio.Lock

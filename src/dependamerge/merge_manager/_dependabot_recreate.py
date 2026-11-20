@@ -179,18 +179,9 @@ class _DependabotRecreateMixin(_MergeManagerBase):
         if not self._github_client:
             return True
         try:
-            comments = await self._github_client.get(
-                f"/repos/{repo_owner}/{repo_name}/issues/{pr_info.number}/comments"
-                f"?per_page=100&direction=desc"
+            reading = await self._github_client.list_issue_comments(
+                repo_owner, repo_name, pr_info.number
             )
-            if _has_recreate_comment(comments):
-                self.log.info(
-                    "Found existing @dependabot recreate comment on "
-                    "%s#%s; skipping duplicate.",
-                    pr_info.repository_full_name,
-                    pr_info.number,
-                )
-                return True
         except Exception as e:
             self.log.warning(
                 "Could not list comments for %s#%s to check for existing "
@@ -198,6 +189,22 @@ class _DependabotRecreateMixin(_MergeManagerBase):
                 pr_info.repository_full_name,
                 pr_info.number,
                 e,
+            )
+            return True
+        if _has_recreate_comment(list(reading.comments)):
+            self.log.info(
+                "Found existing @dependabot recreate comment on "
+                "%s#%s; skipping duplicate.",
+                pr_info.repository_full_name,
+                pr_info.number,
+            )
+            return True
+        if not reading.complete:
+            self.log.warning(
+                "Could not read every comment on %s#%s to check for an "
+                "existing @dependabot recreate comment; not posting one.",
+                pr_info.repository_full_name,
+                pr_info.number,
             )
             return True
         return False

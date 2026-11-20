@@ -336,6 +336,7 @@ class _TransportMixin(_GitHubAsyncBase):
         params: dict[str, Any] | None = None,
         per_page: int = 100,
         max_pages: int | None = None,
+        yield_malformed: bool = False,
     ) -> AsyncIterator[dict[str, Any] | list[Any]]:
         """
         Iterate through a paginated REST collection.
@@ -345,13 +346,18 @@ class _TransportMixin(_GitHubAsyncBase):
         items in an object (``/actions/runs``, for instance), so callers
         check the shape before using it.  The annotation said ``dict``
         only, which was never true; the type is now honest about both.
+
+        Any empty payload ends the iteration silently.  With
+        ``yield_malformed`` only an empty list does; another empty
+        payload (``{}``, ``None``) is yielded, so a caller that must
+        know whether it read everything can tell it apart from the end.
         """
         page = 1
         while True:
             q = dict(params or {})
             q.update({"per_page": per_page, "page": page})
             r, data = await self._fetch_json("GET", f"{self.api_url}{path}", params=q)
-            if not data:
+            if not data and (not yield_malformed or data == []):
                 return
             yield data
             page += 1

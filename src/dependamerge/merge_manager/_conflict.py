@@ -16,80 +16,12 @@ import asyncio
 from ..bot_identity import is_dependabot
 from ..models import PullRequestInfo
 from ._conflict_wait import _MergeConflictWaitMixin
+from ._rebase_request import _RebaseRequestMixin
 from ._types import MergeResult, MergeStatus
 
 
-class _MergeConflictMixin(_MergeConflictWaitMixin):
+class _MergeConflictMixin(_RebaseRequestMixin, _MergeConflictWaitMixin):
     """Reacting to a pull request that conflicts with its base."""
-
-    async def _request_dependabot_rebase(
-        self, pr_info: PullRequestInfo, owner: str, repo: str
-    ) -> bool:
-        """Post ``@dependabot rebase`` on a conflicted dependabot PR.
-
-        Dependabot responds by rebasing the PR branch onto the latest
-        base, regenerating any lockfiles and re-signing the commit —
-        the reliable way to clear a ``uv.lock`` / dependency conflict
-        that a plain ``git rebase`` cannot resolve.
-
-        Guards against duplicate comments: when a ``@dependabot
-        rebase`` is already present the request is treated as
-        in-flight and ``True`` is returned (the caller proceeds to
-        wait).  Returns ``False`` only when the comment could not be
-        posted.
-        """
-        if self._github_client is None:
-            return False
-
-        # Duplicate guard — don't stack rebase requests if one is
-        # already pending from a previous run / trigger.
-        try:
-            comments = await self._github_client.get(
-                f"/repos/{owner}/{repo}/issues/{pr_info.number}/comments"
-                f"?per_page=100&direction=desc"
-            )
-            if isinstance(comments, list):
-                for c in comments:
-                    if not isinstance(c, dict):
-                        continue
-                    body = c.get("body")
-                    if isinstance(body, str) and "@dependabot rebase" in body:
-                        self.log.info(
-                            "Existing @dependabot rebase comment on %s#%s; "
-                            "treating rebase as already requested.",
-                            pr_info.repository_full_name,
-                            pr_info.number,
-                        )
-                        return True
-        except Exception as exc:
-            # If we can't list comments, fall through and post anyway:
-            # a duplicate rebase request is harmless (dependabot just
-            # rebases again) and is better than skipping recovery.
-            self.log.debug(
-                "Could not list comments for %s#%s before rebase request: %s",
-                pr_info.repository_full_name,
-                pr_info.number,
-                exc,
-            )
-
-        try:
-            await self._github_client.post_issue_comment(
-                owner, repo, pr_info.number, "@dependabot rebase"
-            )
-            # One macro comment and one rebase request: both totals
-            # move.  The duplicate-guard path above deliberately does
-            # not count — that rebase was requested by an earlier run.
-            self._record_retrigger()
-            self._record_rebase()
-            return True
-        except Exception as exc:
-            self.log.warning(
-                "Failed to post @dependabot rebase on %s#%s: %s",
-                pr_info.repository_full_name,
-                pr_info.number,
-                exc,
-            )
-            return False
 
     def _dependabot_is_rebasing(self, body: str | None) -> bool:
         """Return True when a PR body shows dependabot mid-self-rebase.
@@ -117,6 +49,9 @@ class _MergeConflictMixin(_MergeConflictWaitMixin):
         summary prints.  Without the mark the confirmation step cannot
         withdraw it, and an operator is sent to resolve a conflict that
         is no longer there.
+
+        When the cooldown held back the rebase request, the reason says
+        when one was last made and when the next is allowed.
         """
         self._pr_status(
             f"🔀 Merge conflict: {pr_info.html_url}",
@@ -124,7 +59,10 @@ class _MergeConflictMixin(_MergeConflictWaitMixin):
         )
         result.status = MergeStatus.FAILED
         result.merge_refused = True
-        result.error = "merge conflicts"
+        note = self._rebase_suppressed.get(
+            f"{pr_info.repository_full_name}#{pr_info.number}"
+        )
+        result.error = f"merge conflicts; {note}" if note else "merge conflicts"
         return result
 
     async def _ensure_rebase_requested(
@@ -134,19 +72,23 @@ class _MergeConflictMixin(_MergeConflictWaitMixin):
 
         Dependabot's rebase regenerates the lockfile and signs the
         commit; when it is already rebasing on its own we say so and
-        leave it to finish rather than sending a duplicate macro.
+        leave it to finish rather than sending a duplicate macro.  A
+        request the cooldown held back prints its own line instead.
         """
         if already_rebasing:
+            self._rebase_suppressed.pop(f"{owner}/{repo}#{pr_info.number}", None)
             self._pr_status(
                 f"🔄 Dependabot already rebasing: {pr_info.html_url}",
                 level="info",
             )
             return True
-        self._pr_status(
-            f"🔄 Requesting dependabot rebase: {pr_info.html_url}",
-            level="info",
-        )
-        return await self._request_dependabot_rebase(pr_info, owner, repo)
+        requested = await self._request_dependabot_rebase(pr_info, owner, repo)
+        if f"{owner}/{repo}#{pr_info.number}" not in self._rebase_suppressed:
+            self._pr_status(
+                f"🔄 Requesting dependabot rebase: {pr_info.html_url}",
+                level="info",
+            )
+        return requested
 
     async def _handle_merge_conflict(
         self,

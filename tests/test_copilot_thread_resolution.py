@@ -17,8 +17,6 @@ from dependamerge.github_graphql import (
     RESOLVE_REVIEW_THREAD,
 )
 
-XFAIL = pytest.mark.xfail(strict=True, reason="Copilot thread judgement not fixed yet")
-
 COPILOT = "copilot-pull-request-reviewer"
 HUMAN = "octocat"
 
@@ -112,7 +110,6 @@ async def _run(
 class TestCopilotThreadIdentity:
     """A thread is Copilot's only when Copilot wrote its first comment."""
 
-    @XFAIL
     async def test_human_thread_mentioning_copilot_is_not_resolved(self) -> None:
         threads = [
             _thread(
@@ -133,12 +130,10 @@ class TestCopilotThreadIdentity:
         assert result == (0, 2)
         assert _resolved_ids(client) == []
 
-    @XFAIL
     def test_human_thread_with_copilot_reply_is_not_copilots(self) -> None:
         thread = _thread("T1", [_comment(HUMAN, "Fix this"), _comment(COPILOT, "Done")])
         assert not CopilotCommentHandler(MagicMock()).is_copilot_thread(thread)
 
-    @XFAIL
     def test_thread_without_readable_first_author_is_not_copilots(self) -> None:
         handler = CopilotCommentHandler(MagicMock())
         assert not handler.is_copilot_thread(
@@ -164,7 +159,6 @@ class TestCopilotThreadIdentity:
 class TestCopilotThreadSafety:
     """Any unsafe keyword in a thread keeps it open."""
 
-    @XFAIL
     def test_unsafe_keyword_beats_safe_phrase_in_one_comment(self) -> None:
         thread = _thread(
             "T1",
@@ -179,7 +173,6 @@ class TestCopilotThreadSafety:
             thread
         )
 
-    @XFAIL
     def test_unsafe_keyword_in_later_comment(self) -> None:
         thread = _thread(
             "T1",
@@ -192,7 +185,6 @@ class TestCopilotThreadSafety:
             thread
         )
 
-    @XFAIL
     def test_outdated_thread_with_unsafe_keyword_is_not_safe(self) -> None:
         handler = CopilotCommentHandler(MagicMock())
         unsafe = _thread("T1", [_comment(COPILOT, "Vulnerability here")], outdated=True)
@@ -200,7 +192,6 @@ class TestCopilotThreadSafety:
         assert not handler.is_safe_copilot_thread_to_resolve(unsafe)
         assert handler.is_safe_copilot_thread_to_resolve(safe)
 
-    @XFAIL
     def test_unread_comment_pages_are_not_safe(self) -> None:
         thread = _thread(
             "T1", [_comment(COPILOT, "Nit")], has_next=True, end_cursor="c1"
@@ -229,7 +220,6 @@ class TestCopilotThreadResolution:
         assert result == (0, 1)
         assert _resolved_ids(client) == []
 
-    @XFAIL
     async def test_every_comment_page_is_read(self) -> None:
         first = [_comment(COPILOT, "Style: nit")] + [
             _comment(HUMAN, f"reply {i}") for i in range(10)
@@ -264,7 +254,6 @@ class TestCopilotThreadResolution:
         assert result == (1, 1)
         assert _resolved_ids(client) == ["T1"]
 
-    @XFAIL
     async def test_failed_comment_page_leaves_thread_unresolved(self) -> None:
         threads = [
             _thread("T1", [_comment(COPILOT, "Nit")], has_next=True, end_cursor="c1")
@@ -283,7 +272,6 @@ class TestCopilotThreadResolution:
         assert result == (1, 1)
         assert _resolved_ids(client) == []
 
-    @XFAIL
     @pytest.mark.parametrize(
         "malformed",
         [

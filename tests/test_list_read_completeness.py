@@ -123,7 +123,6 @@ class TestMergedPullRequestsSince:
 
 
 class TestPullRequestFiles:
-    @pytest.mark.xfail(strict=True, reason="short file list is debug only")
     @pytest.mark.asyncio
     async def test_a_failed_second_page_warns_and_keeps_the_first(
         self, caplog: pytest.LogCaptureFixture

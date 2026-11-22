@@ -80,12 +80,14 @@ See Also
 from __future__ import annotations
 
 import os
+from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from dependamerge.github_async import GitHubAsync
 from dependamerge.merge_manager import AsyncMergeManager
 from dependamerge.url_parser import set_gerrit_host, set_github_host
 
@@ -202,6 +204,26 @@ def _detach_from_user_config(monkeypatch, _empty_config_home: Path):
     user policy point ``XDG_CONFIG_HOME`` elsewhere themselves.
     """
     monkeypatch.setenv("XDG_CONFIG_HOME", str(_empty_config_home))
+
+
+@pytest.fixture
+def paginate_through_get(monkeypatch):
+    """Serve ``GitHubAsync.get_paginated`` from the instance's ``get``.
+
+    Tests that route every request through a ``gh.get`` mock predate the
+    paged ruleset list.  This answers a paged read with the single
+    ``{path}?per_page=100`` request they already expect, so their routes
+    and request counts stay as written.
+    """
+
+    async def get_paginated(
+        self: GitHubAsync, path: str, **_kwargs: Any
+    ) -> AsyncIterator[dict[str, Any] | list[Any]]:
+        page = await self.get(f"{path}?per_page=100")
+        if page:
+            yield page
+
+    monkeypatch.setattr(GitHubAsync, "get_paginated", get_paginated)
 
 
 def make_merge_manager(**overrides: Any) -> tuple[AsyncMergeManager, AsyncMock]:

@@ -209,8 +209,11 @@ class _OrgSettingsMixin(_MergeManagerBase):
         org- and repo-level ruleset, with all conditions already evaluated
         by GitHub.  Used only when the org-first path cannot decide (an
         unrecognised condition type, or org enumeration was unavailable).
-        On any error returns ``False`` so the reactive approve-on-demand
-        path remains the safety net rather than blocking the merge.
+        Every page is read before deciding: the endpoint returns 30 rules
+        a page by default, and a ``pull_request`` rule could lie beyond
+        the first.  On any error, or a page that is not a list, returns
+        ``False`` so the reactive approve-on-demand path remains the
+        safety net rather than blocking the merge.
         """
         if not self._github_client:
             return False
@@ -218,9 +221,18 @@ class _OrgSettingsMixin(_MergeManagerBase):
             # Branch names can contain "/" (e.g. "release/v1"); encode the
             # whole segment so it routes to the right endpoint rather than
             # 404ing and being mistaken for "no rules".
-            rules = await self._github_client.get(
-                f"/repos/{owner}/{repo}/rules/branches/{quote(branch, safe='')}"
-            )
+            rules: list[Any] = []
+            async for page in self._github_client.get_paginated(
+                f"/repos/{owner}/{repo}/rules/branches/{quote(branch, safe='')}",
+                yield_malformed=True,
+            ):
+                if not isinstance(page, list):
+                    self.log.debug(
+                        f"Unexpected effective branch rules page for "
+                        f"{owner}/{repo}@{branch}: {type(page).__name__}"
+                    )
+                    return False
+                rules.extend(page)
             return self._rules_require_approval(rules)
         except Exception as e:
             self.log.debug(

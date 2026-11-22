@@ -16,6 +16,10 @@ from ..models import (
 )
 from ._base import _GitHubServiceBase
 
+# Pages of 100 releases read looking past drafts and pre-releases.
+_LATEST_RELEASE_PER_PAGE = 100
+_LATEST_RELEASE_MAX_PAGES = 3
+
 
 class _StatusMixin(_GitHubServiceBase):
     """Organization status gathering for ``GitHubService``."""
@@ -146,11 +150,24 @@ class _StatusMixin(_GitHubServiceBase):
     async def _get_latest_release(
         self, owner: str, name: str
     ) -> tuple[str | None, str | None]:
-        """Get the latest production release (not draft/pre-release) and its date."""
+        """Get the latest production release (not draft/pre-release) and its date.
+
+        Reads on past pages of drafts and pre-releases, up to a small
+        page ceiling, rather than reporting "no release" for them.  When
+        the ceiling cuts the read short a warning says so.
+        """
         try:
-            # Use REST API to get releases
-            releases_data = await self._api.get(f"/repos/{owner}/{name}/releases")
-            if isinstance(releases_data, list):
+            pages_read = 0
+            last_page_full = False
+            async for releases_data in self._api.get_paginated(
+                f"/repos/{owner}/{name}/releases",
+                per_page=_LATEST_RELEASE_PER_PAGE,
+                max_pages=_LATEST_RELEASE_MAX_PAGES,
+            ):
+                if not isinstance(releases_data, list):
+                    break
+                pages_read += 1
+                last_page_full = len(releases_data) >= _LATEST_RELEASE_PER_PAGE
                 # Find first non-draft, non-prerelease
                 for release in releases_data:
                     if not release.get("draft") and not release.get("prerelease"):
@@ -164,6 +181,15 @@ class _StatusMixin(_GitHubServiceBase):
                             formatted_date = date_obj.strftime("%Y/%m/%d")
                             return release_name, formatted_date
                         return release_name, None
+            if last_page_full and pages_read >= _LATEST_RELEASE_MAX_PAGES:
+                self.log.warning(
+                    "Read the %d most recent releases of %s/%s without "
+                    "finding a production release; it may have one further "
+                    "back",
+                    pages_read * _LATEST_RELEASE_PER_PAGE,
+                    owner,
+                    name,
+                )
             return None, None
         except Exception as e:
             self.log.debug(f"Error getting latest release for {owner}/{name}: {e}")

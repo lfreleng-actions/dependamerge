@@ -1249,6 +1249,7 @@ class TestAnUnreadableRequiredCheckListIsNotEmpty:
     """
 
     @pytest.mark.asyncio
+    @pytest.mark.usefixtures("paginate_through_get")
     async def test_the_reliability_signal_reaches_the_caller(self) -> None:
         from dependamerge.github_async import GitHubAsync
 
@@ -1384,6 +1385,7 @@ class TestAnUnresolvedDefaultBranchIsUnreliable:
     """
 
     @pytest.mark.asyncio
+    @pytest.mark.usefixtures("paginate_through_get")
     async def test_it_is_not_reported_as_reliable(self) -> None:
         from dependamerge.github_async import GitHubAsync
 

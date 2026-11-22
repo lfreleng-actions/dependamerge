@@ -25,6 +25,8 @@ import pytest
 
 from dependamerge.github_async import GitHubAsync
 
+pytestmark = pytest.mark.usefixtures("paginate_through_get")
+
 RULESET_LIST = "/repos/org/repo/rulesets?per_page=100"
 RULESET_DETAIL = "/repos/org/repo/rulesets/1"
 PROTECTION = "/repos/org/repo/branches/main/protection/required_status_checks"

@@ -233,7 +233,6 @@ def _ruleset_route(*, second_page: Any) -> Route:
 
 
 class TestRulesetRequiredChecks:
-    @pytest.mark.xfail(strict=True, reason="only the first page is read")
     @pytest.mark.asyncio
     async def test_a_check_from_a_second_page_ruleset_is_found(self) -> None:
         async with GitHubAsync(token="t") as gh:
@@ -245,7 +244,6 @@ class TestRulesetRequiredChecks:
         assert [c["context"] for c in checks] == ["DCO"]
         assert reliable is True
 
-    @pytest.mark.xfail(strict=True, reason="only the first page is read")
     @pytest.mark.asyncio
     async def test_a_failed_second_page_is_unreliable(self) -> None:
         async with GitHubAsync(token="t") as gh:
@@ -256,7 +254,6 @@ class TestRulesetRequiredChecks:
 
         assert reliable is False
 
-    @pytest.mark.xfail(strict=True, reason="only the first page is read")
     @pytest.mark.parametrize("second_page", [{}, {"message": "Server Error"}])
     @pytest.mark.asyncio
     async def test_a_malformed_second_page_is_unreliable(

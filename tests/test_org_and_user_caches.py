@@ -386,6 +386,7 @@ class TestGetAuthenticatedUserLogin:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("paginate_through_get")
 class TestRepoBranchSessionCaches:
     """Session caches added for the merge-phase performance work.
 

@@ -292,7 +292,6 @@ def _branch_rules_route(
 
 
 class TestEffectiveBranchRules:
-    @pytest.mark.xfail(strict=True, reason="only the first page is read")
     @pytest.mark.asyncio
     async def test_a_pull_request_rule_on_the_second_page_counts(self) -> None:
         mgr, _ = make_merge_manager()
@@ -317,7 +316,6 @@ class TestEffectiveBranchRules:
 
         assert requires is False
 
-    @pytest.mark.xfail(strict=True, reason="only the first page is read")
     @pytest.mark.parametrize("second_page", [{}, {"message": "Server Error"}])
     @pytest.mark.asyncio
     async def test_a_malformed_second_page_answers_false(

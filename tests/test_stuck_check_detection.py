@@ -74,7 +74,26 @@ def _make_manager(**overrides: Any):
 
     defaults: dict[str, Any] = {"preview_mode": False}
     defaults.update(overrides)
-    return make_merge_manager(**defaults)
+    mgr, client = make_merge_manager(**defaults)
+
+    # The detector reads both listings through the client's paginated
+    # readers; serve them from whatever ``client.get`` routes, looked up
+    # at call time so each test can still assign ``client.get``.
+    async def _listing(path: str, key: str) -> list[dict[str, Any]]:
+        data = await client.get(path)
+        return list(data.get(key) or []) if isinstance(data, dict) else []
+
+    async def _runs(owner: str, repo: str, ref: str) -> list[dict[str, Any]]:
+        return await _listing(
+            f"/repos/{owner}/{repo}/commits/{ref}/check-runs", "check_runs"
+        )
+
+    async def _statuses(owner: str, repo: str, ref: str) -> list[dict[str, Any]]:
+        return await _listing(f"/repos/{owner}/{repo}/commits/{ref}/status", "statuses")
+
+    client.get_check_runs_for_ref = AsyncMock(side_effect=_runs)
+    client.get_commit_statuses = AsyncMock(side_effect=_statuses)
+    return mgr, client
 
 
 def _build_get_responder(
@@ -365,7 +384,7 @@ class TestDetectStuckDcoCheckRuns:
     async def test_naive_pr_timestamp_does_not_crash(self) -> None:
         """A tz-naive PR timestamp fails closed instead of crashing.
 
-        ``_parse_ts`` would otherwise return a naive datetime that
+        ``parse_ts`` would otherwise return a naive datetime that
         raises ``TypeError`` when subtracted from the tz-aware ``now``;
         it must degrade to ``None`` so the detector returns
         ``(False, None, 0.0)`` rather than aborting the merge run.
@@ -472,23 +491,47 @@ class TestDetectStuckBeyondTheFirstPage:
 
     @staticmethod
     async def _detect(
-        check_runs: list[dict[str, Any]], statuses: list[dict[str, Any]]
+        check_runs: list[dict[str, Any]],
+        statuses: list[dict[str, Any]],
+        required: list[dict[str, Any]] | None = None,
+        protection: dict[str, Any] | None = None,
     ) -> tuple[bool, str | None, float]:
+        """Run the detector; *protection* routes it through the real collector.
+
+        With *protection*, the required checks come from that classic
+        branch protection response and a ruleset requiring *required*.
+        """
         from dependamerge.github_async import GitHubAsync
         from tests.conftest import FakeCommitListings
 
         mgr, _client = _make_manager()
         old = datetime.now(UTC) - timedelta(seconds=STUCK_CHECK_THRESHOLD_SECONDS + 30)
-        fake = FakeCommitListings(
-            check_runs,
-            statuses,
-            other={"/pulls/342": {"created_at": _iso(old), "updated_at": _iso(old)}},
-        )
+        other: dict[str, Any] = {
+            "/pulls/342": {"created_at": _iso(old), "updated_at": _iso(old)}
+        }
+        if protection is not None:
+            other |= {
+                "/repos/lfreleng-actions/lftools-uv": {"default_branch": "main"},
+                "/rulesets?per_page=100": [{"id": 7}] if required else [],
+                "/rulesets/7": {
+                    "id": 7,
+                    "conditions": {},
+                    "rules": [
+                        {
+                            "type": "required_status_checks",
+                            "parameters": {"required_status_checks": required},
+                        }
+                    ],
+                },
+                "/protection/required_status_checks": protection,
+            }
+        fake = FakeCommitListings(check_runs, statuses, other=other)
         async with GitHubAsync(token="t") as api:
             fake.install(api)
-            api.get_required_status_checks = AsyncMock(  # type: ignore[method-assign]
-                return_value=[{"context": "build"}]
-            )
+            if protection is None:
+                api.get_required_status_checks = AsyncMock(  # type: ignore[method-assign]
+                    return_value=required or [{"context": "build"}]
+                )
             mgr._github_client = api
             result: tuple[bool, str | None, float]
             result = await mgr._detect_stuck_required_check(_make_pr_info())
@@ -501,7 +544,6 @@ class TestDetectStuckBeyondTheFirstPage:
             for i in range(count)
         ]
 
-    @pytest.mark.xfail(strict=True, reason="stuck detection reads one page")
     @pytest.mark.asyncio
     async def test_stuck_required_run_on_second_page(self) -> None:
         old = datetime.now(UTC) - timedelta(seconds=STUCK_CHECK_THRESHOLD_SECONDS + 30)
@@ -513,7 +555,6 @@ class TestDetectStuckBeyondTheFirstPage:
 
         assert (is_stuck, name) == (True, "build")
 
-    @pytest.mark.xfail(strict=True, reason="stuck detection reads one page")
     @pytest.mark.asyncio
     async def test_stuck_required_status_on_second_page(self) -> None:
         old = datetime.now(UTC) - timedelta(seconds=STUCK_CHECK_THRESHOLD_SECONDS + 30)
@@ -524,6 +565,407 @@ class TestDetectStuckBeyondTheFirstPage:
         is_stuck, name, _age = await self._detect([], statuses)
 
         assert (is_stuck, name) == (True, "DCO")
+
+    @staticmethod
+    def _one_suite(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Put every run in one check suite of one App, so order decides."""
+        return [{"app": {"id": 1}, **run, "check_suite": {"id": 9}} for run in runs]
+
+    @staticmethod
+    def _rerun_pair(
+        pending_suite: int | None, later_suite: int | None
+    ) -> list[dict[str, Any]]:
+        """A stale pending run and a later success of the same name."""
+        now = datetime.now(UTC)
+        stale = now - timedelta(seconds=STUCK_CHECK_THRESHOLD_SECONDS + 300)
+        finished = now - timedelta(seconds=STUCK_CHECK_THRESHOLD_SECONDS + 100)
+        later: dict[str, Any] = {
+            "id": 1002,
+            "name": "build",
+            "status": "completed",
+            "conclusion": "success",
+            "started_at": _iso(finished),
+            "completed_at": _iso(finished),
+        }
+        pending: dict[str, Any] = {
+            "id": 1001,
+            "name": "build",
+            "status": "in_progress",
+            "started_at": _iso(stale),
+        }
+        if later_suite is not None:
+            later["check_suite"] = {"id": later_suite}
+        if pending_suite is not None:
+            pending["check_suite"] = {"id": pending_suite}
+        return [later, *TestDetectStuckBeyondTheFirstPage._fillers(120), pending]
+
+    @pytest.mark.asyncio
+    async def test_superseded_pending_run_is_not_stuck(self) -> None:
+        runs = self._rerun_pair(pending_suite=9, later_suite=9)
+
+        assert await self._detect(runs, []) == (False, None, 0.0)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("pending_suite", "later_suite"),
+        [(9, 10), (None, 9), (None, None)],
+        ids=["other-suite", "pending-suite-unknown", "suites-unknown"],
+    )
+    async def test_run_from_another_or_unknown_suite_does_not_supersede(
+        self, pending_suite: int | None, later_suite: int | None
+    ) -> None:
+        # A later workflow_dispatch run of the same job, in its own check
+        # suite, cannot satisfy the pull request's requirement.
+        runs = self._rerun_pair(pending_suite, later_suite)
+
+        is_stuck, name, _age = await self._detect(runs, [])
+
+        assert (is_stuck, name) == (True, "build")
+
+    @pytest.mark.asyncio
+    async def test_newer_run_that_started_first_is_still_stuck(self) -> None:
+        # An older run left queued can start after a newer one; when start
+        # time and id disagree, neither run supersedes the other.
+        now = datetime.now(UTC)
+        stale = now - timedelta(seconds=STUCK_CHECK_THRESHOLD_SECONDS + 300)
+        finished = now - timedelta(seconds=STUCK_CHECK_THRESHOLD_SECONDS + 100)
+        runs = [
+            {
+                "id": 1001,
+                "name": "build",
+                "status": "completed",
+                "conclusion": "success",
+                "started_at": _iso(finished),
+                "completed_at": _iso(finished),
+            },
+            *self._fillers(120),
+            {
+                "id": 1002,
+                "name": "build",
+                "status": "in_progress",
+                "started_at": _iso(stale),
+            },
+        ]
+
+        is_stuck, name, _age = await self._detect(self._one_suite(runs), [])
+
+        assert (is_stuck, name) == (True, "build")
+
+    @pytest.mark.asyncio
+    async def test_newer_pending_rerun_is_still_stuck(self) -> None:
+        now = datetime.now(UTC)
+        finished = now - timedelta(seconds=STUCK_CHECK_THRESHOLD_SECONDS + 300)
+        rerun = now - timedelta(seconds=STUCK_CHECK_THRESHOLD_SECONDS + 100)
+        runs = [
+            {"name": "build", "status": "in_progress", "started_at": _iso(rerun)},
+            *self._fillers(120),
+            {
+                "name": "build",
+                "status": "completed",
+                "conclusion": "success",
+                "started_at": _iso(finished),
+                "completed_at": _iso(finished),
+            },
+        ]
+
+        is_stuck, name, _age = await self._detect(self._one_suite(runs), [])
+
+        assert (is_stuck, name) == (True, "build")
+
+    @pytest.mark.asyncio
+    async def test_newer_run_from_another_app_does_not_supersede(self) -> None:
+        now = datetime.now(UTC)
+        stale = now - timedelta(seconds=STUCK_CHECK_THRESHOLD_SECONDS + 300)
+        later = now - timedelta(seconds=STUCK_CHECK_THRESHOLD_SECONDS + 100)
+        runs = [
+            {
+                "name": "build",
+                "app": {"id": 1},
+                "status": "in_progress",
+                "started_at": _iso(stale),
+            },
+            *self._fillers(120),
+            {
+                "name": "build",
+                "app": {"id": 2},
+                "status": "completed",
+                "conclusion": "success",
+                "started_at": _iso(later),
+                "completed_at": _iso(later),
+            },
+        ]
+
+        is_stuck, name, _age = await self._detect(self._one_suite(runs), [])
+
+        assert (is_stuck, name) == (True, "build")
+
+    @pytest.mark.asyncio
+    async def test_overlapping_older_run_does_not_hide_rerun(self) -> None:
+        # The older run finishes after the rerun starts; ordering by
+        # completion would pick the older success.
+        now = datetime.now(UTC)
+        first = now - timedelta(seconds=STUCK_CHECK_THRESHOLD_SECONDS + 300)
+        rerun = now - timedelta(seconds=STUCK_CHECK_THRESHOLD_SECONDS + 200)
+        finished = now - timedelta(seconds=STUCK_CHECK_THRESHOLD_SECONDS + 100)
+        runs = [
+            {
+                "name": "build",
+                "status": "completed",
+                "conclusion": "success",
+                "started_at": _iso(first),
+                "completed_at": _iso(finished),
+            },
+            *self._fillers(120),
+            {"name": "build", "status": "in_progress", "started_at": _iso(rerun)},
+        ]
+
+        is_stuck, name, _age = await self._detect(self._one_suite(runs), [])
+
+        assert (is_stuck, name) == (True, "build")
+
+    @pytest.mark.asyncio
+    async def test_unordered_pending_run_is_still_judged(self) -> None:
+        runs = [
+            {
+                "id": "a",
+                "name": "build",
+                "status": "completed",
+                "conclusion": "success",
+            },
+            {"id": "b", "name": "build", "status": "queued"},
+        ]
+
+        is_stuck, name, _age = await self._detect(self._one_suite(runs), [])
+
+        assert (is_stuck, name) == (True, "build")
+
+    @pytest.mark.asyncio
+    async def test_mixed_start_times_do_not_order_cyclically(self) -> None:
+        # Comparing ids when one start time is missing made each run
+        # supersede another, so all three were set aside.
+        now = datetime.now(UTC)
+        runs = [
+            {
+                "id": 1,
+                "name": "build",
+                "status": "completed",
+                "conclusion": "success",
+                "started_at": _iso(now - timedelta(days=1)),
+            },
+            {"id": 2, "name": "build", "status": "queued"},
+            {
+                "id": 3,
+                "name": "build",
+                "status": "completed",
+                "conclusion": "success",
+                "started_at": _iso(now - timedelta(days=2)),
+            },
+        ]
+
+        is_stuck, name, _age = await self._detect(self._one_suite(runs), [])
+
+        assert (is_stuck, name) == (True, "build")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "required",
+        [
+            [{"context": "build", "integration_id": 1}],
+            [{"context": "build", "app_id": 1}],
+        ],
+    )
+    async def test_pending_run_from_unrequired_app_is_not_stuck(
+        self, required: list[dict[str, Any]]
+    ) -> None:
+        now = datetime.now(UTC)
+        stale = now - timedelta(seconds=STUCK_CHECK_THRESHOLD_SECONDS + 300)
+        later = now - timedelta(seconds=STUCK_CHECK_THRESHOLD_SECONDS + 100)
+        runs = [
+            {
+                "name": "build",
+                "app": {"id": 1},
+                "status": "completed",
+                "conclusion": "success",
+                "started_at": _iso(later),
+            },
+            *self._fillers(120),
+            {
+                "name": "build",
+                "app": {"id": 2},
+                "status": "in_progress",
+                "started_at": _iso(stale),
+            },
+        ]
+
+        assert await self._detect(runs, [], required) == (False, None, 0.0)
+
+    @pytest.mark.asyncio
+    async def test_pending_run_from_required_app_is_stuck(self) -> None:
+        now = datetime.now(UTC)
+        stale = now - timedelta(seconds=STUCK_CHECK_THRESHOLD_SECONDS + 300)
+        later = now - timedelta(seconds=STUCK_CHECK_THRESHOLD_SECONDS + 100)
+        runs = [
+            {
+                "name": "build",
+                "app": {"id": 1},
+                "status": "in_progress",
+                "started_at": _iso(stale),
+            },
+            *self._fillers(120),
+            {
+                "name": "build",
+                "app": {"id": 2},
+                "status": "completed",
+                "conclusion": "success",
+                "started_at": _iso(later),
+            },
+        ]
+
+        is_stuck, name, _age = await self._detect(
+            runs, [], [{"context": "build", "integration_id": 1}]
+        )
+
+        assert (is_stuck, name) == (True, "build")
+
+    @staticmethod
+    def _cross_app_runs(stuck_app: int, passed_app: int) -> list[dict[str, Any]]:
+        now = datetime.now(UTC)
+        stale = now - timedelta(seconds=STUCK_CHECK_THRESHOLD_SECONDS + 300)
+        later = now - timedelta(seconds=STUCK_CHECK_THRESHOLD_SECONDS + 100)
+        return [
+            {
+                "name": "build",
+                "app": {"id": passed_app},
+                "status": "completed",
+                "conclusion": "success",
+                "started_at": _iso(later),
+            },
+            {
+                "name": "build",
+                "app": {"id": stuck_app},
+                "status": "in_progress",
+                "started_at": _iso(stale),
+            },
+        ]
+
+    @pytest.mark.asyncio
+    async def test_classic_protection_app_binding_reaches_detector(self) -> None:
+        protection = {
+            "contexts": ["build"],
+            "checks": [{"context": "build", "app_id": 1}],
+        }
+
+        result = await self._detect(
+            self._cross_app_runs(stuck_app=2, passed_app=1), [], [], protection
+        )
+
+        assert result == (False, None, 0.0)
+
+    @pytest.mark.asyncio
+    async def test_conflicting_app_bindings_judge_every_app(self) -> None:
+        protection = {
+            "contexts": ["build"],
+            "checks": [{"context": "build", "app_id": 2}],
+        }
+
+        is_stuck, name, _age = await self._detect(
+            self._cross_app_runs(stuck_app=2, passed_app=1),
+            [],
+            [{"context": "build", "integration_id": 1}],
+            protection,
+        )
+
+        assert (is_stuck, name) == (True, "build")
+
+    @pytest.mark.asyncio
+    async def test_conflicting_app_bindings_exclude_other_apps(self) -> None:
+        # A ruleset binding App 1 and protection binding App 2 require
+        # neither App 3's run nor any other App's.
+        protection = {
+            "contexts": ["build"],
+            "checks": [{"context": "build", "app_id": 2}],
+        }
+
+        result = await self._detect(
+            self._cross_app_runs(stuck_app=3, passed_app=1),
+            [],
+            [{"context": "build", "integration_id": 1}],
+            protection,
+        )
+
+        assert result == (False, None, 0.0)
+
+    @staticmethod
+    def _pending_build_status() -> list[dict[str, Any]]:
+        old = datetime.now(UTC) - timedelta(seconds=STUCK_CHECK_THRESHOLD_SECONDS + 30)
+        return [{"context": "build", "state": "pending", "updated_at": _iso(old)}]
+
+    @pytest.mark.asyncio
+    async def test_status_for_app_bound_check_is_judged(self) -> None:
+        # The required App posted no check run, so it reports through
+        # the status, which can be the only stuck signal.
+        is_stuck, name, _age = await self._detect(
+            [],
+            self._pending_build_status(),
+            [{"context": "build", "integration_id": 1}],
+        )
+
+        assert (is_stuck, name) == (True, "build")
+
+    @pytest.mark.asyncio
+    async def test_status_beside_required_app_run_is_not_judged(self) -> None:
+        # The required App reports through its run; the pending status of
+        # the same name comes from another source.
+        runs = [
+            {
+                "name": "build",
+                "app": {"id": 1},
+                "status": "completed",
+                "conclusion": "success",
+            }
+        ]
+
+        result = await self._detect(
+            runs,
+            self._pending_build_status(),
+            [{"context": "build", "integration_id": 1}],
+        )
+
+        assert result == (False, None, 0.0)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("run_apps", "expected"),
+        [((1,), (True, "build")), ((1, 2), (False, None))],
+        ids=["one-bound-app-ran", "every-bound-app-ran"],
+    )
+    async def test_status_beside_runs_of_several_bound_apps(
+        self, run_apps: tuple[int, ...], expected: tuple[bool, str | None]
+    ) -> None:
+        # A ruleset binds build to App 1 and protection to App 2.  App 1's
+        # run does not satisfy App 2, which may report through the status.
+        protection = {
+            "contexts": ["build"],
+            "checks": [{"context": "build", "app_id": 2}],
+        }
+        runs = [
+            {
+                "name": "build",
+                "app": {"id": app},
+                "status": "completed",
+                "conclusion": "success",
+            }
+            for app in run_apps
+        ]
+
+        is_stuck, name, _age = await self._detect(
+            runs,
+            self._pending_build_status(),
+            [{"context": "build", "integration_id": 1}],
+            protection,
+        )
+
+        assert (is_stuck, name) == expected
 
 
 class TestDetectStuckDcoRobustness:

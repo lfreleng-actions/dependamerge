@@ -207,12 +207,17 @@ class FakeCommitListings:
         other: dict[str, Any] | None = None,
     ) -> None:
         self.listings = {
-            "check-runs": ("check_runs", check_runs or []),
-            "status": ("statuses", statuses or []),
+            "check-runs": ("check_runs", self._numbered(check_runs)),
+            "status": ("statuses", self._numbered(statuses)),
         }
         self.fail_on = fail_on or set()
         self.other = other or {}
         self.requests: list[tuple[str, int]] = []
+
+    @staticmethod
+    def _numbered(entries: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+        """Give each entry an ``id``, as GitHub does, unless it has one."""
+        return [{"id": index, **entry} for index, entry in enumerate(entries or [], 1)]
 
     def install(self, api: Any) -> None:
         """Route *api*'s ``get`` and ``get_paginated`` through this fake."""
@@ -263,6 +268,24 @@ class FakeCommitListings:
             if page * per_page >= total:
                 return
             page += 1
+
+
+@pytest.fixture
+def listings_via_get(monkeypatch):
+    """Serve ``GitHubAsync.get_paginated`` as one page from its ``get``.
+
+    For tests that route a mocked ``get`` by URL.  The check-run and
+    commit-status listings are read through ``get_paginated``, which
+    would otherwise reach the real transport.
+    """
+    from dependamerge.github_async import GitHubAsync
+
+    async def _one_page(self, path, *, params=None, per_page=100, max_pages=None):
+        page = await self.get(path)
+        if page:
+            yield page
+
+    monkeypatch.setattr(GitHubAsync, "get_paginated", _one_page)
 
 
 @pytest.fixture(scope="session")

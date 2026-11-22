@@ -34,6 +34,9 @@ class _CheckSignals(NamedTuple):
     completed: set[str]
     reported: set[str]
     pending: set[str]
+    # Whether both listings were read whole.  Absence from ``reported``
+    # means "never reported" only when this is True.
+    complete: bool
 
 
 async def _collect_review_signals(
@@ -96,7 +99,7 @@ async def _count_unresolved_copilot_comments(
 async def _collect_check_signals(
     api: _GitHubAsyncBase, owner: str, repo: str, head_sha: str
 ) -> _CheckSignals:
-    """Read check runs and status contexts for a head commit."""
+    """Read every check run and status context for a head commit."""
     # Check runs and status contexts - look for failing (check this first as it's most specific)
     failing_checks: list[str] = []
     completed_check_names: set[str] = set()
@@ -104,70 +107,56 @@ async def _collect_check_signals(
     # queued/in_progress checks are not misclassified as "missing".
     reported_check_names: set[str] = set()
     pending_check_names: set[str] = set()
-    try:
-        # Check runs (newer GitHub Apps API)
-        runs = await api.get(f"/repos/{owner}/{repo}/commits/{head_sha}/check-runs")
-        if isinstance(runs, dict):
-            raw_runs = [
-                run for run in (runs.get("check_runs") or []) if isinstance(run, dict)
-            ]
-            # Status classification deliberately considers *every*
-            # reported run, not just the latest: a name carrying both
-            # a completed run and a fresh in_progress re-run is still
-            # pending, and must not be collapsed away here.
-            for run in raw_runs:
-                name = (run.get("name") or "").strip()
-                if not name:
-                    # An unnamed run cannot be matched against a
-                    # required-check rule.  Recording it produces
-                    # only misleading output such as "Blocked by
-                    # failing check: unknown", so drop it here just
-                    # as the deduplication helper does.
-                    continue
-                status = run.get("status")
-                reported_check_names.add(name)
-                if status == "completed":
-                    completed_check_names.add(name)
-                elif status in ("queued", "in_progress"):
-                    pending_check_names.add(name)
-            # Failure, by contrast, is decided by the latest run per
-            # name.  A commit can carry several runs under one name
-            # when a duplicate workflow event causes ``concurrency``
-            # to cancel a superseded run; that cancelled run must not
-            # mask the successful one that replaced it.
-            failing_checks.extend(failing_check_names(raw_runs))
-    except Exception:
-        # Check-runs API may be unavailable; proceed with whatever
-        # checks were collected so far.
-        pass
 
-    try:
-        statuses = await api.get(f"/repos/{owner}/{repo}/commits/{head_sha}/status")
-        if isinstance(statuses, dict):
-            for s in statuses.get("statuses") or []:
-                if not isinstance(s, dict):
-                    continue
-                context = s.get("context", "unknown")
-                state = s.get("state")
-                reported_check_names.add(context)
-                if state in ["success", "neutral"]:
-                    completed_check_names.add(context)
-                elif state == "pending":
-                    pending_check_names.add(context)
-                if state in ["failure", "error"]:
-                    # Avoid duplicates if both check-run and status exist for same service
-                    if context not in failing_checks:
-                        failing_checks.append(context)
-    except Exception:
-        # Status API may be unavailable; proceed with whatever
-        # status contexts were collected so far.
-        pass
+    # Check runs (newer GitHub Apps API).  A failed or truncated read
+    # still contributes what it found; only ``complete`` is lowered.
+    runs = await api.read_check_runs_for_ref(owner, repo, head_sha)
+    # Status classification deliberately considers *every*
+    # reported run, not just the latest: a name carrying both
+    # a completed run and a fresh in_progress re-run is still
+    # pending, and must not be collapsed away here.
+    for run in runs.entries:
+        name = (run.get("name") or "").strip()
+        if not name:
+            # An unnamed run cannot be matched against a
+            # required-check rule.  Recording it produces
+            # only misleading output such as "Blocked by
+            # failing check: unknown", so drop it here just
+            # as the deduplication helper does.
+            continue
+        status = run.get("status")
+        reported_check_names.add(name)
+        if status == "completed":
+            completed_check_names.add(name)
+        elif status in ("queued", "in_progress"):
+            pending_check_names.add(name)
+    # Failure, by contrast, is decided by the latest run per
+    # name.  A commit can carry several runs under one name
+    # when a duplicate workflow event causes ``concurrency``
+    # to cancel a superseded run; that cancelled run must not
+    # mask the successful one that replaced it.
+    failing_checks.extend(failing_check_names(runs.entries))
+
+    statuses = await api.read_commit_statuses(owner, repo, head_sha)
+    for s in statuses.entries:
+        context = s.get("context", "unknown")
+        state = s.get("state")
+        reported_check_names.add(context)
+        if state in ["success", "neutral"]:
+            completed_check_names.add(context)
+        elif state == "pending":
+            pending_check_names.add(context)
+        if state in ["failure", "error"]:
+            # Avoid duplicates if both check-run and status exist for same service
+            if context not in failing_checks:
+                failing_checks.append(context)
 
     return _CheckSignals(
         failing_checks,
         completed_check_names,
         reported_check_names,
         pending_check_names,
+        runs.complete and statuses.complete,
     )
 
 
@@ -232,9 +221,14 @@ async def _collect_required_check_gaps(
                 if ctx in checks.reported:
                     if ctx not in checks.completed and ctx in checks.pending:
                         pending_required_checks.append(ctx)
-                else:
+                elif checks.complete:
                     # Never reported via either API — truly missing
                     missing_required_checks.append(ctx)
+                else:
+                    api.log.debug(
+                        f"Required check {ctx!r} not seen on {owner}/{repo}#{number}, "
+                        "but the check reading is incomplete; not reporting it missing"
+                    )
         except Exception as req_err:
             api.log.debug(
                 f"Could not check required status checks for "

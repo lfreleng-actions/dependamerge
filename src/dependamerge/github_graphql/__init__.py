@@ -37,6 +37,7 @@ from .repos import (
 )
 from .reviews import (
     GET_PR_REVIEW_THREADS,
+    GET_REVIEW_THREAD_COMMENTS,
     RESOLVE_REVIEW_THREAD,
 )
 
@@ -49,5 +50,6 @@ __all__ = [
     "ENABLE_AUTO_MERGE",
     "GET_BRANCH_PROTECTION",
     "GET_PR_REVIEW_THREADS",
+    "GET_REVIEW_THREAD_COMMENTS",
     "RESOLVE_REVIEW_THREAD",
 ]

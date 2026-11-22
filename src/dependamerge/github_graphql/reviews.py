@@ -8,6 +8,11 @@ Review threads are the unit GitHub uses for unresolved review
 conversations, and they are only reachable through GraphQL — there is no
 REST equivalent for resolving one.  Fetching threads and resolving them
 are two halves of the same operation, so they live together here.
+
+A thread's comments are paged separately from the threads themselves:
+:data:`GET_PR_REVIEW_THREADS` returns the first page of each thread's
+comments with its ``pageInfo``, and :data:`GET_REVIEW_THREAD_COMMENTS`
+reads the pages after it.
 """
 
 from __future__ import annotations
@@ -44,7 +49,11 @@ query GetPullRequestReviewThreads($owner: String!, $name: String!, $number: Int!
           startLine
           originalStartLine
           path
-          comments(first: 10) {
+          comments(first: 100) {
+            pageInfo {
+              hasNextPage
+              endCursor
+            }
             nodes {
               id
               author {
@@ -54,6 +63,30 @@ query GetPullRequestReviewThreads($owner: String!, $name: String!, $number: Int!
               createdAt
             }
           }
+        }
+      }
+    }
+  }
+}
+"""
+
+# GraphQL query to read further pages of one review thread's comments
+GET_REVIEW_THREAD_COMMENTS = """
+query GetReviewThreadComments($threadId: ID!, $cursor: String) {
+  node(id: $threadId) {
+    ... on PullRequestReviewThread {
+      comments(first: 100, after: $cursor) {
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
+        nodes {
+          id
+          author {
+            login
+          }
+          body
+          createdAt
         }
       }
     }

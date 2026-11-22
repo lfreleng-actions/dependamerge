@@ -10,6 +10,7 @@ the rest of the run is derived from.
 """
 
 import logging
+import math
 
 import requests
 import typer
@@ -28,10 +29,43 @@ from ..error_codes import (
     is_github_api_permission_error,
     is_network_error,
 )
+from ..merge_manager import DEFAULT_REBASE_COOLDOWN_HOURS
 from ..progress_tracker import MergeProgressTracker
 from ._app import console
 from ._context import _MergeContext
 from ._pr_display import _display_pr_info
+
+
+def _validate_rebase_cooldown(rebase_cooldown: float) -> float:
+    """Reject a negative or non-finite ``--rebase-cooldown``.
+
+    0 turns the cooldown off and a positive value is the hours between
+    ``@dependabot rebase`` requests on one PR; a negative value has no
+    meaning, and NaN or infinity would leave no reachable end.
+
+    Raises:
+        typer.Exit: The value is negative, NaN or infinite.
+    """
+    if rebase_cooldown < 0 or not math.isfinite(rebase_cooldown):
+        console.print(
+            "❌ Invalid --rebase-cooldown: must be 0 (no cooldown) or a "
+            "positive, finite number of hours"
+        )
+        raise typer.Exit(1)
+    return rebase_cooldown
+
+
+REBASE_COOLDOWN_OPTION = typer.Option(
+    DEFAULT_REBASE_COOLDOWN_HOURS,
+    "--rebase-cooldown",
+    callback=_validate_rebase_cooldown,
+    help=(
+        "Hours to wait before asking dependabot to rebase the same PR "
+        "again (the @dependabot rebase macro only). 0 = no cooldown; a "
+        "request still in flight is never repeated. "
+        f"Default: {DEFAULT_REBASE_COOLDOWN_HOURS:g}"
+    ),
+)
 
 
 def _validate_merge_inputs(

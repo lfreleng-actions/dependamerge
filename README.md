@@ -261,7 +261,10 @@ or user account in one command.
   `📣 Retriggered` (comment macros posted: `@dependabot rebase`,
   `@dependabot recreate`, `pre-commit.ci run`). Both are running totals
   of *operations*, so they keep reporting what the run did after the PRs
-  themselves have landed in `✅ Merged` / `❌ Failed`
+  themselves have landed in `✅ Merged` / `❌ Failed`. A `@dependabot
+  rebase` held back by `--rebase-cooldown` is not posted and counts under
+  neither; the PR's status line gives the age of the last request and
+  when the next is due
 - **Draft Exclusion**: The run lists draft PRs as skipped and never approves
   or merges them, since a draft cannot merge until its author marks it ready.
   The results document records them as skipped; a draft source PR stops the
@@ -435,7 +438,8 @@ jobs:
 
 The action always runs non-interactively (`--no-confirm --no-progress`) on
 Linux and macOS runners; it refuses Windows runners. It acts on GitHub alone: it
-skips GitHub2Gerrit PRs and reports them as skipped, and it withholds any Gerrit
+skips GitHub2Gerrit PRs and reports them as skipped (as it does a PR whose
+comments it cannot read in full to rule out a mapping), and it withholds any Gerrit
 credentials it inherits, so a Gerrit target fails rather than submitting
 changes. It always addresses the GitHub server running the workflow: it refuses
 a target on any other host and ignores host settings inherited from the caller.
@@ -1388,6 +1392,14 @@ export DEPENDAMERGE_CONTENT_PER_HOUR=300
   `code-owners`, `protection-rules`, or `all`. See [Force Override System](docs/FORCE_OVERRIDE_SYSTEM.md)
   for detailed documentation
 - `--token TEXT`: GitHub token (alternative to GITHUB_TOKEN env var)
+- `--rebase-cooldown HOURS`: Hours to wait before posting `@dependabot rebase`
+  on the same PR again (default: 8, at most three requests a day). The newest
+  such comment on the PR decides: one under 30 minutes old with the head
+  unchanged since counts as a rebase still in flight, so the run waits for it;
+  one younger than the cooldown means no rebase is due, so the run reports
+  the PR as it stands without requesting a rebase or waiting for one. `0`
+  turns the cooldown off, leaving the in-flight rule alone; a negative value
+  is a usage error. Local rebases and REST `update-branch` ignore it
 - `--include-human-prs`: Act on human-authored PRs too. Needs a matching
   `--override`; see [Human-Authored PRs](#human-authored-prs)
 - `--override TEXT`: Confirms the human-authored PRs `--include-human-prs`

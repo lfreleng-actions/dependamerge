@@ -32,7 +32,11 @@ class _SinglePrGatesMixin(_MergeManagerBase):
 
         Returns a terminal result when the PR is skipped outright or its
         Gerrit change was submitted (successfully or not), and ``None``
-        when the mode is ``ignore`` or no mapping was detected.
+        when the mode is ``ignore`` or the comments were all read and
+        carry no mapping.  A PR whose comments could not all be read is
+        skipped, since a mapping cannot be ruled out, and in ``submit``
+        mode a mapping found in such a reading is not submitted, since a
+        newer one may sit in the unread comments.
         """
         if self.github2gerrit_mode == "ignore":
             return None
@@ -44,7 +48,18 @@ class _SinglePrGatesMixin(_MergeManagerBase):
         )
 
         if not (g2g_result.has_mapping and g2g_result.mapping):
-            return None
+            if g2g_result.complete:
+                return None
+            # A mapping may sit in the comments that could not be read;
+            # merging on GitHub would then bypass the Gerrit review.
+            reason = "comments could not be read to rule out a GitHub2Gerrit mapping"
+            result.status = MergeStatus.SKIPPED
+            result.error = f"Skipped: {reason}"
+            self._pr_status(
+                f"⚠️ Skipped: {pr_info.html_url} [{reason}]",
+                level="warning",
+            )
+            return result
 
         mapping = g2g_result.mapping
         skip_msg = build_gerrit_skip_message(mapping)
@@ -59,7 +74,22 @@ class _SinglePrGatesMixin(_MergeManagerBase):
             )
             return result
 
-        # Default: "submit" mode - submit the Gerrit change
+        # Default: "submit" mode - submit the Gerrit change.  The detector
+        # picks the newest mapping, so one found in a partial reading may
+        # be superseded by a mapping in the unread comments.
+        if not g2g_result.complete:
+            reason = (
+                "comments could not all be read to confirm the latest "
+                f"GitHub2Gerrit mapping ({skip_msg})"
+            )
+            result.status = MergeStatus.SKIPPED
+            result.error = f"Skipped: {reason}"
+            self._pr_status(
+                f"⚠️ Skipped: {pr_info.html_url} [{reason}]",
+                level="warning",
+            )
+            return result
+
         if self.preview_mode:
             self._pr_status(
                 f"🔄 Gerrit submit: {pr_info.html_url} [{skip_msg}]",

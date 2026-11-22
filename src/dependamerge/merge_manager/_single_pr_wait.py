@@ -95,6 +95,9 @@ class _SinglePrWaitMixin(_MergeManagerBase):
             and self._state_is_waitable(flow)
             and self.force_level != "all"
             and not flow.already_rebased
+            # A rebase the cooldown held back is not coming, so there
+            # is nothing for the wait to bridge.
+            and not (flow.needs_rebase and flow.pr_key in self._rebase_suppressed)
         )
         if not base_should_wait or flow.pr_info.mergeable_state != "blocked":
             return base_should_wait

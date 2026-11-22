@@ -53,12 +53,13 @@ class _FailureReportingMixin(_FailureSummaryFromExceptionMixin):
         unmarked keeps the message that explains what to fix.
         """
         stuck_reported = False
+        pr_key = f"{pr_info.repository_full_name}#{pr_info.number}"
+        # A rebase the cooldown held back says why the PR stayed behind.
+        if failure_reason and pr_key in self._rebase_suppressed:
+            failure_reason = f"{failure_reason}; {self._rebase_suppressed[pr_key]}"
         # A manual-rebase refusal is the whole story: a stuck check on a
         # PR nobody may rebase here is not the cause to report.
-        policy_refusal = (
-            f"{pr_info.repository_full_name}#{pr_info.number}"
-            in self._local_rebase_refused
-        )
+        policy_refusal = pr_key in self._local_rebase_refused
         if (
             not is_dependabot(pr_info.author)
             and not self.preview_mode
@@ -355,19 +356,20 @@ class _FailureReportingMixin(_FailureSummaryFromExceptionMixin):
                 # GitHub finishes the merge server-side once the
                 # rebase lands and checks pass, and let the caller's
                 # not-merged classification report AUTO_MERGE_PENDING.
-                self.log.info(
-                    f"PR {owner}/{repo}#{pr_info.number} is behind - "
-                    "requesting dependabot rebase"
-                )
-                if self._dependabot_is_rebasing(
-                    pr_info.body
-                ) or await self._request_dependabot_rebase(pr_info, owner, repo):
+                # The request helper honours dependabot's "rebasing"
+                # notice itself, and clears any earlier suppression.
+                if await self._request_dependabot_rebase(pr_info, owner, repo):
+                    self.log.info(
+                        f"PR {owner}/{repo}#{pr_info.number} is behind - "
+                        "dependabot rebase under way"
+                    )
                     self._rebase_requested.add(f"{owner}/{repo}#{pr_info.number}")
                     await self._enable_auto_merge_with_approval(pr_info, owner, repo)
-                else:
+                elif f"{owner}/{repo}#{pr_info.number}" not in self._rebase_suppressed:
                     # No macro landed.  Under Actions there is no local
                     # fallback either, so record why when the base needs
-                    # a signed rebase, as Step 5 does.
+                    # a signed rebase, as Step 5 does (not when the
+                    # cooldown held the request back).
                     await self._refuse_unsigned_rebase(pr_info, owner, repo)
                 return False
             if await self._refuse_unsigned_rebase(pr_info, owner, repo):

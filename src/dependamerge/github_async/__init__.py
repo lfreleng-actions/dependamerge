@@ -44,6 +44,7 @@ from ._errors import (
 from ._permissions import (
     OPERATION_PERMISSIONS,
 )
+from ._reviews import IssueComments
 from ._throttling import (
     _Budget,
     _maybe_await,
@@ -57,4 +58,5 @@ __all__ = [
     "GraphQLError",
     "PermissionError",
     "ApprovalError",
+    "IssueComments",
 ]

@@ -106,6 +106,9 @@ class TestForceLevelNone:
         async with AsyncMergeManager(
             token="fake_token",
             force_level="none",
+            # No GitHub2Gerrit lookup: its comment read would fail on
+            # the fake token and skip the PR before the review check.
+            github2gerrit_mode="ignore",
             preview_mode=True,
         ) as manager:
             result = await manager._merge_single_pr(pr_with_blocking_review)
@@ -168,6 +171,9 @@ class TestForceLevelCodeOwners:
         async with AsyncMergeManager(
             token="fake_token",
             force_level="code-owners",
+            # No GitHub2Gerrit lookup: its comment read would fail on
+            # the fake token and skip the PR before the review check.
+            github2gerrit_mode="ignore",
             preview_mode=True,
         ) as manager:
             result = await manager._merge_single_pr(pr_with_blocking_review)
@@ -257,6 +263,9 @@ class TestForceLevelProtectionRules:
         async with AsyncMergeManager(
             token="fake_token",
             force_level="protection-rules",
+            # No GitHub2Gerrit lookup: its comment read would fail on
+            # the fake token and skip the PR before the review check.
+            github2gerrit_mode="ignore",
             preview_mode=True,
         ) as manager:
             result = await manager._merge_single_pr(pr_with_blocking_review)

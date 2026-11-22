@@ -64,9 +64,12 @@ class GitHub2GerritDetectionResult:
         mapping: The latest valid mapping (if any).
         comment_indices: Indices into the comment list that contained mappings.
         detection_source: How the mapping was detected ("marker" or "heuristic").
+        complete: False when the PR's comments could not all be read, so
+            the absence of a mapping is unknown rather than established.
     """
 
     has_mapping: bool = False
     mapping: GitHub2GerritMapping | None = None
     comment_indices: list[int] = field(default_factory=list)
     detection_source: str = ""
+    complete: bool = True

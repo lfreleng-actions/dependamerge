@@ -16,9 +16,7 @@ import typer
 # Names substituted at ``dependamerge.cli.<name>`` are read from
 # the package at call time, so one substitution reaches every
 # caller rather than only the module that bound the name.
-from ..merge_manager import (
-    DEFAULT_MERGE_TIMEOUT,
-)
+from ..merge_manager import DEFAULT_MERGE_TIMEOUT
 from ._app import DEFAULT_MAX_WAIT, app
 from ._bot_scope import (
     EXCLUDE_BOTS_OPTION,
@@ -41,7 +39,7 @@ from ._merge_dispatch import (
     _run_single_pr_merge,
     _validate_max_wait,
 )
-from ._merge_inputs import _validate_merge_inputs
+from ._merge_inputs import REBASE_COOLDOWN_OPTION, _validate_merge_inputs
 from ._merge_target import (
     _parse_merge_target,
     _resolve_repo_selection,
@@ -136,6 +134,7 @@ def merge(
             f"{DEFAULT_MERGE_TIMEOUT:.0f}"
         ),
     ),
+    rebase_cooldown: float = REBASE_COOLDOWN_OPTION,
     max_wait: float = typer.Option(
         DEFAULT_MAX_WAIT,
         "--max-wait",
@@ -378,6 +377,7 @@ def merge(
         no_fix=no_fix,
         fix_semantic_title=fix_semantic_title,
         merge_timeout=merge_timeout,
+        rebase_cooldown=rebase_cooldown,
         show_progress=show_progress,
         debug_matching=debug_matching,
         dismiss_copilot=dismiss_copilot,

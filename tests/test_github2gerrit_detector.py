@@ -41,6 +41,7 @@ from dependamerge.github2gerrit_detector import (
     has_github2gerrit_comments,
     parse_gitreview_text,
 )
+from dependamerge.github_async import IssueComments
 from dependamerge.merge_manager import AsyncMergeManager, MergeStatus
 from dependamerge.models import PullRequestInfo
 
@@ -830,33 +831,37 @@ class TestMergeManagerDetectGitHub2Gerrit:
     def test_detect_with_mapping(self):
         mgr = AsyncMergeManager(token="test-token")
         mgr._github_client = AsyncMock()
-        mgr._github_client.get = AsyncMock(
-            return_value=[
-                {
-                    "user": {"login": "github-actions[bot]"},
-                    "body": SAMPLE_MAPPING_COMMENT_BODY,
-                },
-            ]
+        mgr._github_client.list_issue_comments = AsyncMock(
+            return_value=IssueComments(
+                [
+                    {
+                        "user": {"login": "github-actions[bot]"},
+                        "body": SAMPLE_MAPPING_COMMENT_BODY,
+                    },
+                ]
+            )
         )
 
         result = asyncio.run(mgr._detect_github2gerrit("owner", "repo", 41))
         assert result.has_mapping is True
         assert result.mapping is not None
         assert result.mapping.topic == "GH-releng-gerrit_to_platform-41"
-        mgr._github_client.get.assert_called_once_with(
-            "/repos/owner/repo/issues/41/comments"
+        mgr._github_client.list_issue_comments.assert_called_once_with(
+            "owner", "repo", 41
         )
 
     def test_detect_no_mapping(self):
         mgr = AsyncMergeManager(token="test-token")
         mgr._github_client = AsyncMock()
-        mgr._github_client.get = AsyncMock(
-            return_value=[
-                {
-                    "user": {"login": "dependabot[bot]"},
-                    "body": "Bumps foo from 1.0 to 2.0",
-                },
-            ]
+        mgr._github_client.list_issue_comments = AsyncMock(
+            return_value=IssueComments(
+                [
+                    {
+                        "user": {"login": "dependabot[bot]"},
+                        "body": "Bumps foo from 1.0 to 2.0",
+                    },
+                ]
+            )
         )
 
         result = asyncio.run(mgr._detect_github2gerrit("owner", "repo", 5))
@@ -865,18 +870,24 @@ class TestMergeManagerDetectGitHub2Gerrit:
     def test_detect_handles_api_error(self):
         mgr = AsyncMergeManager(token="test-token")
         mgr._github_client = AsyncMock()
-        mgr._github_client.get = AsyncMock(side_effect=RuntimeError("API failure"))
+        mgr._github_client.list_issue_comments = AsyncMock(
+            side_effect=RuntimeError("API failure")
+        )
 
         result = asyncio.run(mgr._detect_github2gerrit("owner", "repo", 99))
         assert result.has_mapping is False
+        assert result.complete is False
 
     def test_detect_handles_non_list_response(self):
         mgr = AsyncMergeManager(token="test-token")
         mgr._github_client = AsyncMock()
-        mgr._github_client.get = AsyncMock(return_value={"message": "Not Found"})
+        mgr._github_client.list_issue_comments = AsyncMock(
+            return_value=IssueComments([], complete=False)
+        )
 
         result = asyncio.run(mgr._detect_github2gerrit("owner", "repo", 404))
         assert result.has_mapping is False
+        assert result.complete is False
 
     def test_detect_no_client(self):
         mgr = AsyncMergeManager(token="test-token")
@@ -896,13 +907,15 @@ class TestMergeManagerSkipMode:
             preview_mode=False,
         )
         mgr._github_client = AsyncMock()
-        mgr._github_client.get = AsyncMock(
-            return_value=[
-                {
-                    "user": {"login": "github-actions[bot]"},
-                    "body": SAMPLE_MAPPING_COMMENT_BODY,
-                },
-            ]
+        mgr._github_client.list_issue_comments = AsyncMock(
+            return_value=IssueComments(
+                [
+                    {
+                        "user": {"login": "github-actions[bot]"},
+                        "body": SAMPLE_MAPPING_COMMENT_BODY,
+                    },
+                ]
+            )
         )
         mgr._console = MagicMock()
 
@@ -973,13 +986,15 @@ class TestMergeManagerSubmitModePreview:
             preview_mode=True,
         )
         mgr._github_client = AsyncMock()
-        mgr._github_client.get = AsyncMock(
-            return_value=[
-                {
-                    "user": {"login": "github-actions[bot]"},
-                    "body": SAMPLE_MAPPING_COMMENT_BODY,
-                },
-            ]
+        mgr._github_client.list_issue_comments = AsyncMock(
+            return_value=IssueComments(
+                [
+                    {
+                        "user": {"login": "github-actions[bot]"},
+                        "body": SAMPLE_MAPPING_COMMENT_BODY,
+                    },
+                ]
+            )
         )
         mgr._console = MagicMock()
 
@@ -1812,17 +1827,17 @@ class TestSubmitModeFullPRFlow:
         mgr._console = MagicMock()
 
         # Mock issue comments endpoint to return a G2G mapping
-        async def mock_get(url):
-            if "/issues/" in url and "/comments" in url:
-                return [
+        mgr._github_client.get = AsyncMock(return_value={})
+        mgr._github_client.list_issue_comments = AsyncMock(
+            return_value=IssueComments(
+                [
                     {
                         "user": {"login": "github-actions[bot]"},
                         "body": SAMPLE_MAPPING_COMMENT_BODY,
                     },
                 ]
-            return {}
-
-        mgr._github_client.get = AsyncMock(side_effect=mock_get)
+            )
+        )
         mgr._github_client.post_issue_comment = AsyncMock(return_value={})
         mgr._github_client.close_pull_request = AsyncMock(return_value={})
 
@@ -1877,17 +1892,17 @@ class TestSubmitModeFullPRFlow:
         mgr._github_client = AsyncMock()
         mgr._console = MagicMock()
 
-        async def mock_get(url):
-            if "/issues/" in url and "/comments" in url:
-                return [
+        mgr._github_client.get = AsyncMock(return_value={})
+        mgr._github_client.list_issue_comments = AsyncMock(
+            return_value=IssueComments(
+                [
                     {
                         "user": {"login": "github-actions[bot]"},
                         "body": SAMPLE_MAPPING_COMMENT_BODY,
                     },
                 ]
-            return {}
-
-        mgr._github_client.get = AsyncMock(side_effect=mock_get)
+            )
+        )
 
         pr = _make_pr_info()
 

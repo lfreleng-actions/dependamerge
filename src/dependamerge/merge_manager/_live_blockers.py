@@ -54,6 +54,13 @@ from ._base import _MergeManagerBase
 class _LiveBlockerMixin(_MergeManagerBase):
     """Deriving the blocking set from live check and status state."""
 
+    def _with_rebase_note(self, pr_info: PullRequestInfo, reason: str) -> str:
+        """*reason*, followed by the note of a rebase the cooldown held back."""
+        note = self._rebase_suppressed.get(
+            f"{pr_info.repository_full_name}#{pr_info.number}"
+        )
+        return f"{reason}; {note}" if note else reason
+
     async def _live_blocking_conditions(
         self,
         pr_info: PullRequestInfo,

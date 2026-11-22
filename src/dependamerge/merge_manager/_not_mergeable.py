@@ -232,9 +232,9 @@ class _NotMergeableMixin(_LiveBlockerMixin):
         PR is already described accurately by its state, so reading its
         checks would spend requests without adding anything.
 
-        The rejection is kept as a note.  It records what GitHub said at
-        the time, which is worth having when the live reading and the
-        message disagree, but it is no longer offered as the cause.
+        The rejection is kept as a note, as GitHub's word when the live
+        reading disagrees, but no longer offered as the cause.  A cooldown
+        note stays on the reason, since the summary prints only that.
         """
         if state != "blocked":
             return result
@@ -257,6 +257,7 @@ class _NotMergeableMixin(_LiveBlockerMixin):
             # Nothing could be established.  An empty reading is not an
             # all-clear, so the reason already recorded stands.
             return result
+        reason = self._with_rebase_note(pr_info, reason)
         if result.error and result.warning is None:
             # See :meth:`_settle_stale_failure`: the note records what
             # GitHub said, and the end-of-run pass must not replace it

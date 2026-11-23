@@ -151,6 +151,11 @@ outputs:
   closed:
     description: "Pull requests closed without merging"
     value: ${{ steps.summary.outputs.closed }}
+  major_bumps:
+    description: >-
+      Merged (or, in a dry run, mergeable) and auto-merge pending pull
+      requests that bump a dependency across a major version
+    value: ${{ steps.summary.outputs.major_bumps }}
   slack_payload:
     description: >-
       Slack chat.postMessage payload (JSON); empty unless slack_channel

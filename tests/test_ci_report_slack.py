@@ -326,7 +326,6 @@ class TestShouldPost:
 
 
 class TestMajorBumps:
-    @pytest.mark.xfail(strict=True, reason="major bump reporting not yet added")
     def test_the_count_line_carries_the_major_bumps(self):
         payload = render_payload(
             _document([_entry(1, "merged")], major_bumps=2), channel="C123"

@@ -10,8 +10,8 @@ Run as ``python -m dependamerge.ci_report COMMAND RESULTS_FILE``, where
 ``markdown``
     The step-summary report.
 ``outputs``
-    One ``key=value`` line per outcome count plus ``total``, ready to
-    append to ``GITHUB_OUTPUT``.
+    One ``key=value`` line per outcome count, then ``major_bumps`` and
+    ``total``, ready to append to ``GITHUB_OUTPUT``.
 ``slack --channel ID [--run-url URL] [--when POLICY]``
     A Slack ``chat.postMessage`` payload, as one line of JSON, or nothing
     when the run does not warrant a digest under ``POLICY`` (``always``,
@@ -36,9 +36,10 @@ from .slack import SLACK_WHEN, render_payload, should_post
 
 
 def render_outputs(document: Mapping[str, Any]) -> str:
-    """One ``key=value`` line per outcome count, then ``total``."""
+    """One ``key=value`` line per outcome count, ``major_bumps``, then ``total``."""
     counts = document.get("counts") or {}
     lines = [f"{status}={int(counts.get(status, 0))}" for status in TERMINAL_STATUSES]
+    lines.append(f"major_bumps={int(document.get('major_bumps') or 0)}")
     lines.append(f"total={len(document.get('results') or [])}")
     return "\n".join(lines) + "\n"
 

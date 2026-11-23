@@ -23,6 +23,8 @@ import re
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from ..version_bumps import major_bump_entries
+
 #: Outcome order and labels: (status, real-run heading, preview heading,
 #: whether the table carries a reason column).
 _SECTIONS: tuple[tuple[str, str, str, bool], ...] = (
@@ -97,6 +99,40 @@ def _table(entries: Sequence[Mapping[str, Any]], with_reason: bool) -> list[str]
     return rows
 
 
+def _bump_rows(entry: Mapping[str, Any], outcome: str) -> list[str]:
+    """One row per major update ``entry`` makes, or one bare row."""
+    bump = entry.get("bump") or {}
+    updates = [u for u in bump.get("updates") or [] if isinstance(u, Mapping)]
+    named = [u for u in updates if u.get("level") == "major"] or updates or [{}]
+    return [
+        f"| {_cell(entry.get('repository'))} | {_pr_link(entry)} "
+        f"| {_cell(update.get('name'))} | {_cell(update.get('from'))} "
+        f"| {_cell(update.get('to'))} | {_cell(outcome)} |"
+        for update in named
+    ]
+
+
+def _major_bumps(entries: Sequence[Mapping[str, Any]], preview: bool) -> list[str]:
+    """The major version bumps section, or nothing when none counts."""
+    counted = major_bump_entries(entries)
+    if not counted:
+        return []
+    outcomes = {
+        "merged": "Mergeable" if preview else "Merged",
+        "auto_merge_pending": "Auto-merge pending",
+    }
+    lines = [
+        "",
+        "### \u26a0\ufe0f Major version bumps",
+        "",
+        "| Repository | Pull request | Dependency | From | To | Outcome |",
+        "| --- | --- | --- | --- | --- | --- |",
+    ]
+    for entry in counted:
+        lines.extend(_bump_rows(entry, outcomes.get(str(entry.get("status")), "")))
+    return lines
+
+
 def render_markdown(document: Mapping[str, Any]) -> str:
     """Render a results document as a step-summary section."""
     preview = bool(document.get("preview"))
@@ -128,6 +164,8 @@ def render_markdown(document: Mapping[str, Any]) -> str:
         if matching:
             label = preview_heading if preview else heading
             lines.extend(["", f"### {label}", "", *_table(matching, with_reason)])
+
+    lines.extend(_major_bumps(entries, preview))
 
     scan_errors = document.get("scan_errors") or []
     if scan_errors:

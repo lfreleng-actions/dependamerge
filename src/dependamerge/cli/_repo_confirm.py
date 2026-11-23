@@ -31,6 +31,7 @@ from ._merge_report import (
     _confirmed_run_results,
     _print_failed_pr_details,
     _print_final_merge_summary,
+    _print_major_bumps,
 )
 
 
@@ -50,6 +51,7 @@ def _handle_repo_preview_confirmation(
     # Per-PR preview lines are no longer printed during the run, so
     # report the not-mergeable PRs (and why) here before prompting.
     _print_failed_pr_details(merge_results)
+    _print_major_bumps(merge_results, preview=True)
 
     if merged_count == 0:
         console.print("\n\U0001f4a1 No PRs are mergeable at this time.")

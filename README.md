@@ -491,6 +491,7 @@ when a later step reports those PRs instead.
 | `exit_code`                                                                           | dependamerge's exit code               |
 | `total`                                                                               | Pull requests assessed or merged       |
 | `merged`, `auto_merge_pending`, `failed`, `blocked`, `unsettled`, `skipped`, `closed` | Pull requests ending with that outcome |
+| `major_bumps`                                                                         | Major version bumps merged; see below  |
 | `slack_payload`                                                                       | Slack `chat.postMessage` JSON          |
 
 <!-- markdownlint-enable MD013 -->
@@ -517,7 +518,8 @@ The count outputs stay empty when the run stops before reporting results, for
 instance on an unknown `exclude_repos` name.
 
 The Slack digest lists failed, blocked and skipped PRs with their reasons, then
-the merges, and counts the outcomes that resolve on their own. It stays within
+the merges, and counts the outcomes that resolve on their own and any
+[major version bumps](#major-version-bumps) merged. It stays within
 Slack's message limits for a run of any size, and counts the PRs it leaves out.
 `slack_when` decides whether there is a digest at all: `activity` posts when the
 run processed any PR, and `attention` when any PR failed or ended blocked.
@@ -1228,6 +1230,39 @@ contexts and stay invisible to check runs, while a workflow and its
 jobs have different names: `codeql.yml` declares the workflow `CodeQL`
 and the job `Audit Repository`, and a refusal quotes the first alone.
 
+### Major Version Bumps
+
+A pull request that bumps a dependency across a major version merges
+as a patch bump does, so the run reports each one it merged as a
+reminder to check that it did not break the repository. A bump is major
+when the leading version number changes (`1.3.3` to `2.0.0`, `0.0.2` to
+`1.0.0`, or a downgrade such as `3.1.0` to `2.9.0`), when a Python
+version's epoch changes (`1!1.3.3` to `2!1.3.3`), or when dependabot's
+metadata marks it `semver-major`. A grouped update counts when any one of
+its dependencies does.
+
+The versions come from the lines dependabot and pre-commit.ci start
+their descriptions with (`Bumps … from … to …`, ``Updates `…` from … to
+…`` and `- [repository: old → new](…)`), never from the release notes
+and commit lists inside collapsed `<details>` blocks, which routinely
+mention the dependency's own bumps. A title's `from … to …` serves when
+the description names no versions, which is all the run reads from a
+Renovate pull request. A commit or digest pin reads as unknown, and a
+calendar-versioned dependency reads as major when its year rolls over.
+
+A merged or auto-merge pending major bump appears:
+
+- on the console, below the final results line, with its URL, the
+  dependency and both versions (a dry run, and the preview shown
+  before the confirmation prompt, list the mergeable ones);
+- in the results document, where every entry carries a `bump` with its
+  level and updates, and `major_bumps` counts the ones that merged;
+- in the step summary, as a `⚠️ Major version bumps` table;
+- in the Slack digest's count line; and
+- in the action's `major_bumps` output.
+
+Nothing holds a major bump back yet: the run merges it as before.
+
 ### Dry Run Mode
 
 Use `--dry-run` to perform a complete analysis and preview without making any
@@ -1268,9 +1303,10 @@ first (a bad option, a token without the rights) does not.
 
 The document records the target, scope, any `--include-repos` or
 `--exclude-repos` selection, the count of each outcome, one entry per pull
-request (repository, number, title, URL, author, outcome and reason), and
-any repositories an owner-wide run could not scan. Render it as a step
-summary from a later step, mapping the output into the environment:
+request (repository, number, title, URL, author, outcome, reason and
+[version bump](#major-version-bumps)), the number of major version bumps
+merged, and any repositories an owner-wide run could not scan. Render it as
+a step summary from a later step, mapping the output into the environment:
 
 ```yaml
       - name: Summarise

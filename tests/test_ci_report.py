@@ -163,13 +163,7 @@ class TestWriteResultsFile:
 
 def _bad_bump(bump: object) -> Any:
     """A loader case whose only entry carries a malformed ``bump``."""
-    return pytest.param(
-        {"results": [{"status": "merged", "bump": bump}]},
-        "'bump'",
-        marks=pytest.mark.xfail(
-            strict=True, reason="major bump reporting not yet added"
-        ),
-    )
+    return pytest.param({"results": [{"status": "merged", "bump": bump}]}, "'bump'")
 
 
 class TestLoadDocument:
@@ -641,7 +635,6 @@ def _bump_result(
 
 
 class TestMajorBumps:
-    @pytest.mark.xfail(strict=True, reason="major bump reporting not yet added")
     def test_the_document_records_each_bump_and_counts_merged_majors(self):
         document = _document(
             [
@@ -666,13 +659,11 @@ class TestMajorBumps:
         }
         assert document["results"][4]["bump"]["level"] == "other"
 
-    @pytest.mark.xfail(strict=True, reason="major bump reporting not yet added")
     def test_a_run_without_majors_counts_none(self):
         document = _document([_bump_result(1, MergeStatus.MERGED, body=_MINOR_BODY)])
         assert document["major_bumps"] == 0
         assert "Major version bumps" not in render_markdown(document)
 
-    @pytest.mark.xfail(strict=True, reason="major bump reporting not yet added")
     def test_the_step_summary_lists_counted_majors(self):
         document = _document(
             [
@@ -689,7 +680,6 @@ class TestMajorBumps:
         assert "| Auto-merge pending |" in shown
         assert "pull/9" not in section
 
-    @pytest.mark.xfail(strict=True, reason="major bump reporting not yet added")
     def test_the_step_summary_escapes_bump_cells(self):
         body = "Bumps [x|y](https://x) from 1.0.0 to 2.0.0.\n"
         markdown = render_markdown(
@@ -697,14 +687,12 @@ class TestMajorBumps:
         )
         assert "| x\\|y |" in markdown
 
-    @pytest.mark.xfail(strict=True, reason="major bump reporting not yet added")
     def test_a_preview_says_mergeable(self):
         markdown = render_markdown(
             _document([_bump_result(1, MergeStatus.MERGED)], preview=True)
         )
         assert "| Mergeable |" in _shown(markdown)
 
-    @pytest.mark.xfail(strict=True, reason="major bump reporting not yet added")
     def test_the_output_carries_the_count(self, tmp_path, capsys):
         path = tmp_path / "results.json"
         path.write_text(json.dumps(_document([_bump_result(1, MergeStatus.MERGED)])))
@@ -713,7 +701,6 @@ class TestMajorBumps:
         assert "major_bumps=1" in lines
         assert lines[-1] == "total=1"
 
-    @pytest.mark.xfail(strict=True, reason="major bump reporting not yet added")
     def test_a_malformed_count_is_a_bad_file(self, tmp_path):
         path = tmp_path / "results.json"
         document = _document([])
@@ -724,7 +711,6 @@ class TestMajorBumps:
 
 
 class TestMajorBumpsOnTheConsole:
-    @pytest.mark.xfail(strict=True, reason="major bump reporting not yet added")
     def test_a_real_run_lists_merged_majors(self, capsys):
         _print_final_merge_summary(
             [
@@ -747,19 +733,16 @@ class TestMajorBumpsOnTheConsole:
         assert "pull/9" not in section
         assert "pull/10" not in section
 
-    @pytest.mark.xfail(strict=True, reason="major bump reporting not yet added")
     def test_the_no_confirm_summary_lists_them(self, capsys):
         _display_merge_results([_bump_result(7, MergeStatus.MERGED)], no_confirm=True)
         assert "Major version bumps merged: 1" in capsys.readouterr().out
 
-    @pytest.mark.xfail(strict=True, reason="major bump reporting not yet added")
     def test_a_preview_words_it_as_a_prediction(self, capsys):
         _display_merge_results([_bump_result(7, MergeStatus.MERGED)], no_confirm=False)
         out = capsys.readouterr().out
         assert "Major version bumps among the mergeable pull requests: 1" in out
         assert "Major version bumps merged" not in out
 
-    @pytest.mark.xfail(strict=True, reason="major bump reporting not yet added")
     @pytest.mark.parametrize("route", ["pull_request", "repository", "owner"])
     def test_an_interactive_preview_lists_them_before_the_prompt(
         self, route, capsys, monkeypatch

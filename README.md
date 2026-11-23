@@ -1808,22 +1808,21 @@ every pull request with read-scoped permissions.
 
 #### Pre-commit Integration
 
-Tests are automatically integrated into pre-commit hooks and run on every commit.
 This project uses [prek](https://github.com/j178/prek) (a faster, Rust-based
-drop-in replacement for pre-commit) as the local hook runner:
+drop-in replacement for pre-commit) as the local hook runner. The hooks run
+linting and formatting checks on commit; they do not run the test suite.
 
 ```bash
-# Install prek git hooks (tests will run automatically on commits)
+# Install prek git hooks
 prek install
 
-# Run all checks including tests manually
+# Run all hooks manually
 prek run --all-files
-
-# Run the pytest hook
-prek run pytest
 ```
 
-Note: The pytest hook runs automatically on every commit to ensure code quality.
+Tests run in CI on every pull request (`.github/workflows/build-test.yaml`
+and `.github/workflows/integration-test.yaml`). Run them locally with
+`uv run pytest`.
 
 ### Code Quality
 

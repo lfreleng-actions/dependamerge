@@ -1803,8 +1803,9 @@ DEPENDAMERGE_IT_GERRIT_HOST=gerrit.example.org \
   uv run pytest tests/integration/test_live_gerrit.py --run-integration --no-cov
 ```
 
-The `Integration Tests (dry-run)` GitHub Actions workflow runs this suite on
-every pull request with read-scoped permissions.
+The `Integration Tests (dry-run)` GitHub Actions workflow runs this suite, with
+read-scoped permissions, on pull requests to `main` or `master` that change the
+source, the tests, `pyproject.toml` or the workflow itself.
 
 #### Pre-commit Integration
 
@@ -1820,9 +1821,14 @@ prek install
 prek run --all-files
 ```
 
-Tests run in CI on every pull request (`.github/workflows/build-test.yaml`
-and `.github/workflows/integration-test.yaml`). Run them locally with
-`uv run pytest`.
+CI does not test every pull request. `.github/workflows/build-test.yaml` runs on
+pull requests to `main` or `master` that change more than files under
+`.github/`, root dotfiles and `tox.ini`;
+`.github/workflows/integration-test.yaml` runs on those that change the source,
+the tests or `pyproject.toml`. A pull request whose changes all fall outside
+those filters, such as one to `.pre-commit-config.yaml`, triggers neither, so
+run the tests locally with `uv run pytest` before you push; for a change the
+workflows skip, that local run is the test run.
 
 ### Code Quality
 

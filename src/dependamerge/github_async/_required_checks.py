@@ -21,6 +21,48 @@ from urllib.parse import quote
 from ._base import _GitHubAsyncBase
 
 
+def _app_id(value: Any) -> int | None:
+    """*value* when it names a GitHub App: a positive integer."""
+    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+        return value
+    return None
+
+
+def required_check_apps(check: dict[str, Any]) -> frozenset[int] | None:
+    """The GitHub Apps a required check is bound to, or None for any App.
+
+    Rulesets name the App ``integration_id`` and classic branch
+    protection ``app_id``, where ``-1`` means any App.  ``app_ids``
+    carries the Apps of a context that requirements bind to several.
+    """
+    merged = check.get("app_ids")
+    if isinstance(merged, list):
+        apps = frozenset(a for a in map(_app_id, merged) if a is not None)
+        return apps or None
+    for key in ("integration_id", "app_id"):
+        app = _app_id(check.get(key))
+        if app is not None:
+            return frozenset({app})
+    return None
+
+
+def merge_required_check(
+    first: dict[str, Any], second: dict[str, Any]
+) -> dict[str, Any]:
+    """One entry for a context that two requirements declare.
+
+    Each requirement waits on its own App's report, so the entry is
+    bound to every App either names.  A requirement any App may satisfy
+    leaves the context unbound.
+    """
+    apps, more = required_check_apps(first), required_check_apps(second)
+    if apps == more:
+        return first
+    if apps is None or more is None:
+        return {"context": first["context"]}
+    return {"context": first["context"], "app_ids": sorted(apps | more)}
+
+
 class _RequiredChecksMixin(_GitHubAsyncBase):
     """Required-check and branch-protection lookups for ``GitHubAsync``."""
 
@@ -144,16 +186,22 @@ class _RequiredChecksMixin(_GitHubAsyncBase):
         except Exception as e:
             return checks, "404" in str(e)
         if isinstance(data, dict):
-            for ctx in data.get("contexts", []):
-                if isinstance(ctx, str) and ctx:
-                    checks.append({"context": ctx})
-            for check in data.get("checks", []):
+            # ``checks`` restates ``contexts`` with each one's App binding,
+            # so a context listed in both is taken from ``checks``.
+            bound: dict[str, dict[str, Any]] = {}
+            raw_checks = data.get("checks")
+            for check in raw_checks if isinstance(raw_checks, list) else []:
                 if (
                     isinstance(check, dict)
                     and isinstance(check.get("context"), str)
                     and check["context"]
                 ):
-                    checks.append(check)
+                    bound.setdefault(check["context"], check)
+            raw_contexts = data.get("contexts")
+            for ctx in raw_contexts if isinstance(raw_contexts, list) else []:
+                if isinstance(ctx, str) and ctx:
+                    checks.append(bound.pop(ctx, {"context": ctx}))
+            checks.extend(bound.values())
         return checks, True
 
     async def get_required_status_checks(
@@ -182,8 +230,11 @@ class _RequiredChecksMixin(_GitHubAsyncBase):
         the two are unioned, because GitHub enforces both: they are
         cumulative rather than alternatives.
         Returns ``(checks, reliable)``, where each check is a dict with
-        'context' and optionally 'integration_id', deduplicated by
-        ``context``.
+        'context' and optionally its App binding ('integration_id' from a
+        ruleset, 'app_id' from branch protection), deduplicated by
+        ``context``.  A context that requirements bind to different Apps
+        is returned with all of them in 'app_ids', and one that any
+        requirement leaves open to every App is returned bound to none.
 
         ``reliable`` is False when any lookup failed, which is what makes
         the empty list interpretable.  A token that cannot read rulesets
@@ -225,16 +276,21 @@ class _RequiredChecksMixin(_GitHubAsyncBase):
             return list(cached), True
 
         required_checks: list[dict[str, Any]] = []
-        seen_contexts: set[str] = set()
+        seen_contexts: dict[str, int] = {}
 
         def _add(candidates: list[dict[str, Any]]) -> None:
             for check in candidates:
                 ctx = check.get("context")
                 if not isinstance(ctx, str) or not ctx:
                     continue
-                if ctx not in seen_contexts:
-                    seen_contexts.add(ctx)
+                index = seen_contexts.get(ctx)
+                if index is None:
+                    seen_contexts[ctx] = len(required_checks)
                     required_checks.append(check)
+                else:
+                    required_checks[index] = merge_required_check(
+                        required_checks[index], check
+                    )
 
         # Resolve the repo's actual default branch so that ~DEFAULT_BRANCH
         # ruleset conditions are evaluated correctly (not hardcoded to

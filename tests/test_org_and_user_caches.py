@@ -576,6 +576,7 @@ class TestRepoBranchSessionCaches:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("listings_via_get")
 class TestAnalyzeBlockReasonBaseBranchFastPath:
     """A caller-supplied base_branch skips the PR-detail fetch."""
 

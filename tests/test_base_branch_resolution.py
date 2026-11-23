@@ -81,6 +81,7 @@ class TestResolveDefaultBranch:
             api.get.assert_awaited_once_with("/repos/owner/repo")
 
 
+@pytest.mark.usefixtures("listings_via_get")
 class TestAnalyzeBlockReasonBaseBranch:
     @pytest.mark.asyncio
     async def test_uses_pr_base_ref_not_assumed_main(self) -> None:
@@ -165,6 +166,7 @@ class TestAnalyzeBlockReasonBaseBranch:
             assert "base" in result.lower() and "branch" in result.lower()
 
 
+@pytest.mark.usefixtures("listings_via_get")
 class TestAnalyzeBlockReasonRulesetPendingWorkflows:
     """Ruleset-required workflows still running must read as *pending*.
 

@@ -3,52 +3,24 @@
 """
 Check run, status context and branch state queries.
 
-Reads check runs and workflow run names for a ref, the failing commit
-status contexts, how far a branch is behind its base, the repository
-default branch, and which kind of protection guards a branch.
+Reads check runs, commit status contexts and workflow run names for a
+ref, how far a branch is behind its base, the repository default
+branch, and which kind of protection guards a branch.
 """
 
 # pyright: reportUninitializedInstanceVariable=false
 
 from __future__ import annotations
 
-from typing import (
-    Any,
-)
+from typing import Any
 from urllib.parse import quote
 
 from ..check_runs import FAILING_CONCLUSIONS, latest_check_run_per_name
-from ._base import _GitHubAsyncBase
+from ._commit_listings import _CommitListingsMixin
 
 
-class _ChecksMixin(_GitHubAsyncBase):
+class _ChecksMixin(_CommitListingsMixin):
     """Check-run, status and branch-state queries for ``GitHubAsync``."""
-
-    async def get_check_runs_for_ref(
-        self, owner: str, repo: str, ref: str
-    ) -> list[dict[str, Any]]:
-        """Check runs reported against *ref*.
-
-        Returns the raw runs, including superseded duplicates: deciding
-        which run is authoritative for a given name belongs to
-        :mod:`dependamerge.check_runs`, not here.
-
-        Paginated.  A busy commit carries more than one page, and every
-        caller reasons about *absence* --- "nothing is failing", "only
-        semantic checks are failing" --- so a truncated page reads as an
-        all-clear for whatever sat on page two.
-        """
-        runs: list[dict[str, Any]] = []
-        async for page in self.get_paginated(
-            f"/repos/{owner}/{repo}/commits/{ref}/check-runs", per_page=100
-        ):
-            if not isinstance(page, dict):
-                continue
-            batch = page.get("check_runs")
-            if not batch:
-                break
-            runs.extend(run for run in batch if isinstance(run, dict))
-        return runs
 
     async def get_failing_workflow_run_names_for_sha(
         self, owner: str, repo: str, head_sha: str
@@ -160,21 +132,11 @@ class _ChecksMixin(_GitHubAsyncBase):
         among the first thirty.
         """
         failing: list[str] = []
-        async for page in self.get_paginated(
-            f"/repos/{owner}/{repo}/commits/{ref}/status", per_page=100
-        ):
-            if not isinstance(page, dict):
-                continue
-            statuses = page.get("statuses")
-            if not statuses:
-                break
-            for entry in statuses:
-                if not isinstance(entry, dict):
-                    continue
-                if entry.get("state") in ("failure", "error"):
-                    context = entry.get("context")
-                    if isinstance(context, str) and context and context not in failing:
-                        failing.append(context)
+        for entry in await self.get_commit_statuses(owner, repo, ref):
+            if entry.get("state") in ("failure", "error"):
+                context = entry.get("context")
+                if isinstance(context, str) and context and context not in failing:
+                    failing.append(context)
         return failing
 
     async def get_behind_by(

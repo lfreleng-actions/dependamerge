@@ -31,6 +31,7 @@ from ._human_gate import (
     OVERRIDE_OPTION,
     _require_override_pairing,
 )
+from ._major_gate import ALLOW_MAJOR_OPTION, GATE_ZERO_MINOR_OPTION
 from ._merge_dispatch import (
     _dispatch_gerrit,
     _normalise_topic,
@@ -209,6 +210,8 @@ def merge(
         help="Ignore GitHub2Gerrit comments and merge PRs in GitHub as normal",
     ),
     include_human_prs: bool = INCLUDE_HUMAN_PRS_OPTION,
+    allow_major: bool = ALLOW_MAJOR_OPTION,
+    gate_zero_minor: bool = GATE_ZERO_MINOR_OPTION,
     include_bots: list[str] | None = INCLUDE_BOTS_OPTION,
     exclude_bots: list[str] | None = EXCLUDE_BOTS_OPTION,
     include_repos: list[str] | None = INCLUDE_REPOS_OPTION,
@@ -307,6 +310,11 @@ def merge(
     For human-authored PRs, add --include-human-prs; the run then prints
     the --override value that confirms them.
 
+    Major version bumps are gated on GitHub: --no-confirm holds them back
+    as skipped, and an interactive run asks for a value of their own
+    before merging them. --allow-major merges them like any other PR;
+    --gate-zero-minor gates 0.x minor bumps too.
+
     GitHub2Gerrit handling:
     By default, PRs with GitHub2Gerrit mapping comments are detected and
     the corresponding Gerrit changes are submitted (+2 Code-Review + submit).
@@ -370,6 +378,9 @@ def merge(
         netrc_optional=netrc_optional,
         github2gerrit_mode=github2gerrit_mode,
         include_human_prs=include_human_prs,
+        # ``is True``: a direct Python call passes Typer's OptionInfo.
+        allow_major=allow_major is True,
+        gate_zero_minor=gate_zero_minor is True,
         rebase_local=rebase_local,
         dry_run=dry_run,
         host=_target_host(target),

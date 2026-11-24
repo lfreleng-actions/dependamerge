@@ -49,6 +49,10 @@ class _MergeContext:
     netrc_optional: bool
     github2gerrit_mode: str
     include_human_prs: bool = False
+    # The major version bump gate: --allow-major turns it off, and
+    # --gate-zero-minor extends it to 0.x minor bumps.
+    allow_major: bool = False
+    gate_zero_minor: bool = False
     # Optional behaviour flag; defaulted so a context can be built
     # without every construction site opting in explicitly.
     fix_semantic_title: bool = True
@@ -76,9 +80,14 @@ class _MergeContext:
     # --exclude-bots and the user's config.json; without any, only the
     # built-in Apps.
     bot_policy: BotPolicy = field(default_factory=BotPolicy)
-    # Drafts set aside when the run's scope was settled, recorded as
-    # skipped so the results document reports them.
-    draft_results: list[MergeResult] = field(default_factory=list)
+    # PRs set aside before the merge pass (drafts, and major version
+    # bumps an unattended run holds back), recorded as skipped so the
+    # results document reports them.
+    set_aside_results: list[MergeResult] = field(default_factory=list)
+    # The head commit of each gated PR an interactive run confirmed,
+    # keyed by lowercased ``owner/repo`` and number, so the real pass can
+    # leave out any that moved since.
+    confirmed_major_heads: dict[tuple[str, int], str] = field(default_factory=dict)
     # The repository and owner bot policy files the run has read.
     policy_files: PolicyFiles = field(default_factory=PolicyFiles)
     # The kinds of unreadable variable the run has warned about.

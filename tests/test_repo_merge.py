@@ -60,7 +60,7 @@ def _mock_asyncio_run(side_effects: list[object]):
 def _make_pr(
     number: int,
     author: str = "dependabot[bot]",
-    title: str = "Bump foo from 1.0 to 2.0",
+    title: str = "Bump foo from 1.0 to 1.1",
     repo: str = "owner/repo",
     state: str = "open",
 ) -> PullRequestInfo:

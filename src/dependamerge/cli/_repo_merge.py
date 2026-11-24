@@ -30,6 +30,7 @@ from ._bot_scope import _remove_out_of_scope_bots
 from ._context import _MergeContext
 from ._drafts import _set_aside_drafts
 from ._human_gate import _confirm_human_prs_in_scope
+from ._major_gate import _confirm_major_bumps, _set_aside_major_bumps
 from ._merge_order import _repo_merge_order
 from ._merge_permissions import _maybe_check_merge_permissions
 from ._merge_report import (
@@ -137,8 +138,9 @@ def _partition_repo_prs(
 ) -> tuple[list[PullRequestInfo], list[PullRequestInfo], list[PullRequestInfo]]:
     """Split the fetched PRs by authorship and print the repository summary.
 
-    PRs from Apps outside the bot policy, then drafts, are listed and
-    set aside first.
+    PRs from Apps outside the bot policy, then drafts, then the major
+    version bumps an unattended run holds back, are listed and set aside
+    first.
 
     Args:
         ctx: Shared merge context, holding the bot policy.
@@ -152,6 +154,7 @@ def _partition_repo_prs(
     console.print(f"\n📊 Found {len(repo_prs)} open PR(s) in {parsed_repo.project}")
     repo_prs = _remove_out_of_scope_bots(ctx.bot_policy, repo_prs)
     repo_prs = _set_aside_drafts(ctx, repo_prs)
+    repo_prs = _set_aside_major_bumps(ctx, repo_prs)
 
     automation_prs: list[PullRequestInfo] = []
     human_prs: list[PullRequestInfo] = []
@@ -312,7 +315,8 @@ def _handle_repo_merge(
 
     # Dry run: report the preview and stop before any prompt or merge.
     if ctx.dry_run:
-        _display_merge_results(merge_results, no_confirm=False)
+        _display_merge_results(merge_results, no_confirm=False, list_major_bumps=False)
+        _confirm_major_bumps(ctx, parsed_repo.project, merge_results)
         _conclude_run(ctx, merge_results, preview=True)
         return
 

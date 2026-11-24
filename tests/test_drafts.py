@@ -83,20 +83,20 @@ class TestRecognition:
 class TestSetAside:
     def test_drafts_are_listed_recorded_and_removed(self, capsys) -> None:
         ctx = MagicMock()
-        ctx.draft_results = []
+        ctx.set_aside_results = []
         kept = _set_aside_drafts(
             ctx, [_pr(1, is_draft=False), _pr(2, is_draft=True, state="dirty")]
         )
         assert [pr.number for pr in kept] == [1]
         assert "Draft PRs skipped: 1" in capsys.readouterr().out
-        [recorded] = ctx.draft_results
+        [recorded] = ctx.set_aside_results
         assert recorded.status is MergeStatus.SKIPPED
         assert recorded.error == DRAFT_REASON
         assert recorded.pr_info.number == 2
 
     def test_no_drafts_prints_nothing(self, capsys) -> None:
         ctx = MagicMock()
-        ctx.draft_results = []
+        ctx.set_aside_results = []
         prs = [_pr(1, is_draft=False)]
         assert _set_aside_drafts(ctx, prs) == prs
         assert capsys.readouterr().out == ""

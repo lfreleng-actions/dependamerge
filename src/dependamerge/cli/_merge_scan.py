@@ -27,12 +27,12 @@ from ..progress_tracker import MergeProgressTracker
 from ._app import MAX_RETRIES, console
 from ._context import _MergeContext
 from ._drafts import _set_aside_drafts
+from ._major_gate import _confirm_major_bumps, _recheck_major_heads
 from ._merge_report import (
     _conclude_run,
     _confirmed_run_results,
     _print_failed_pr_details,
     _print_final_merge_summary,
-    _print_major_bumps,
 )
 from ._policy_files import (
     _apply_policy_files,
@@ -260,6 +260,11 @@ def _restart_merge_progress_tracker(ctx: _MergeContext, total_prs: int) -> None:
     ctx.progress_tracker.start()
 
 
+def _single_pr_scope(ctx: _MergeContext) -> str:
+    """The scope a single-PR run's major bump confirmation derives from."""
+    return f"{ctx.owner}/{ctx.repo_name}#{ctx.pr_number}"
+
+
 def _handle_preview_confirmation(
     ctx: _MergeContext,
     merge_results: list[MergeResult],
@@ -279,7 +284,10 @@ def _handle_preview_confirmation(
     # Per-PR preview lines are no longer printed during the run, so
     # report the not-mergeable PRs (and why) here before prompting.
     _print_failed_pr_details(merge_results)
-    _print_major_bumps(merge_results, preview=True)
+    merge_results = _confirm_major_bumps(
+        ctx, _single_pr_scope(ctx), merge_results, source=ctx.source_pr
+    )
+    merged_count = sum(1 for r in merge_results if r.status.value == "merged")
 
     if merged_count == 0:
         console.print("\n\U0001f4a1 No PRs are mergeable at this time.")
@@ -326,6 +334,7 @@ def _execute_confirmed_merge(
     all_prs_to_merge: list[tuple[PullRequestInfo, ComparisonResult | None]],
 ) -> None:
     """Run the real merge after user confirmation."""
+    preview_results = _recheck_major_heads(ctx, preview_results)
     mergeable_prs = [
         all_prs_to_merge[i]
         for i, result in enumerate(preview_results)

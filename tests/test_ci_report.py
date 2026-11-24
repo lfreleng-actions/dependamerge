@@ -748,7 +748,8 @@ class TestMajorBumpsOnTheConsole:
         self, route, capsys, monkeypatch
     ):
         # The preview a user is asked to confirm, and may cancel, must
-        # name the majors it would merge.
+        # name the majors it would merge.  --allow-major takes them past
+        # the gate, which has its own listing and prompt.
         from dependamerge.cli._context import _MergeContext
         from dependamerge.cli._merge_scan import _handle_preview_confirmation
         from dependamerge.cli._org_confirm import _handle_org_preview_confirmation
@@ -777,6 +778,7 @@ class TestMajorBumpsOnTheConsole:
             github2gerrit_mode="ignore",
         )
         ctx.scope = route
+        ctx.allow_major = True
         ctx.github_client = Mock()
         ctx.github_client.get_pull_request_commits.return_value = ["Bump foo"]
         ctx.source_pr = _make_pr(7)

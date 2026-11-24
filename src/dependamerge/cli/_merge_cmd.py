@@ -41,6 +41,8 @@ from ._merge_dispatch import (
 )
 from ._merge_inputs import REBASE_COOLDOWN_OPTION, _validate_merge_inputs
 from ._merge_target import (
+    EXCLUDE_REPOS_OPTION,
+    INCLUDE_REPOS_OPTION,
     _parse_merge_target,
     _resolve_repo_selection,
     _resolve_target_url,
@@ -209,28 +211,8 @@ def merge(
     include_human_prs: bool = INCLUDE_HUMAN_PRS_OPTION,
     include_bots: list[str] | None = INCLUDE_BOTS_OPTION,
     exclude_bots: list[str] | None = EXCLUDE_BOTS_OPTION,
-    include_repos: list[str] | None = typer.Option(
-        None,
-        "--include-repos",
-        help=(
-            "Owner-wide runs only: act on just these repositories. "
-            "Comma-separated and/or repeatable, each 'name' or "
-            "'owner/name'. A name matching no non-archived, non-fork "
-            "repository stops the run before anything merges. Mutually "
-            "exclusive with --exclude-repos"
-        ),
-    ),
-    exclude_repos: list[str] | None = typer.Option(
-        None,
-        "--exclude-repos",
-        help=(
-            "Owner-wide runs only: act on every repository except these. "
-            "Comma-separated and/or repeatable, each 'name' or "
-            "'owner/name'. A name matching no non-archived, non-fork "
-            "repository stops the run before anything merges. Mutually "
-            "exclusive with --include-repos"
-        ),
-    ),
+    include_repos: list[str] | None = INCLUDE_REPOS_OPTION,
+    exclude_repos: list[str] | None = EXCLUDE_REPOS_OPTION,
     topic: str | None = typer.Option(
         None,
         "--topic",

@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from .._version import __version__
+from ..version_bumps import classify_result, major_bump_entries
 
 if TYPE_CHECKING:
     # Annotation only: importing the merge manager at run time would
@@ -78,6 +79,7 @@ def _entry(result: MergeResult, explain: Callable[[str], list[str]]) -> dict[str
         # chooses its own.
         "details": [line.removeprefix("\u2022 ") for line in lines[1:]],
         "warning": result.warning,
+        "bump": classify_result(result).as_dict(),
     }
 
 
@@ -111,6 +113,7 @@ def build_document(
     for result in results:
         status: str = result.status.value
         counts[status] = counts.get(status, 0) + 1
+    entries = [_entry(result, explain) for result in results]
     return {
         "schema_version": SCHEMA_VERSION,
         "tool": {"name": "dependamerge", "version": __version__},
@@ -121,7 +124,10 @@ def build_document(
         "dry_run": dry_run,
         "selection": selection,
         "counts": counts,
-        "results": [_entry(result, explain) for result in results],
+        # Merged (or mergeable) and auto-merge pending PRs that bump a
+        # dependency across a major version.
+        "major_bumps": len(major_bump_entries(entries)),
+        "results": entries,
         "scan_errors": list(scan_errors),
     }
 
@@ -188,7 +194,22 @@ def load_document(path: Path) -> dict[str, Any]:
         for entry in document.get("results") or []
     ):
         raise ValueError(f"{path}: every entry's 'details' must be a list")
+    for entry in document.get("results") or []:
+        # Older documents carry no "bump"; one that does must be the
+        # shape the renderers read.
+        if "bump" not in entry:
+            continue
+        bump = entry["bump"]
+        if not isinstance(bump, dict):
+            raise ValueError(f"{path}: every entry's 'bump' must be an object")
+        if not isinstance(bump.get("updates", []), list):
+            raise ValueError(f"{path}: every 'bump' must list its updates")
+        if not all(isinstance(update, dict) for update in bump.get("updates", [])):
+            raise ValueError(f"{path}: every update in a 'bump' must be an object")
     counts = document.get("counts") or {}
     if not all(isinstance(n, int) and not isinstance(n, bool) for n in counts.values()):
         raise ValueError(f"{path}: every count must be an integer")
+    major_bumps = document.get("major_bumps", 0)
+    if not isinstance(major_bumps, int) or isinstance(major_bumps, bool):
+        raise ValueError(f"{path}: 'major_bumps' must be an integer")
     return document

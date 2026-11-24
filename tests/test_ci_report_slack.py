@@ -323,3 +323,20 @@ class TestShouldPost:
     def test_an_unknown_policy_raises(self):
         with pytest.raises(ValueError, match="slack_when"):
             should_post(_document([]), "often")
+
+
+class TestMajorBumps:
+    def test_the_count_line_carries_the_major_bumps(self):
+        payload = render_payload(
+            _document([_entry(1, "merged")], major_bumps=2), channel="C123"
+        )
+        texts = _texts(payload)
+        assert "\u26a0\ufe0f 2 major version bumps" in texts[1]
+        assert "\u26a0\ufe0f 2 major version bumps" in payload["text"]
+
+    @pytest.mark.parametrize("overrides", [{}, {"major_bumps": 0}])
+    def test_no_major_bumps_adds_nothing(self, overrides):
+        payload = render_payload(
+            _document([_entry(1, "merged")], **overrides), channel="C123"
+        )
+        assert "major version bump" not in json.dumps(payload)

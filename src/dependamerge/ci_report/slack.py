@@ -239,6 +239,14 @@ def render_payload(
         for status, label, preview_label in _COUNTED
         if counts.get(status)
     ]
+    major_bumps = document.get("major_bumps")
+    if (
+        isinstance(major_bumps, int)
+        and not isinstance(major_bumps, bool)
+        and major_bumps
+    ):
+        noun = "major version bump" if major_bumps == 1 else "major version bumps"
+        tally.append(f"\u26a0\ufe0f {major_bumps} {noun}")
     summary = " \u00b7 ".join(tally) if tally else "No pull requests to process."
     if document.get("selection"):
         summary += f"\n_{escape(document['selection'])}_"

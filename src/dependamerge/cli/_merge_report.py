@@ -26,6 +26,7 @@ from ..rule_violations import (
     violation_verb,
 )
 from ..url_parser import redact_target
+from ..version_bumps import classify_result, counts_as_major
 from ._app import console
 from ._context import _MergeContext
 
@@ -103,8 +104,48 @@ def _print_final_merge_summary(real_results: list[MergeResult]) -> None:
     console.print(f"\n🚀 Final Results: {', '.join(parts)}")
     if final_unsettled > 0:
         console.print("   ⏱️ Unsettled PRs will merge on a re-run")
+    _print_major_bumps(real_results, preview=False)
 
     _print_failed_pr_details(real_results)
+
+
+def _print_major_bumps(results: list[MergeResult], *, preview: bool) -> None:
+    """List the merged PRs that bump a dependency across a major version.
+
+    Such a PR merges like any other, so this is the reader's prompt to
+    check it did not break the repository.  Auto-merge pending PRs count
+    too, marked as such.  In a preview or dry run the outcomes are
+    predictions, and the heading says so.  Prints nothing when no PR
+    counts.
+    """
+    counted = []
+    for result in results:
+        bump = classify_result(result)
+        if counts_as_major(bump.level, result.status.value):
+            counted.append((result, bump))
+    if not counted:
+        return
+    if preview:
+        heading = (
+            f"⚠️ Major version bumps among the mergeable pull requests: {len(counted)}"
+        )
+    else:
+        heading = (
+            f"⚠️ Major version bumps merged: {len(counted)} "
+            "(check they did not break the repository)"
+        )
+    # markup=False: names and versions come from PR text, so brackets in
+    # them must not be read as Rich markup.
+    console.print(f"\n{heading}", markup=False)
+    for result, bump in counted:
+        url = getattr(result.pr_info, "html_url", "<unknown>")
+        pending = result.status.value == "auto_merge_pending"
+        console.print(
+            f"   • {url}{' (auto-merge pending)' if pending else ''}", markup=False
+        )
+        for update in bump.major_updates():
+            name = f"{update.name} " if update.name else ""
+            console.print(f"     {name}{update.old} → {update.new}", markup=False)
 
 
 def _format_failure_reason(reason: str) -> list[str]:
@@ -231,6 +272,7 @@ def _display_merge_results(
             console.print(f"🚪 Closed without merging: {_prs(closed_count)}")
         if auto_merge_count > 0:
             console.print(f"⏳ Auto-merge pending for {_prs(auto_merge_count)}")
+        _print_major_bumps(merge_results, preview=True)
 
     if no_confirm:
         parts = [f"{merged_count} merged"]
@@ -248,6 +290,7 @@ def _display_merge_results(
         console.print(f"📈 Final Results: {', '.join(parts)}")
         if unsettled_count > 0:
             console.print("   ⏱️ Unsettled PRs will merge on a re-run")
+        _print_major_bumps(merge_results, preview=False)
 
     _print_failed_pr_details(merge_results)
 

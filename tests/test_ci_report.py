@@ -26,7 +26,11 @@ from dependamerge.ci_report import (
 )
 from dependamerge.ci_report.__main__ import main
 from dependamerge.cli import app
-from dependamerge.cli._merge_report import _format_failure_reason
+from dependamerge.cli._merge_report import (
+    _display_merge_results,
+    _format_failure_reason,
+    _print_final_merge_summary,
+)
 from dependamerge.error_codes import ExitCode
 from dependamerge.merge_manager import MergeResult, MergeStatus
 from dependamerge.models import PullRequestInfo
@@ -157,11 +161,23 @@ class TestWriteResultsFile:
         assert path.exists()
 
 
+def _bad_bump(bump: object) -> Any:
+    """A loader case whose only entry carries a malformed ``bump``."""
+    return pytest.param({"results": [{"status": "merged", "bump": bump}]}, "'bump'")
+
+
 class TestLoadDocument:
     def test_round_trip(self, tmp_path):
         path = tmp_path / "results.json"
         path.write_text(json.dumps(_document([])))
         assert load_document(path)["scope"] == "owner"
+
+    def test_an_entry_without_bump_loads(self, tmp_path):
+        path = tmp_path / "results.json"
+        document = _document([])
+        document["results"] = [{"status": "merged", "details": []}]
+        path.write_text(json.dumps(document))
+        assert load_document(path)["results"][0]["status"] == "merged"
 
     @pytest.mark.parametrize("version", [999, True, 1.0, "1", None])
     def test_unknown_schema_is_refused(self, tmp_path, version):
@@ -187,6 +203,9 @@ class TestLoadDocument:
             ({"results": [{"status": "failed", "details": 1}]}, "'details'"),
             ({"counts": {"merged": "1"}}, "every count"),
             ({"counts": {"merged": True}}, "every count"),
+            _bad_bump([]),
+            _bad_bump({"level": "major", "updates": 1}),
+            _bad_bump({"level": "major", "updates": [1]}),
         ],
     )
     def test_a_malformed_shape_is_a_bad_file(self, tmp_path, override, expected):
@@ -599,3 +618,193 @@ class TestCliPublishesResults:
         assert document["scope"] == "pull_request"
         assert document["preview"] is True
         assert document["counts"]["merged"] == 1
+
+
+_MAJOR_BODY = (
+    "Bumps [python-test-action](https://github.com/o/python-test-action)"
+    " from 1.3.3 to 2.0.0.\n"
+)
+_MINOR_BODY = "Bumps [foo](https://github.com/o/foo) from 1.3.3 to 1.4.0.\n"
+
+
+def _bump_result(
+    number: int, status: MergeStatus, body: str = _MAJOR_BODY, **kwargs: Any
+) -> MergeResult:
+    pr = _make_pr(number).model_copy(update={"body": body})
+    return MergeResult(pr, status, **kwargs)
+
+
+class TestMajorBumps:
+    def test_the_document_records_each_bump_and_counts_merged_majors(self):
+        document = _document(
+            [
+                _bump_result(1, MergeStatus.MERGED),
+                _bump_result(2, MergeStatus.AUTO_MERGE_PENDING),
+                _bump_result(3, MergeStatus.FAILED, error="boom"),
+                _bump_result(4, MergeStatus.SKIPPED, error="out of scope"),
+                _bump_result(5, MergeStatus.MERGED, body=_MINOR_BODY),
+            ]
+        )
+        assert document["major_bumps"] == 2
+        assert document["results"][0]["bump"] == {
+            "level": "major",
+            "updates": [
+                {
+                    "name": "python-test-action",
+                    "from": "1.3.3",
+                    "to": "2.0.0",
+                    "level": "major",
+                }
+            ],
+        }
+        assert document["results"][4]["bump"]["level"] == "other"
+
+    def test_a_run_without_majors_counts_none(self):
+        document = _document([_bump_result(1, MergeStatus.MERGED, body=_MINOR_BODY)])
+        assert document["major_bumps"] == 0
+        assert "Major version bumps" not in render_markdown(document)
+
+    def test_the_step_summary_lists_counted_majors(self):
+        document = _document(
+            [
+                _bump_result(7, MergeStatus.MERGED),
+                _bump_result(8, MergeStatus.AUTO_MERGE_PENDING),
+                _bump_result(9, MergeStatus.FAILED, error="boom"),
+            ]
+        )
+        markdown = render_markdown(document)
+        section = markdown[markdown.index("### \u26a0\ufe0f Major version bumps") :]
+        shown = _shown(section)
+        assert "| acme/widget | [#7](https://github.com/acme/widget/pull/7) " in shown
+        assert "| python-test-action | 1.3.3 | 2.0.0 | Merged |" in shown
+        assert "| Auto-merge pending |" in shown
+        assert "pull/9" not in section
+
+    def test_the_step_summary_escapes_bump_cells(self):
+        body = "Bumps [x|y](https://x) from 1.0.0 to 2.0.0.\n"
+        markdown = render_markdown(
+            _document([_bump_result(1, MergeStatus.MERGED, body=body)])
+        )
+        assert "| x\\|y |" in markdown
+
+    def test_a_preview_says_mergeable(self):
+        markdown = render_markdown(
+            _document([_bump_result(1, MergeStatus.MERGED)], preview=True)
+        )
+        assert "| Mergeable |" in _shown(markdown)
+
+    def test_the_output_carries_the_count(self, tmp_path, capsys):
+        path = tmp_path / "results.json"
+        path.write_text(json.dumps(_document([_bump_result(1, MergeStatus.MERGED)])))
+        assert main(["outputs", str(path)]) == 0
+        lines = capsys.readouterr().out.splitlines()
+        assert "major_bumps=1" in lines
+        assert lines[-1] == "total=1"
+
+    def test_a_malformed_count_is_a_bad_file(self, tmp_path):
+        path = tmp_path / "results.json"
+        document = _document([])
+        document["major_bumps"] = "2"
+        path.write_text(json.dumps(document))
+        with pytest.raises(ValueError, match="major_bumps"):
+            load_document(path)
+
+
+class TestMajorBumpsOnTheConsole:
+    def test_a_real_run_lists_merged_majors(self, capsys):
+        _print_final_merge_summary(
+            [
+                _bump_result(7, MergeStatus.MERGED),
+                _bump_result(8, MergeStatus.AUTO_MERGE_PENDING),
+                _bump_result(9, MergeStatus.FAILED, error="boom"),
+                _bump_result(10, MergeStatus.MERGED, body=_MINOR_BODY),
+            ]
+        )
+        out = capsys.readouterr().out
+        heading = (
+            "⚠️ Major version bumps merged: 2 (check they did not break the repository)"
+        )
+        assert heading in out
+        assert out.index("Final Results") < out.index(heading)
+        section = out[out.index(heading) : out.index("❌ Failed PRs")]
+        assert "   • https://github.com/acme/widget/pull/7\n" in section
+        assert "     python-test-action 1.3.3 → 2.0.0" in section
+        assert "pull/8 (auto-merge pending)" in section
+        assert "pull/9" not in section
+        assert "pull/10" not in section
+
+    def test_the_no_confirm_summary_lists_them(self, capsys):
+        _display_merge_results([_bump_result(7, MergeStatus.MERGED)], no_confirm=True)
+        assert "Major version bumps merged: 1" in capsys.readouterr().out
+
+    def test_a_preview_words_it_as_a_prediction(self, capsys):
+        _display_merge_results([_bump_result(7, MergeStatus.MERGED)], no_confirm=False)
+        out = capsys.readouterr().out
+        assert "Major version bumps among the mergeable pull requests: 1" in out
+        assert "Major version bumps merged" not in out
+
+    @pytest.mark.parametrize("route", ["pull_request", "repository", "owner"])
+    def test_an_interactive_preview_lists_them_before_the_prompt(
+        self, route, capsys, monkeypatch
+    ):
+        # The preview a user is asked to confirm, and may cancel, must
+        # name the majors it would merge.
+        from dependamerge.cli._context import _MergeContext
+        from dependamerge.cli._merge_scan import _handle_preview_confirmation
+        from dependamerge.cli._org_confirm import _handle_org_preview_confirmation
+        from dependamerge.cli._repo_confirm import _handle_repo_preview_confirmation
+        from dependamerge.models import ComparisonResult
+        from dependamerge.url_parser import ParsedOrgUrl
+
+        monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+        ctx = _MergeContext(
+            pr_url="https://github.com/acme/widget/pull/7",
+            no_confirm=False,
+            similarity_threshold=0.8,
+            merge_method="merge",
+            token="t",
+            override=None,
+            no_fix=False,
+            merge_timeout=300.0,
+            show_progress=False,
+            debug_matching=False,
+            dismiss_copilot=False,
+            force="none",
+            verbose=False,
+            no_netrc=False,
+            netrc_file=None,
+            netrc_optional=True,
+            github2gerrit_mode="ignore",
+        )
+        ctx.scope = route
+        ctx.github_client = Mock()
+        ctx.github_client.get_pull_request_commits.return_value = ["Bump foo"]
+        ctx.source_pr = _make_pr(7)
+        results = [_bump_result(7, MergeStatus.MERGED)]
+        prs: list[tuple[PullRequestInfo, ComparisonResult | None]] = [
+            (results[0].pr_info, None)
+        ]
+        with patch("typer.prompt", return_value="") as prompt:
+            if route == "pull_request":
+                _handle_preview_confirmation(ctx, results, prs, 1, 1)
+            elif route == "repository":
+                _handle_repo_preview_confirmation(ctx, results, prs, 1, 1)
+            else:
+                parsed = Mock(spec=ParsedOrgUrl, owner="acme")
+                _handle_org_preview_confirmation(ctx, parsed, results, prs, 1, 1)
+        out = capsys.readouterr().out
+        heading = "Major version bumps among the mergeable pull requests: 1"
+        assert heading in out
+        assert out.index(heading) < out.index("To proceed with merging enter")
+        assert "     python-test-action 1.3.3 → 2.0.0" in out
+        assert "Major version bumps merged" not in out
+        assert prompt.call_count == (0 if route == "pull_request" else 1)
+
+    def test_nothing_counted_prints_nothing(self, capsys):
+        _print_final_merge_summary(
+            [
+                _bump_result(1, MergeStatus.MERGED, body=_MINOR_BODY),
+                _bump_result(2, MergeStatus.BLOCKED, error="conflict"),
+            ]
+        )
+        assert "Major version bumps" not in capsys.readouterr().out

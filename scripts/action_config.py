@@ -166,6 +166,8 @@ OPTIONS: dict[str, tuple[Callable[[Any], str], str | None]] = {
     "max_wait": (_seconds, "900"),
     "fix_out_of_date": (_flag, _TRUE),
     "dismiss_copilot": (_flag, _FALSE),
+    "allow_major": (_flag, _FALSE),
+    "gate_zero_minor": (_flag, _FALSE),
     "dry_run": (_flag, _FALSE),
 }
 

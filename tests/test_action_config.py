@@ -41,6 +41,8 @@ class TestPrecedence:
             "max_wait": "900",
             "fix_out_of_date": "true",
             "dismiss_copilot": "false",
+            "allow_major": "false",
+            "gate_zero_minor": "false",
             "dry_run": "false",
         }
 

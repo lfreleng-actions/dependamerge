@@ -481,6 +481,8 @@ when a later step reports those PRs instead.
 | `max_wait`             | `900`                 | Owner-wide: wall-clock ceiling in seconds; `0` arms auto-merge and returns  |
 | `fix_out_of_date`      | `true`                | Bring behind PRs up to date before merging                                  |
 | `dismiss_copilot`      | `false`               | Dismiss unresolved GitHub Copilot review comments                           |
+| `allow_major`          | `false`               | Merge major version bumps; without it the run skips them                    |
+| `gate_zero_minor`      | `false`               | Hold back 0.x minor version bumps (`0.7.0` to `0.8.0`) as major ones        |
 | `fail_on_merge_errors` | `true`                | Fail the step when any PR ends failed or blocked                            |
 | `slack_channel`        |                       | Slack channel ID; when set, `slack_payload` carries a digest of the run     |
 | `slack_when`           | `always`              | Digest on `always`, `activity` (any PR processed), `attention` or `never`   |
@@ -500,8 +502,8 @@ when a later step reports those PRs instead.
 keep its scope in a repository or organisation variable and change it without
 editing the workflow. Any of `target`, `include_repos`, `exclude_repos`,
 `include_bots`, `exclude_bots`, `merge_method`, `force`, `max_wait`,
-`fix_out_of_date`, `dismiss_copilot` and `dry_run` may appear; repository and
-App lists may be arrays. An input given
+`fix_out_of_date`, `dismiss_copilot`, `allow_major`, `gate_zero_minor` and
+`dry_run` may appear; repository and App lists may be arrays. An input given
 explicitly wins over the config, and the config over the default. The action
 checks every value before dependamerge runs, and an unknown key stops the run:
 a misspelt `exlude_repos` must not widen it to every repository.
@@ -1270,8 +1272,9 @@ Merging a major bump is a deliberate act, so the run gates it:
   confirmed bump's head again and leaves out, recorded as skipped, any
   that moved since the run listed it.
 - A dry run lists them and says what a real run would do.
-- `--allow-major` turns the gate off in every mode.
-- `--gate-zero-minor` gates 0.x minor bumps, such as
+- `--allow-major` (the action's `allow_major` input) turns the gate off
+  in every mode.
+- `--gate-zero-minor` (`gate_zero_minor`) gates 0.x minor bumps, such as
   `0.7.0` to `0.8.0`, the same way. A bump that reads as unknown is
   never gated.
 

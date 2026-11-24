@@ -20,6 +20,7 @@ from dependamerge.cli import (
     app,
 )
 from dependamerge.error_codes import ExitCode
+from dependamerge.gerrit import DEFAULT_LIST_OPTIONS, QUERY_BATCH_CEILING
 from dependamerge.gerrit.models import GerritChangeInfo, GerritComparisonResult
 from dependamerge.models import PullRequestInfo
 from dependamerge.url_parser import ChangeSource, ParsedUrl
@@ -876,6 +877,7 @@ class TestCLI:
 
         service = Mock(is_authenticated=True)
         service.get_change_info.return_value = change
+        service.get_open_changes_for_query.return_value = []
         service.find_similar_changes.return_value = []
         mock_create_service.return_value = service
 
@@ -900,7 +902,7 @@ class TestCLI:
             change,
             comparator,
             only_automation=False,
-            candidates=None,
+            candidates=[],
         )
 
     @pytest.mark.parametrize("automation", [False, True])
@@ -928,6 +930,7 @@ class TestCLI:
 
         service = Mock(is_authenticated=True)
         service.get_change_info.return_value = change
+        service.get_open_changes_for_query.return_value = []
         service.find_similar_changes.return_value = []
         mock_create_service.return_value = service
 
@@ -1025,7 +1028,7 @@ class TestCLI:
 
         service = Mock(is_authenticated=True)
         service.get_change_info.return_value = change
-        service.get_changes_by_topic.return_value = [sibling]
+        service.get_open_changes_for_query.return_value = [sibling]
         service.find_similar_changes.return_value = []
         mock_create_service.return_value = service
 
@@ -1043,7 +1046,11 @@ class TestCLI:
             dry_run=True,
         )
 
-        service.get_changes_by_topic.assert_called_once_with("update-settings")
+        service.get_open_changes_for_query.assert_called_once_with(
+            "topic:update-settings",
+            ceiling=QUERY_BATCH_CEILING,
+            options=DEFAULT_LIST_OPTIONS,
+        )
         service.find_similar_changes.assert_called_once_with(
             change,
             comparator,
@@ -1171,7 +1178,7 @@ class TestCLI:
 
         service = Mock(is_authenticated=True)
         service.get_change_info.return_value = change
-        service.get_changes_by_topic.return_value = [sibling]
+        service.get_open_changes_for_query.return_value = [sibling]
         service.find_similar_changes.return_value = []
         mock_create_service.return_value = service
 
@@ -1190,7 +1197,11 @@ class TestCLI:
             topic="forced-topic",
         )
 
-        service.get_changes_by_topic.assert_called_once_with("forced-topic")
+        service.get_open_changes_for_query.assert_called_once_with(
+            "topic:forced-topic",
+            ceiling=QUERY_BATCH_CEILING,
+            options=DEFAULT_LIST_OPTIONS,
+        )
 
     @patch("dependamerge.cli.create_gerrit_comparator")
     @patch("dependamerge.cli.create_gerrit_service")
@@ -1216,6 +1227,7 @@ class TestCLI:
 
         service = Mock(is_authenticated=True)
         service.get_change_info.return_value = change
+        service.get_open_changes_for_query.return_value = []
         service.find_similar_changes.return_value = []
         mock_create_service.return_value = service
 
@@ -1260,6 +1272,7 @@ class TestCLI:
 
         service = Mock(is_authenticated=True)
         service.get_change_info.return_value = change
+        service.get_open_changes_for_query.return_value = []
         service.find_similar_changes.return_value = []
         mock_create_service.return_value = service
 
@@ -1306,6 +1319,7 @@ class TestCLI:
 
         service = Mock(is_authenticated=True)
         service.get_change_info.return_value = change
+        service.get_open_changes_for_query.return_value = []
         service.find_similar_changes.return_value = []
         mock_create_service.return_value = service
 

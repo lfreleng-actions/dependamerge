@@ -50,6 +50,10 @@ class GerritChangeComparator(GerritComparatorHelpers):
     - Automation detection
     """
 
+    # How many scores compare_gerrit_changes averages: owner, subject,
+    # message and files.  Each lies in [0, 1].
+    SCORE_COUNT = 4
+
     def __init__(self, similarity_threshold: float = 0.8) -> None:
         """
         Initialize the comparator.
@@ -124,7 +128,7 @@ class GerritChangeComparator(GerritComparatorHelpers):
             reasons.append(f"Similar file changes (score: {files_score:.2f})")
 
         # Calculate overall confidence score
-        confidence_score = sum(scores) / len(scores) if scores else 0.0
+        confidence_score = sum(scores) / self.SCORE_COUNT
         is_similar = confidence_score >= self.similarity_threshold
 
         if is_similar:
@@ -135,6 +139,17 @@ class GerritChangeComparator(GerritComparatorHelpers):
             )
 
         return GerritComparisonResult.not_similar()
+
+    def other_owners_can_match(self) -> bool:
+        """Whether a change whose owner scores 0 can still reach the threshold.
+
+        The owner score is one of :attr:`SCORE_COUNT` equally weighted
+        scores, so a change by an owner that does not match scores at
+        most ``(SCORE_COUNT - 1) / SCORE_COUNT``.  Above that threshold
+        only changes by the source change's owner can be similar, and
+        the candidates can be read by owner rather than server-wide.
+        """
+        return self.similarity_threshold <= (self.SCORE_COUNT - 1) / self.SCORE_COUNT
 
     def is_automation_change(self, change: GerritChangeInfo) -> bool:
         """

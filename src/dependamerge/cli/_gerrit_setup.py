@@ -7,11 +7,12 @@ Credential, change and candidate resolution for Gerrit.
 Everything a Gerrit submission needs before the first vote is cast:
 resolving credentials, locating the source change of a change URL,
 honouring an override, rebasing when the change is behind, and
-collecting the topic's changes.  A query URL takes none of the
+reading every open change it is compared against.  A query URL takes none of the
 source-change steps: ``_gerrit_query`` handles it.
 """
 
 from pathlib import Path
+from typing import NamedTuple
 
 import typer
 from rich.console import Console
@@ -27,11 +28,16 @@ from ..error_codes import (
 )
 from ..error_text import summarise_error
 from ..gerrit import (
+    DEFAULT_LIST_OPTIONS,
+    QUERY_BATCH_CEILING,
+    SIMILAR_SCAN_CEILING,
     GerritChangeComparator,
     GerritChangeInfo,
     GerritComparisonResult,
     GerritService,
+    GerritServiceError,
     GerritSubmitResult,
+    topic_query_term,
 )
 from ..netrc import (
     GerritCredentials,
@@ -310,28 +316,84 @@ def _maybe_rebase_gerrit_change(
     raise typer.Exit(1)
 
 
-def _resolve_gerrit_candidates(
-    service: GerritService,
-    source_change: GerritChangeInfo,
-    parsed_url: ParsedUrl,
-    topic: str | None,
-    console: Console,
-) -> list[GerritChangeInfo] | None:
-    """Resolve the candidate changes to compare against, by topic.
+class _CandidateScope(NamedTuple):
+    """The open changes a change URL compares its source against."""
 
-    An explicit --topic wins, then the source change's own topic. A
-    server-side topic query is far cheaper and more reliable than
-    scanning every open change; when no topic is available, None lets
-    the caller fall back to a full scan.
+    expression: str
+    """The Gerrit query expression that selects the scope."""
+    ceiling: int
+    """The most changes to accept before refusing the read."""
+    label: str
+    """The scope as the run reports it."""
+
+
+def _gerrit_candidate_scope(
+    source_change: GerritChangeInfo,
+    topic: str | None,
+    comparator: GerritChangeComparator,
+    only_automation: bool,
+    host: str,
+) -> _CandidateScope:
+    """Choose the open changes a change URL compares its source against.
+
+    The narrowest scope that holds every change that could match: the
+    topic when there is one; else the source owner's changes when a
+    change by another account cannot match (owners must already be the
+    same, or the threshold is beyond a change whose owner scores 0);
+    else every open change on the server.
+
+    An explicit --topic wins over the source change's own topic.
     """
     effective_topic = topic or source_change.topic
+    if effective_topic:
+        return _CandidateScope(
+            topic_query_term(effective_topic),
+            QUERY_BATCH_CEILING,
+            f"with topic '{effective_topic}'",
+        )
 
-    if not effective_topic:
-        console.print(f"\n🔍 Searching for similar changes on {parsed_url.host}...")
-        return None
+    account_id = source_change.owner_account_id
+    if account_id is not None and (
+        not only_automation or not comparator.other_owners_can_match()
+    ):
+        return _CandidateScope(
+            f"owner:{account_id}",
+            SIMILAR_SCAN_CEILING,
+            f"owned by {source_change.owner.strip()}",
+        )
 
-    console.print(
-        f"\n🔍 Searching for changes with topic "
-        f"'{effective_topic}' on {parsed_url.host}..."
-    )
-    return [c for c in service.get_changes_by_topic(effective_topic) if c.is_open]
+    return _CandidateScope("status:open", SIMILAR_SCAN_CEILING, f"on {host}")
+
+
+def _resolve_gerrit_candidates(
+    service: GerritService,
+    candidate_scope: _CandidateScope,
+    console: Console,
+) -> list[GerritChangeInfo]:
+    """Read every open change in a candidate scope.
+
+    :func:`_gerrit_candidate_scope` chooses the scope.  The read is complete
+    or refused: comparing against part of the scope would leave out
+    changes that match, and which ones would change from run to run.
+
+    Raises:
+        typer.Exit: When the scope holds more changes than its ceiling,
+            a change that does not parse, or keeps changing while read.
+            Nothing has been submitted at that point.
+    """
+    expression, ceiling, scope = candidate_scope
+    console.print(f"\n🔍 Reading open changes {scope}...")
+    try:
+        candidates = service.get_open_changes_for_query(
+            expression, ceiling=ceiling, options=DEFAULT_LIST_OPTIONS
+        )
+    except GerritServiceError as exc:
+        console.print(f"❌ Could not read every open change {scope}: {exc}")
+        console.print(
+            "   Nothing was submitted. Narrow the scope with --topic, or "
+            "use a query URL (/q/...) to name the changes to submit."
+        )
+        raise typer.Exit(1) from None
+
+    console.print(f"🔍 Compared against {len(candidates)} open changes {scope}")
+    return candidates

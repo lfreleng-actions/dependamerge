@@ -39,6 +39,9 @@ class GerritChangeInfo(BaseModel):
     # Author/owner
     owner: str = Field(..., description="Change owner username")
     owner_email: str | None = Field(default=None, description="Change owner email")
+    owner_account_id: int | None = Field(
+        default=None, description="Change owner's Gerrit account id (if reported)"
+    )
 
     # Branch info
     branch: str = Field(..., description="Target branch")
@@ -117,7 +120,7 @@ class GerritChangeInfo(BaseModel):
         """
         number = data.get("_number", 0)
         project = data.get("project", "")
-        owner, owner_email = _owner_fields(data.get("owner", {}))
+        owner, owner_email, owner_account_id = _owner_fields(data.get("owner", {}))
         current_revision = data.get("current_revision", "")
         message, files_changed, revision_actions = _revision_fields(
             data, current_revision
@@ -145,6 +148,7 @@ class GerritChangeInfo(BaseModel):
             topic=data.get("topic"),
             owner=owner,
             owner_email=owner_email,
+            owner_account_id=owner_account_id,
             branch=data.get("branch", ""),
             current_revision=current_revision,
             status=data.get("status", "NEW"),
@@ -309,10 +313,20 @@ class GerritChangeInfo(BaseModel):
         return not self.submittable or self.can_submit_action()
 
 
-def _owner_fields(owner_data: dict[str, Any]) -> tuple[str, str | None]:
-    """The owner's name and email from a change's ``owner`` account."""
+def _owner_fields(
+    owner_data: dict[str, Any],
+) -> tuple[str, str | None, int | None]:
+    """The owner's name, email and account id from a change's ``owner``."""
     owner = owner_data.get("username") or owner_data.get("name", "unknown")
-    return owner, owner_data.get("email")
+    account_id = owner_data.get("_account_id")
+    # bool is an int subclass; a positive integer alone names an account.
+    if (
+        not isinstance(account_id, int)
+        or isinstance(account_id, bool)
+        or account_id <= 0
+    ):
+        account_id = None
+    return owner, owner_data.get("email"), account_id
 
 
 def _revision_fields(

@@ -28,6 +28,7 @@ from dependamerge.gerrit.service import (
     GerritService,
     GerritServiceError,
     create_gerrit_service,
+    topic_query_term,
 )
 
 
@@ -263,12 +264,12 @@ class TestGerritServiceGetChangeInfo:
             service.get_change_info(12345)
 
 
-class TestGerritServiceGetOpenChanges:
-    """Tests for get_open_changes method."""
+class TestGerritServiceGetAllOpenChanges:
+    """Tests for get_all_open_changes method."""
 
     @patch("dependamerge.gerrit.service.build_client")
     @patch("dependamerge.gerrit.service.create_url_builder")
-    def test_get_open_changes_basic(
+    def test_get_all_open_changes_basic(
         self,
         mock_url_builder,
         mock_build_client,
@@ -280,71 +281,14 @@ class TestGerritServiceGetOpenChanges:
         mock_client.get.return_value = [sample_change_data]
 
         service = GerritService(host="gerrit.example.org")
-        changes = service.get_open_changes()
+        changes = service.get_all_open_changes()
 
         assert len(changes) == 1
         assert changes[0].number == 12345
 
     @patch("dependamerge.gerrit.service.build_client")
     @patch("dependamerge.gerrit.service.create_url_builder")
-    def test_get_open_changes_with_project(
-        self,
-        mock_url_builder,
-        mock_build_client,
-        mock_client,
-        sample_change_data,
-    ):
-        """Test open changes query filtered by project."""
-        mock_build_client.return_value = mock_client
-        mock_client.get.return_value = [sample_change_data]
-
-        service = GerritService(host="gerrit.example.org")
-        service.get_open_changes(project="my-project")
-
-        call_args = mock_client.get.call_args[0][0]
-        assert "project:my-project" in call_args
-
-    @patch("dependamerge.gerrit.service.build_client")
-    @patch("dependamerge.gerrit.service.create_url_builder")
-    def test_get_open_changes_with_branch(
-        self,
-        mock_url_builder,
-        mock_build_client,
-        mock_client,
-        sample_change_data,
-    ):
-        """Test open changes query filtered by branch."""
-        mock_build_client.return_value = mock_client
-        mock_client.get.return_value = [sample_change_data]
-
-        service = GerritService(host="gerrit.example.org")
-        service.get_open_changes(branch="main")
-
-        call_args = mock_client.get.call_args[0][0]
-        assert "branch:main" in call_args
-
-    @patch("dependamerge.gerrit.service.build_client")
-    @patch("dependamerge.gerrit.service.create_url_builder")
-    def test_get_open_changes_with_owner(
-        self,
-        mock_url_builder,
-        mock_build_client,
-        mock_client,
-        sample_change_data,
-    ):
-        """Test open changes query filtered by owner."""
-        mock_build_client.return_value = mock_client
-        mock_client.get.return_value = [sample_change_data]
-
-        service = GerritService(host="gerrit.example.org")
-        service.get_open_changes(owner="dependabot")
-
-        call_args = mock_client.get.call_args[0][0]
-        assert "owner:dependabot" in call_args
-
-    @patch("dependamerge.gerrit.service.build_client")
-    @patch("dependamerge.gerrit.service.create_url_builder")
-    def test_get_open_changes_empty_result(
+    def test_get_all_open_changes_empty_result(
         self, mock_url_builder, mock_build_client, mock_client
     ):
         """Test open changes query with empty result."""
@@ -352,7 +296,7 @@ class TestGerritServiceGetOpenChanges:
         mock_client.get.return_value = []
 
         service = GerritService(host="gerrit.example.org")
-        changes = service.get_open_changes()
+        changes = service.get_all_open_changes()
 
         assert changes == []
 
@@ -400,7 +344,7 @@ class TestGerritServicePagination:
         mock_client.get.side_effect = [page1, page2]
 
         service = GerritService(host="gerrit.example.org")
-        changes = service.get_open_changes(limit=200)
+        changes = service.get_all_open_changes(limit=200)
 
         assert len(changes) == 150
         assert mock_client.get.call_count == 2
@@ -433,7 +377,7 @@ class TestGerritServicePagination:
         mock_client.get.return_value = all_changes
 
         service = GerritService(host="gerrit.example.org")
-        changes = service.get_open_changes(limit=50)
+        changes = service.get_all_open_changes(limit=50)
 
         assert len(changes) == 50
 
@@ -468,7 +412,7 @@ class TestGerritQueryFailureVisibility:
         service = GerritService(host="gerrit.example.org")
 
         with pytest.raises(GerritRestError):
-            service.get_open_changes()
+            service.get_all_open_changes()
 
     @patch("dependamerge.gerrit.service.build_client")
     @patch("dependamerge.gerrit.service.create_url_builder")
@@ -486,7 +430,7 @@ class TestGerritQueryFailureVisibility:
         service = GerritService(host="gerrit.example.org")
 
         with pytest.raises(GerritAuthError):
-            service.get_changes_by_topic("my-topic")
+            service.get_all_open_changes()
 
     @patch("dependamerge.gerrit.service.build_client")
     @patch("dependamerge.gerrit.service.create_url_builder")
@@ -507,7 +451,7 @@ class TestGerritQueryFailureVisibility:
         service = GerritService(host="gerrit.example.org")
 
         with pytest.raises(GerritRestError):
-            service.get_open_changes(limit=200)
+            service.get_all_open_changes(limit=200)
 
         assert mock_client.get.call_count == 2
 
@@ -528,7 +472,7 @@ class TestGerritQueryFailureVisibility:
         service = GerritService(host="gerrit.example.org")
 
         with pytest.raises(GerritServiceError, match="rather than a list"):
-            service.get_open_changes()
+            service.get_all_open_changes()
 
     @patch("dependamerge.gerrit.service.build_client")
     @patch("dependamerge.gerrit.service.create_url_builder")
@@ -545,7 +489,7 @@ class TestGerritQueryFailureVisibility:
 
         service = GerritService(host="gerrit.example.org")
 
-        assert service.get_open_changes() == []
+        assert service.get_all_open_changes() == []
 
     @patch("dependamerge.gerrit.service.build_client")
     @patch("dependamerge.gerrit.service.create_url_builder")
@@ -563,7 +507,7 @@ class TestGerritQueryFailureVisibility:
         service = GerritService(host="gerrit.example.org")
 
         with pytest.raises(GerritServiceError, match="none could be parsed"):
-            service.get_open_changes()
+            service.get_all_open_changes()
 
     @patch("dependamerge.gerrit.service.build_client")
     @patch("dependamerge.gerrit.service.create_url_builder")
@@ -585,7 +529,7 @@ class TestGerritQueryFailureVisibility:
 
         service = GerritService(host="gerrit.example.org")
         with caplog.at_level(logging.WARNING, logger="dependamerge.gerrit.service"):
-            changes = service.get_open_changes()
+            changes = service.get_all_open_changes()
 
         assert [c.number for c in changes] == [1, 2]
         assert "Skipped 1 unparsable change(s) of 3 returned" in caplog.text
@@ -601,7 +545,7 @@ class TestGerritQueryFailureVisibility:
 
         service = GerritService(host="gerrit.example.org")
         with caplog.at_level(logging.WARNING, logger="dependamerge.gerrit.service"):
-            service.get_open_changes()
+            service.get_all_open_changes()
 
         assert "unparsable" not in caplog.text
 
@@ -622,7 +566,7 @@ class TestGerritQueryFailureVisibility:
         mock_client.get.side_effect = [page1, page2]
 
         service = GerritService(host="gerrit.example.org")
-        changes = service.get_open_changes(limit=200)
+        changes = service.get_all_open_changes(limit=200)
 
         # Second page fetched despite the skip, and from the right offset.
         assert mock_client.get.call_count == 2
@@ -630,92 +574,25 @@ class TestGerritQueryFailureVisibility:
         assert len(changes) == 149
 
 
-class TestGerritServiceGetChangesByTopic:
-    """Tests for get_changes_by_topic method."""
+class TestTopicQueryTerm:
+    """Tests for topic_query_term."""
 
-    @patch("dependamerge.gerrit.service.build_client")
-    @patch("dependamerge.gerrit.service.create_url_builder")
-    def test_get_changes_by_topic(
-        self,
-        mock_url_builder,
-        mock_build_client,
-        mock_client,
-        sample_change_data,
-    ):
-        """Test fetching changes by topic."""
-        mock_build_client.return_value = mock_client
-        mock_client.get.return_value = [sample_change_data]
+    def test_plain_topic_stays_unquoted(self):
+        """Test a plain topic is sent as a bare term."""
+        assert topic_query_term("my-topic") == "topic:my-topic"
 
-        service = GerritService(host="gerrit.example.org")
-        _ = service.get_changes_by_topic("my-topic")
-
-        call_args = mock_client.get.call_args[0][0]
-        assert "topic:my-topic" in call_args
-        assert "status:open" in call_args
-
-    @patch("dependamerge.gerrit.service.build_client")
-    @patch("dependamerge.gerrit.service.create_url_builder")
-    def test_get_changes_by_topic_include_merged(
-        self,
-        mock_url_builder,
-        mock_build_client,
-        mock_client,
-        sample_change_data,
-    ):
-        """Test fetching changes by topic including merged."""
-        mock_build_client.return_value = mock_client
-        mock_client.get.return_value = [sample_change_data]
-
-        service = GerritService(host="gerrit.example.org")
-        service.get_changes_by_topic("my-topic", include_merged=True)
-
-        call_args = mock_client.get.call_args[0][0]
-        assert "topic:my-topic" in call_args
-        assert "status:merged" in call_args
-
-    @patch("dependamerge.gerrit.service.build_client")
-    @patch("dependamerge.gerrit.service.create_url_builder")
-    def test_get_changes_by_topic_quotes_whitespace(
-        self,
-        mock_url_builder,
-        mock_build_client,
-        mock_client,
-        sample_change_data,
-    ):
+    def test_whitespace_is_quoted(self):
         """Test topics containing whitespace are quoted in the query.
 
         parse_gerrit_topic_url() unquotes topics like topic:"some
-        topic", so the service must re-quote them or the bare value
-        splits into separate Gerrit query terms.
+        topic", so they must be re-quoted or the bare value splits into
+        separate Gerrit query terms.
         """
-        mock_build_client.return_value = mock_client
-        mock_client.get.return_value = [sample_change_data]
+        assert topic_query_term("some topic") == 'topic:"some topic"'
 
-        service = GerritService(host="gerrit.example.org")
-        service.get_changes_by_topic("some topic")
-
-        call_args = mock_client.get.call_args[0][0]
-        assert 'topic:"some topic"' in call_args
-        assert "status:open" in call_args
-
-    @patch("dependamerge.gerrit.service.build_client")
-    @patch("dependamerge.gerrit.service.create_url_builder")
-    def test_get_changes_by_topic_escapes_quotes(
-        self,
-        mock_url_builder,
-        mock_build_client,
-        mock_client,
-        sample_change_data,
-    ):
+    def test_embedded_quotes_are_escaped(self):
         """Test embedded quotes in a topic are escaped when quoting."""
-        mock_build_client.return_value = mock_client
-        mock_client.get.return_value = [sample_change_data]
-
-        service = GerritService(host="gerrit.example.org")
-        service.get_changes_by_topic('odd"topic')
-
-        call_args = mock_client.get.call_args[0][0]
-        assert 'topic:"odd\\"topic"' in call_args
+        assert topic_query_term('odd"topic') == 'topic:"odd\\"topic"'
 
 
 class TestGerritServiceFindOpenChangeByChangeId:
@@ -1033,7 +910,7 @@ class TestGerritServiceFindSimilarChanges:
             "owner": {"username": "dependabot"},
         }
 
-        mock_client.get.return_value = [other_change_data]
+        candidates = [GerritChangeInfo.from_api_response(other_change_data)]
 
         # Create a mock comparator
         mock_comparator = MagicMock()
@@ -1042,7 +919,9 @@ class TestGerritServiceFindSimilarChanges:
         )
 
         service = GerritService(host="gerrit.example.org")
-        similar = service.find_similar_changes(sample_change_info, mock_comparator)
+        similar = service.find_similar_changes(
+            sample_change_info, mock_comparator, candidates=candidates
+        )
 
         assert len(similar) == 1
         assert similar[0][0].number == 12346
@@ -1050,17 +929,17 @@ class TestGerritServiceFindSimilarChanges:
 
     @patch("dependamerge.gerrit.service.build_client")
     @patch("dependamerge.gerrit.service.create_url_builder")
-    def test_find_similar_changes_with_candidates_skips_server_scan(
+    def test_find_similar_changes_issues_no_query_of_its_own(
         self,
         mock_url_builder,
         mock_build_client,
         mock_client,
         sample_change_info,
     ):
-        """Test that explicit candidates bypass the whole-server scan.
+        """Test that only the given candidates are scored.
 
-        When candidates are provided (e.g. from a topic query), no
-        status:open query is issued and only the candidates are scored.
+        The caller reads the candidates complete; scoring must not add
+        a query, capped or otherwise, of its own.
         """
         mock_build_client.return_value = mock_client
 
@@ -1088,7 +967,6 @@ class TestGerritServiceFindSimilarChanges:
 
         assert len(similar) == 1
         assert similar[0][0].number == 99999
-        # No server-wide scan should have run
         mock_client.get.assert_not_called()
 
     @patch("dependamerge.gerrit.service.build_client")
@@ -1114,7 +992,7 @@ class TestGerritServiceFindSimilarChanges:
             "owner": {"username": sample_change_info.owner},
         }
 
-        mock_client.get.return_value = [source_data]
+        candidates = [GerritChangeInfo.from_api_response(source_data)]
 
         mock_comparator = MagicMock()
         mock_comparator.compare_gerrit_changes.return_value = (
@@ -1122,7 +1000,9 @@ class TestGerritServiceFindSimilarChanges:
         )
 
         service = GerritService(host="gerrit.example.org")
-        similar = service.find_similar_changes(sample_change_info, mock_comparator)
+        similar = service.find_similar_changes(
+            sample_change_info, mock_comparator, candidates=candidates
+        )
 
         # Source should be skipped
         assert len(similar) == 0
@@ -1152,7 +1032,7 @@ class TestGerritServiceFindSimilarChanges:
             for i in range(1, 4)
         ]
 
-        mock_client.get.return_value = changes_data
+        candidates = [GerritChangeInfo.from_api_response(d) for d in changes_data]
 
         # Return different scores for each change
         scores = {1: 0.7, 2: 0.95, 3: 0.85}
@@ -1165,7 +1045,9 @@ class TestGerritServiceFindSimilarChanges:
         mock_comparator.compare_gerrit_changes.side_effect = compare_side_effect
 
         service = GerritService(host="gerrit.example.org")
-        similar = service.find_similar_changes(sample_change_info, mock_comparator)
+        similar = service.find_similar_changes(
+            sample_change_info, mock_comparator, candidates=candidates
+        )
 
         # Should be sorted by score descending
         assert len(similar) == 3
@@ -1197,7 +1079,7 @@ class TestGerritServiceFindSimilarChanges:
                 GerritFileChange(filename=".github/workflows/github2gerrit.yaml")
             ],
         )
-        mock_client.get.return_value = [
+        other = GerritChangeInfo.from_api_response(
             {
                 "_number": 2,
                 "change_id": "I2",
@@ -1218,12 +1100,12 @@ class TestGerritServiceFindSimilarChanges:
                     }
                 },
             }
-        ]
+        )
 
         service = GerritService(host="gerrit.example.org")
         comparator = GerritChangeComparator(similarity_threshold=0.6)
         similar = service.find_similar_changes(
-            source, comparator, only_automation=False
+            source, comparator, candidates=[other], only_automation=False
         )
 
         assert similar == []

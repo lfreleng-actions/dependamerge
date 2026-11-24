@@ -9,12 +9,29 @@ from __future__ import annotations
 from typing import Any
 
 from ..check_runs import failing_check_names
+from ..github_graphql.pull_requests import SCAN_REVIEWS_PAGE_SIZE
 from ..models import (
     CopilotComment,
     FileChange,
     ReviewInfo,
 )
 from ._base import _GitHubServiceBase
+
+
+def scan_reviews_complete(pr: dict[str, Any]) -> bool:
+    """Whether a PR node's ``reviews`` connection holds every review.
+
+    A page short of the size the query selects is the whole list; a full
+    one is whole only when the connection's ``totalCount`` says so.
+    """
+    connection = pr.get("reviews") or {}
+    nodes = connection.get("nodes") or []
+    if len(nodes) < SCAN_REVIEWS_PAGE_SIZE:
+        return True
+    total = connection.get("totalCount")
+    return (
+        isinstance(total, int) and not isinstance(total, bool) and len(nodes) >= total
+    )
 
 
 class _PullRequestExtractMixin(_GitHubServiceBase):

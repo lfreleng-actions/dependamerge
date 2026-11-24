@@ -197,7 +197,8 @@ class FakeCommitListings:
     and stops after the last page.  ``fail_on`` names ``(listing,
     page)`` pairs, with listing ``"check-runs"`` or ``"status"``, whose
     request raises.  ``requests`` records each listing request made.
-    Any other path is answered from ``other``, keyed by path suffix.
+    Any other path is answered from ``other``, keyed by path suffix, as
+    one page when read through ``get_paginated``.
     """
 
     def __init__(
@@ -260,9 +261,14 @@ class FakeCommitListings:
         params: dict[str, Any] | None = None,
         per_page: int = 100,
         max_pages: int | None = None,
+        yield_malformed: bool = False,
     ):
         listing = self._listing(path)
-        assert listing is not None, path
+        if listing is None:
+            page = await self.get(path)
+            if page:
+                yield page
+            return
         total = len(self.listings[listing][1])
         page = 1
         while True:
@@ -276,13 +282,13 @@ class FakeCommitListings:
 def listings_via_get(monkeypatch):
     """Serve ``GitHubAsync.get_paginated`` as one page from its ``get``.
 
-    For tests that route a mocked ``get`` by URL.  The check-run and
-    commit-status listings are read through ``get_paginated``, which
-    would otherwise reach the real transport.
+    For tests that route a mocked ``get`` by URL.  The check-run,
+    commit-status, review and review-comment listings are read through
+    ``get_paginated``, which would otherwise reach the real transport.
     """
     from dependamerge.github_async import GitHubAsync
 
-    async def _one_page(self, path, *, params=None, per_page=100, max_pages=None):
+    async def _one_page(self, path, **_kwargs):
         page = await self.get(path)
         if page:
             yield page

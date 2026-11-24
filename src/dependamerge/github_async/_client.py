@@ -28,6 +28,7 @@ from ._merge import _MergeMixin
 from ._permission_checks import _PermissionChecksMixin
 from ._permissions import _PermissionsMixin
 from ._required_checks import _RequiredChecksMixin
+from ._review_listings import _ReviewListingsMixin
 from ._reviews import _ReviewsMixin
 from ._signatures import _SignaturesMixin
 from ._strict_checks import _StrictChecksMixin
@@ -44,6 +45,7 @@ class GitHubAsync(
     _PermissionsMixin,
     _PermissionChecksMixin,
     _ReviewsMixin,
+    _ReviewListingsMixin,
     _MergeMixin,
     _SignaturesMixin,
     _StrictChecksMixin,

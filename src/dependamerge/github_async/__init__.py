@@ -44,6 +44,7 @@ from ._errors import (
 from ._permissions import (
     OPERATION_PERMISSIONS,
 )
+from ._review_listings import ReviewReading
 from ._reviews import IssueComments
 from ._throttling import (
     _Budget,
@@ -59,4 +60,5 @@ __all__ = [
     "PermissionError",
     "ApprovalError",
     "IssueComments",
+    "ReviewReading",
 ]

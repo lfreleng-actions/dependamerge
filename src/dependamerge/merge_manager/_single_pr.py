@@ -47,6 +47,7 @@ from ..merge_signals import (
     DraftPullRequestError,
     DraftStateUnknownError,
     PullRequestStopSignal,
+    ReviewsUnreadableError,
 )
 from ..models import PullRequestInfo
 from ._base import _MergeManagerBase
@@ -153,6 +154,14 @@ class _SinglePullRequestMixin(
             result.error = "could not confirm the PR is not a draft; not approved"
             self._pr_status(
                 f"❌ Failed: {stopped.html_url} [{result.error}]", level="error"
+            )
+        except ReviewsUnreadableError as signal:
+            # Our own approval may sit among the reviews not read.
+            stopped = self._stopped_pr(result, signal)
+            result.status = MergeStatus.SKIPPED
+            result.error = "reviews could not all be read; not approved"
+            self._pr_status(
+                f"⚠️ Skipped: {stopped.html_url} [{result.error}]", level="warning"
             )
         except GitHubPermissionError as e:
             self._report_permission_error(flow, e)

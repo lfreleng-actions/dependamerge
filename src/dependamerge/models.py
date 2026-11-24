@@ -68,6 +68,10 @@ class PullRequestInfo(BaseModel):
     repository_full_name: str
     html_url: str
     reviews: list[ReviewInfo] = []  # PR reviews
+    # Whether ``reviews`` holds every review.  A source that reads only
+    # the first page sets it False when more exist; a decision that rests
+    # on a review being absent reads the full list first.
+    reviews_complete: bool = True
     review_comments: list[ReviewComment] = []  # Review comments (including Copilot)
 
     head_repo_full_name: str | None = None

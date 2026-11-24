@@ -16,6 +16,11 @@ single repository's PR pagination and takes its page sizes as variables.
 
 from __future__ import annotations
 
+#: The ``reviews(first: ...)`` page size both queries below select.  The
+#: connection's ``totalCount`` rides along, so a reader can tell a pull
+#: request with more reviews than this from one with exactly this many.
+SCAN_REVIEWS_PAGE_SIZE = 20
+
 # Fetch organization repositories with a first page of their open PRs.
 # Use the returned pageInfo to continue paging repositories.
 # Each repository node also includes pageInfo for its pull requests; for repos
@@ -72,6 +77,7 @@ query($org: String!, $reposCursor: String) {
               }
             }
             reviews(first: 20, states: [PENDING, COMMENTED, APPROVED, CHANGES_REQUESTED]) {
+              totalCount
               nodes {
                 id
                 author { login }
@@ -170,6 +176,7 @@ query($owner: String!, $name: String!, $prsCursor: String, $prsPageSize: Int!, $
           }
         }
         reviews(first: 20, states: [PENDING, COMMENTED, APPROVED, CHANGES_REQUESTED]) {
+          totalCount
           nodes {
             id
             author { login }

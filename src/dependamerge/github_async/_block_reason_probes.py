@@ -25,6 +25,9 @@ class _ReviewSignals(NamedTuple):
     approved: bool
     human_changes_requested: bool
     unresolved_copilot_reviews: int
+    # Whether every review was read.  "Not approved" is evidence only
+    # when this is True.
+    complete: bool
 
 
 class _CheckSignals(NamedTuple):
@@ -47,53 +50,51 @@ async def _collect_review_signals(
     human_changes_requested = False
     unresolved_copilot_reviews = 0
 
-    try:
-        reviews = await api.get(f"/repos/{owner}/{repo}/pulls/{number}/reviews")
-        if isinstance(reviews, list):
-            for review in reviews:
-                if not isinstance(review, dict):
-                    continue
-                state = review.get("state")
-                author = (review.get("user") or {}).get("login", "")
+    reading = await api.read_pull_request_reviews(owner, repo, number)
+    for review in reading.entries:
+        state = review.get("state")
+        author = (review.get("user") or {}).get("login", "")
 
-                if state == "APPROVED":
-                    approved = True
-                elif state == "CHANGES_REQUESTED":
-                    if is_copilot(author):
-                        unresolved_copilot_reviews += 1
-                    else:
-                        human_changes_requested = True
-    except Exception:
-        # Review data is best-effort; on API error leave the
-        # approval/changes flags at their safe defaults.
-        pass
+        if state == "APPROVED":
+            approved = True
+        elif state == "CHANGES_REQUESTED":
+            if is_copilot(author):
+                unresolved_copilot_reviews += 1
+            else:
+                human_changes_requested = True
 
-    return _ReviewSignals(approved, human_changes_requested, unresolved_copilot_reviews)
+    return _ReviewSignals(
+        approved,
+        human_changes_requested,
+        unresolved_copilot_reviews,
+        reading.complete,
+    )
+
+
+class _CommentSignals(NamedTuple):
+    """Copilot review comments observed on a pull request."""
+
+    unresolved_copilot_comments: int
+    # Whether every review comment was read.  A count of zero rules out
+    # unresolved Copilot comments only when this is True.
+    complete: bool
 
 
 async def _count_unresolved_copilot_comments(
     api: _GitHubAsyncBase, owner: str, repo: str, number: int
-) -> int:
+) -> _CommentSignals:
     """Count Copilot review comments that read as unresolved."""
     unresolved_copilot_comments = 0
-    try:
-        comments = await api.get(f"/repos/{owner}/{repo}/pulls/{number}/comments")
-        if isinstance(comments, list):
-            for comment in comments:
-                if not isinstance(comment, dict):
-                    continue
-                author = (comment.get("user") or {}).get("login", "")
-                # Count unresolved Copilot comments (those without replies dismissing them)
-                if is_copilot(author):
-                    # Simple heuristic: if comment doesn't have "DISMISSED" or similar resolution text
-                    body = comment.get("body", "").lower()
-                    if "dismissed" not in body and "resolved" not in body:
-                        unresolved_copilot_comments += 1
-    except Exception:
-        # Review comments are best-effort; ignore fetch errors and
-        # leave the Copilot comment count unchanged.
-        pass
-    return unresolved_copilot_comments
+    reading = await api.read_pull_request_review_comments(owner, repo, number)
+    for comment in reading.entries:
+        author = (comment.get("user") or {}).get("login", "")
+        # Count unresolved Copilot comments (those without replies dismissing them)
+        if is_copilot(author):
+            # Simple heuristic: if comment doesn't have "DISMISSED" or similar resolution text
+            body = (comment.get("body") or "").lower()
+            if "dismissed" not in body and "resolved" not in body:
+                unresolved_copilot_comments += 1
+    return _CommentSignals(unresolved_copilot_comments, reading.complete)
 
 
 async def _collect_check_signals(

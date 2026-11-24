@@ -125,9 +125,7 @@ class _BlockReasonMixin(_GitHubAsyncBase):
     ) -> str:
         """Compute the block reason, ignoring the memo."""
         reviews = await _collect_review_signals(self, owner, repo, number)
-        unresolved_copilot_comments = await _count_unresolved_copilot_comments(
-            self, owner, repo, number
-        )
+        comments = await _count_unresolved_copilot_comments(self, owner, repo, number)
         checks = await _collect_check_signals(self, owner, repo, head_sha)
         base_branch = await _resolve_block_reason_base_branch(
             self, owner, repo, number, base_branch
@@ -150,7 +148,7 @@ class _BlockReasonMixin(_GitHubAsyncBase):
         reason = _review_block_reason(
             reviews.human_changes_requested,
             reviews.unresolved_copilot_reviews,
-            unresolved_copilot_comments,
+            comments.unresolved_copilot_comments,
         )
         if reason is not None:
             return reason
@@ -159,7 +157,10 @@ class _BlockReasonMixin(_GitHubAsyncBase):
         if reason is not None:
             return reason
 
-        if not reviews.approved:
+        # An approval may sit among reviews that could not be read, and
+        # a Copilot comment among review comments that could not be read,
+        # so only whole readings of both support "requires approval".
+        if not reviews.approved and reviews.complete and comments.complete:
             return "Blocked by branch protection (requires approval)"
 
         return await _guarded_block_reason(self, owner, repo, base_branch)

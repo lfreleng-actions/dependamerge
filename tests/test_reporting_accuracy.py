@@ -31,6 +31,7 @@ from dependamerge.merge_manager import (
     _merge_already_in_progress,
     _merged_from_payload,
 )
+from dependamerge.merge_signals import ReviewsUnreadableError
 from dependamerge.models import PullRequestInfo
 from tests.conftest import make_merge_manager
 
@@ -648,28 +649,30 @@ class TestHasOwnApproval:
         await c.aclose()
 
     @pytest.mark.asyncio
-    async def test_false_on_api_error(self) -> None:
+    async def test_unreadable_on_identity_error(self) -> None:
+        """An unknown identity cannot rule out our own approval."""
         c = GitHubAsync(token="t")
         c.get_authenticated_user_login = AsyncMock(side_effect=RuntimeError("nope"))  # type: ignore[method-assign]
-        assert not await c._has_own_approval("o", "r", 1)
+        with pytest.raises(ReviewsUnreadableError):
+            await c._has_own_approval("o", "r", 1)
         await c.aclose()
 
     @pytest.mark.asyncio
-    async def test_false_when_authenticated_login_unknown(self) -> None:
+    async def test_unreadable_when_authenticated_login_unknown(self) -> None:
         """An unknown login must never match a null reviewer.
 
         ``get_authenticated_user_login`` returns ``None`` on failure
         rather than raising.  A review with ``user: null`` would then
         compare ``None == None`` and report an approval that does not
-        exist, stopping the retry and reporting success having approved
-        nothing.
+        exist; reporting none would let a retry post a duplicate.
         """
         c = GitHubAsync(token="t")
         c.get_authenticated_user_login = AsyncMock(return_value=None)  # type: ignore[method-assign]
         c.get_paginated = self._pages(  # type: ignore[method-assign,assignment]
             [{"state": "APPROVED", "user": None}]
         )
-        assert not await c._has_own_approval("o", "r", 1)
+        with pytest.raises(ReviewsUnreadableError):
+            await c._has_own_approval("o", "r", 1)
         await c.aclose()
 
     @pytest.mark.asyncio

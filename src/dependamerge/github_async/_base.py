@@ -26,6 +26,7 @@ if TYPE_CHECKING:
     from ._commit_listings import CommitReading
     from ._content_limiter import ContentLimiter
     from ._errors import PermissionError
+    from ._review_listings import ReviewReading
     from ._throttling import _Budget, _ResizableSemaphore
 
 
@@ -162,6 +163,14 @@ class _GitHubAsyncBase:
         async def read_commit_statuses(
             self, owner: str, repo: str, ref: str
         ) -> CommitReading: ...
+
+        async def read_pull_request_reviews(
+            self, owner: str, repo: str, number: int
+        ) -> ReviewReading: ...
+
+        async def read_pull_request_review_comments(
+            self, owner: str, repo: str, number: int
+        ) -> ReviewReading: ...
 
         async def _resolve_default_branch(
             self, owner: str, repo: str

@@ -33,7 +33,7 @@ def _strip_ansi(text: str) -> str:
 def _make_pr(number: int, repo: str = "acme/widget") -> PullRequestInfo:
     return PullRequestInfo(
         number=number,
-        title="Bump foo from 1.0 to 2.0",
+        title="Bump foo from 1.0 to 1.1",
         body="Automated dependency update",
         author="dependabot[bot]",
         head_sha="abc123",

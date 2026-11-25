@@ -44,7 +44,7 @@ def _set_aside_drafts(
             f"   {pr.repository_full_name}#{pr.number} (by {pr.author})",
             markup=False,
         )
-    ctx.draft_results.extend(
+    ctx.set_aside_results.extend(
         MergeResult(pr_info=pr, status=MergeStatus.SKIPPED, error=DRAFT_REASON)
         for pr in drafts
     )

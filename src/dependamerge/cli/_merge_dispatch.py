@@ -47,6 +47,11 @@ from ..url_parser import (
 from ._app import console
 from ._context import _MergeContext
 from ._gerrit_merge import _handle_gerrit_merge
+from ._major_gate import (
+    _confirm_major_bumps,
+    _set_aside_major_bumps,
+    _source_held_back,
+)
 from ._merge_authors import _validate_automation_author
 from ._merge_inputs import (
     _fetch_and_validate_source_pr,
@@ -58,6 +63,7 @@ from ._merge_scan import (
     _handle_preview_confirmation,
     _restart_merge_progress_tracker,
     _scan_and_find_similar,
+    _single_pr_scope,
 )
 from ._merge_target import (
     _MergeTarget,
@@ -254,7 +260,17 @@ def _run_single_pr_merge(ctx: _MergeContext) -> None:
     if ctx.debug_matching:
         _print_debug_matching(ctx)
 
-    _validate_automation_author(ctx)
+    # A human source an unattended run holds back needs no --override
+    # unless a PR remains to merge once the gated ones are set aside.
+    assert ctx.source_pr is not None
+    defer_override = (
+        ctx.include_human_prs
+        and _source_held_back(ctx)
+        and ctx.github_client is not None
+        and not ctx.github_client.is_automation_author(ctx.source_pr.author)
+    )
+    if not defer_override:
+        _validate_automation_author(ctx)
 
     # Scan org and find similar PRs
     _scan_and_find_similar(ctx)
@@ -262,7 +278,6 @@ def _run_single_pr_merge(ctx: _MergeContext) -> None:
     if not ctx.no_confirm or ctx.dry_run:
         console.print("\n🔍 Dependamerge Evaluation\n")
 
-    assert ctx.source_pr is not None
     source_entry: tuple[PullRequestInfo, ComparisonResult | None] = (
         ctx.source_pr,
         None,
@@ -271,6 +286,17 @@ def _run_single_pr_merge(ctx: _MergeContext) -> None:
         *ctx.all_similar_prs,
         source_entry,
     ]
+    # An unattended run holds gated major bumps back, the source too.
+    kept = {
+        id(pr) for pr in _set_aside_major_bumps(ctx, [pr for pr, _ in all_prs_to_merge])
+    }
+    all_prs_to_merge = [entry for entry in all_prs_to_merge if id(entry[0]) in kept]
+    if not all_prs_to_merge:
+        console.print("⏩ No PRs left to merge")
+        _conclude_run(ctx, [], preview=ctx.dry_run or not ctx.no_confirm)
+        return
+    if defer_override:
+        _validate_automation_author(ctx)
     # For the real merge (``--no-confirm``) the scan has already
     # stopped the progress tracker; stand up a fresh one so the
     # background wait-status ticker has a live display to update
@@ -308,7 +334,10 @@ def _run_single_pr_merge(ctx: _MergeContext) -> None:
     # or real merge.  ``no_confirm=False`` selects the "Would …"
     # preview phrasing in the results summary.
     if ctx.dry_run:
-        _display_merge_results(merge_results, no_confirm=False)
+        _display_merge_results(merge_results, no_confirm=False, list_major_bumps=False)
+        _confirm_major_bumps(
+            ctx, _single_pr_scope(ctx), merge_results, source=ctx.source_pr
+        )
         _conclude_run(ctx, merge_results, preview=True)
         return
 

@@ -31,6 +31,7 @@ from ._bot_scope import _remove_out_of_scope_bots
 from ._context import _MergeContext
 from ._drafts import _set_aside_drafts
 from ._human_gate import _confirm_human_prs_in_scope
+from ._major_gate import _confirm_major_bumps, _set_aside_major_bumps
 from ._merge_order import _owner_merge_order, _print_prs_grouped_by_repo
 from ._merge_permissions import _maybe_check_merge_permissions
 from ._merge_report import (
@@ -177,8 +178,9 @@ def _partition_owner_prs(
 ) -> tuple[list[PullRequestInfo], list[PullRequestInfo], list[PullRequestInfo]]:
     """Split the enumerated PRs by authorship and print the owner summary.
 
-    PRs from Apps outside the bot policy, then drafts, are listed and
-    set aside first.
+    PRs from Apps outside the bot policy, then drafts, then the major
+    version bumps an unattended run holds back, are listed and set aside
+    first.
 
     Args:
         ctx: Shared merge context, holding the bot policy.
@@ -198,6 +200,7 @@ def _partition_owner_prs(
     )
     owner_prs = _remove_out_of_scope_bots(ctx.bot_policy, owner_prs)
     owner_prs = _set_aside_drafts(ctx, owner_prs)
+    owner_prs = _set_aside_major_bumps(ctx, owner_prs)
 
     automation_prs: list[PullRequestInfo] = []
     human_prs: list[PullRequestInfo] = []
@@ -367,7 +370,8 @@ def _handle_org_merge(
 
     # Dry run: report the preview and stop before any prompt or merge.
     if ctx.dry_run:
-        _display_merge_results(merge_results, no_confirm=False)
+        _display_merge_results(merge_results, no_confirm=False, list_major_bumps=False)
+        _confirm_major_bumps(ctx, parsed_org.owner, merge_results)
         _conclude_run(ctx, merge_results, preview=True)
         return
 

@@ -85,6 +85,18 @@ inputs:
       Dismiss unresolved GitHub Copilot review comments (default false)
     required: false
     default: ""
+  allow_major:
+    description: >-
+      Merge major version bumps like any other PR; without it they are
+      held back and reported as skipped (default false)
+    required: false
+    default: ""
+  gate_zero_minor:
+    description: >-
+      Hold back 0.x minor version bumps (0.7.0 to 0.8.0) as major ones
+      (default false)
+    required: false
+    default: ""
   fail_on_merge_errors:
     # A run with PRs left failed or blocked exits 7. Set false when a
     # later step (a Slack digest, say) reports them instead.
@@ -345,6 +357,8 @@ runs:
         INPUT_MAX_WAIT: ${{ inputs.max_wait }}
         INPUT_FIX_OUT_OF_DATE: ${{ inputs.fix_out_of_date }}
         INPUT_DISMISS_COPILOT: ${{ inputs.dismiss_copilot }}
+        INPUT_ALLOW_MAJOR: ${{ inputs.allow_major }}
+        INPUT_GATE_ZERO_MINOR: ${{ inputs.gate_zero_minor }}
         INPUT_FAIL_ON_MERGE_ERRORS: ${{ inputs.fail_on_merge_errors }}
         INPUT_SLACK_WHEN: ${{ inputs.slack_when }}
       run: |
@@ -411,6 +425,8 @@ runs:
         OPT_MAX_WAIT: ${{ steps.options.outputs.max_wait }}
         OPT_FIX_OUT_OF_DATE: ${{ steps.options.outputs.fix_out_of_date }}
         OPT_DISMISS_COPILOT: ${{ steps.options.outputs.dismiss_copilot }}
+        OPT_ALLOW_MAJOR: ${{ steps.options.outputs.allow_major }}
+        OPT_GATE_ZERO_MINOR: ${{ steps.options.outputs.gate_zero_minor }}
       run: |
         # Run dependamerge
         set -euo pipefail
@@ -494,6 +510,12 @@ runs:
         fi
         if [ "$OPT_DISMISS_COPILOT" = "true" ]; then
           args+=(--dismiss-copilot)
+        fi
+        if [ "$OPT_ALLOW_MAJOR" = "true" ]; then
+          args+=(--allow-major)
+        fi
+        if [ "$OPT_GATE_ZERO_MINOR" = "true" ]; then
+          args+=(--gate-zero-minor)
         fi
 
         # Keep going on failure: the summary step still has to render

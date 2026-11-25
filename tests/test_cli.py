@@ -1995,7 +1995,7 @@ class TestMergeDryRun:
 
         source_pr = PullRequestInfo(
             number=22,
-            title="Chore: Bump actions/checkout from 4 to 5",
+            title="Chore: Bump actions/checkout from 4.1 to 4.2",
             body="Bumps actions/checkout",
             author="dependabot[bot]",
             head_sha="abc123",

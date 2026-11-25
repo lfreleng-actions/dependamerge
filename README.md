@@ -481,6 +481,8 @@ when a later step reports those PRs instead.
 | `max_wait`             | `900`                 | Owner-wide: wall-clock ceiling in seconds; `0` arms auto-merge and returns  |
 | `fix_out_of_date`      | `true`                | Bring behind PRs up to date before merging                                  |
 | `dismiss_copilot`      | `false`               | Dismiss unresolved GitHub Copilot review comments                           |
+| `allow_major`          | `false`               | Merge major version bumps; without it the run skips them                    |
+| `gate_zero_minor`      | `false`               | Hold back 0.x minor version bumps (`0.7.0` to `0.8.0`) as major ones        |
 | `fail_on_merge_errors` | `true`                | Fail the step when any PR ends failed or blocked                            |
 | `slack_channel`        |                       | Slack channel ID; when set, `slack_payload` carries a digest of the run     |
 | `slack_when`           | `always`              | Digest on `always`, `activity` (any PR processed), `attention` or `never`   |
@@ -500,8 +502,8 @@ when a later step reports those PRs instead.
 keep its scope in a repository or organisation variable and change it without
 editing the workflow. Any of `target`, `include_repos`, `exclude_repos`,
 `include_bots`, `exclude_bots`, `merge_method`, `force`, `max_wait`,
-`fix_out_of_date`, `dismiss_copilot` and `dry_run` may appear; repository and
-App lists may be arrays. An input given
+`fix_out_of_date`, `dismiss_copilot`, `allow_major`, `gate_zero_minor` and
+`dry_run` may appear; repository and App lists may be arrays. An input given
 explicitly wins over the config, and the config over the default. The action
 checks every value before dependamerge runs, and an unknown key stops the run:
 a misspelt `exlude_repos` must not widen it to every repository.
@@ -1250,6 +1252,32 @@ the description names no versions, which is all the run reads from a
 Renovate pull request. A commit or digest pin reads as unknown, and a
 calendar-versioned dependency reads as major when its year rolls over.
 
+Merging a major bump is a deliberate act, so the run gates it:
+
+- A run with `--no-confirm`, the action's runs included, holds every
+  major bump back before the merge pass. It lists them with a hint to
+  re-run with `--allow-major`, and records each as skipped with the
+  reason, such as `major version bump: foo 1.3.3 → 2.0.0`, so the step
+  summary and Slack digest show it. The rest merge, and a held-back bump
+  leaves the exit code alone.
+- An interactive run lists the mergeable major bumps after its preview,
+  apart from the rest, and asks for a value derived from those pull
+  requests and their head commits alone. Entering it merges them with the
+  rest; pressing Enter, entering anything else or ending the input
+  leaves them out, recorded as skipped, and the run goes on to its usual
+  confirmation for the rest. A new push, or another major bump joining
+  the set, changes the value. When the pull request a run names is
+  itself a major bump, naming it makes the choice: the run warns
+  and asks for no second value. Before merging, the run reads each
+  confirmed bump's head again and leaves out, recorded as skipped, any
+  that moved since the run listed it.
+- A dry run lists them and says what a real run would do.
+- `--allow-major` (the action's `allow_major` input) turns the gate off
+  in every mode.
+- `--gate-zero-minor` (`gate_zero_minor`) gates 0.x minor bumps, such as
+  `0.7.0` to `0.8.0`, the same way. A bump that reads as unknown is
+  never gated.
+
 A merged or auto-merge pending major bump appears:
 
 - on the console, below the final results line, with its URL, the
@@ -1260,8 +1288,6 @@ A merged or auto-merge pending major bump appears:
 - in the step summary, as a `⚠️ Major version bumps` table;
 - in the Slack digest's count line; and
 - in the action's `major_bumps` output.
-
-Nothing holds a major bump back yet: the run merges it as before.
 
 ### Dry Run Mode
 
@@ -1436,6 +1462,11 @@ export DEPENDAMERGE_CONTENT_PER_HOUR=300
   the PR as it stands without requesting a rebase or waiting for one. `0`
   turns the cooldown off, leaving the in-flight rule alone; a negative value
   is a usage error. Local rebases and REST `update-branch` ignore it
+- `--allow-major`: Merge major version bumps like any other PR. Without it,
+  `--no-confirm` holds them back and an interactive run asks for a value of
+  their own; see [Major Version Bumps](#major-version-bumps)
+- `--gate-zero-minor`: Gate 0.x minor version bumps (`0.7.0` to `0.8.0`) as
+  major ones
 - `--include-human-prs`: Act on human-authored PRs too. Needs a matching
   `--override`; see [Human-Authored PRs](#human-authored-prs)
 - `--override TEXT`: Confirms the human-authored PRs `--include-human-prs`

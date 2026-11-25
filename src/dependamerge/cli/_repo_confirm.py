@@ -26,12 +26,12 @@ from ..models import ComparisonResult, PullRequestInfo
 from ..progress_tracker import MergeProgressTracker
 from ._app import console
 from ._context import _MergeContext
+from ._major_gate import _confirm_major_bumps, _recheck_major_heads
 from ._merge_report import (
     _conclude_run,
     _confirmed_run_results,
     _print_failed_pr_details,
     _print_final_merge_summary,
-    _print_major_bumps,
 )
 
 
@@ -51,7 +51,10 @@ def _handle_repo_preview_confirmation(
     # Per-PR preview lines are no longer printed during the run, so
     # report the not-mergeable PRs (and why) here before prompting.
     _print_failed_pr_details(merge_results)
-    _print_major_bumps(merge_results, preview=True)
+    merge_results = _confirm_major_bumps(
+        ctx, f"{ctx.owner}/{ctx.repo_name}", merge_results
+    )
+    merged_count = sum(1 for r in merge_results if r.status.value == "merged")
 
     if merged_count == 0:
         console.print("\n\U0001f4a1 No PRs are mergeable at this time.")
@@ -92,6 +95,7 @@ def _execute_repo_confirmed_merge(
     all_prs_to_merge: list[tuple[PullRequestInfo, ComparisonResult | None]],
 ) -> None:
     """Run the real merge after user confirmation (repo mode)."""
+    preview_results = _recheck_major_heads(ctx, preview_results)
     mergeable_prs = [
         all_prs_to_merge[i]
         for i, result in enumerate(preview_results)

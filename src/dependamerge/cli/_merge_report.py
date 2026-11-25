@@ -242,12 +242,17 @@ def _print_failed_pr_details(
 def _display_merge_results(
     merge_results: list[MergeResult],
     no_confirm: bool,
+    *,
+    list_major_bumps: bool = True,
 ) -> None:
     """Print the final summary of merge results.
 
     In preview mode the per-category lines are the only counts, so they
     are printed.  After a real run the ``📈 Final Results`` line carries
     the same numbers, and printing both said everything twice.
+
+    ``list_major_bumps=False`` leaves a preview's major bumps to the
+    caller, which lists them with the major version bump gate.
     """
     merged_count = sum(1 for r in merge_results if r.status.value == "merged")
     failed_count = sum(1 for r in merge_results if r.status.value == "failed")
@@ -272,7 +277,8 @@ def _display_merge_results(
             console.print(f"🚪 Closed without merging: {_prs(closed_count)}")
         if auto_merge_count > 0:
             console.print(f"⏳ Auto-merge pending for {_prs(auto_merge_count)}")
-        _print_major_bumps(merge_results, preview=True)
+        if list_major_bumps:
+            _print_major_bumps(merge_results, preview=True)
 
     if no_confirm:
         parts = [f"{merged_count} merged"]
@@ -342,8 +348,9 @@ def _conclude_run(
     Every route that reports final results ends here, including an
     owner or repository with nothing to merge, so a scheduled run always
     leaves a results document behind.  Publishing comes first because
-    the exit for a failed run would otherwise skip it.  The drafts the
-    run set aside are published with the results, as skipped.
+    the exit for a failed run would otherwise skip it.  The PRs the run
+    set aside (drafts, held-back major bumps) are published with the
+    results, as skipped.
 
     Args:
         ctx: The run's shared state.
@@ -356,7 +363,7 @@ def _conclude_run(
             its preview rejected but never attempted them, so its exit
             code comes from this list alone, as it always has.
     """
-    _publish_results(ctx, [*results, *ctx.draft_results], preview=preview)
+    _publish_results(ctx, [*results, *ctx.set_aside_results], preview=preview)
     if not preview:
         _exit_if_any_failed(results if attempted is None else attempted)
 

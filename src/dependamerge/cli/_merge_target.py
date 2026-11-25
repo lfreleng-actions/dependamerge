@@ -45,6 +45,32 @@ from ..url_parser import (
 )
 from ._app import console
 
+#: The ``--include-repos`` option.
+INCLUDE_REPOS_OPTION = typer.Option(
+    None,
+    "--include-repos",
+    help=(
+        "Owner-wide runs only: act on just these repositories. "
+        "Comma-separated and/or repeatable, each 'name' or "
+        "'owner/name'. A name matching no non-archived, non-fork "
+        "repository stops the run before anything merges. Mutually "
+        "exclusive with --exclude-repos"
+    ),
+)
+
+#: The ``--exclude-repos`` option.
+EXCLUDE_REPOS_OPTION = typer.Option(
+    None,
+    "--exclude-repos",
+    help=(
+        "Owner-wide runs only: act on every repository except these. "
+        "Comma-separated and/or repeatable, each 'name' or "
+        "'owner/name'. A name matching no non-archived, non-fork "
+        "repository stops the run before anything merges. Mutually "
+        "exclusive with --include-repos"
+    ),
+)
+
 #: A path that is *shaped* like a pull request, whether or not it is a
 #: valid one.  Used to pick the right remedy: a fault in this shape is
 #: the shape's, so declaring a host cannot repair it.

@@ -49,9 +49,11 @@ from ._submit_operations import _GerritSubmitOperationMixin
 from ._submit_results import SubmitStatus as SubmitStatus
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping, Sequence
+    from collections.abc import Callable, Sequence
 
     from dependamerge.progress_tracker import MergeProgressTracker
+
+    from ._submitted_together import GroupCheck
 
 
 log = logging.getLogger("dependamerge.gerrit.submit_manager")
@@ -128,7 +130,7 @@ class GerritSubmitManager(_GerritSubmitOperationMixin):
         review_labels: dict[str, int] | None = None,
         dry_run: bool = False,
         bind_revisions: bool = False,
-        scope: Mapping[int, str] | None = None,
+        scope: GroupCheck | None = None,
     ) -> list[GerritSubmitResult]:
         """
         Submit multiple changes sequentially.
@@ -140,10 +142,10 @@ class GerritSubmitManager(_GerritSubmitOperationMixin):
             bind_revisions: If True, act on each change only at the
                 revision it carries, refusing one with a newer patchset.
             scope: With ``bind_revisions``, each change number the batch
-                submits mapped to its revision; a change Gerrit would
-                submit with anything else is refused before its vote.
-                Every change is then voted on before any is submitted
-                (see ``_submit_scoped_batch``).
+                submits mapped to its revision, or a ``SubmissionGuard``;
+                a change Gerrit would submit with anything either forbids
+                is refused before its vote.  Every change is then voted
+                on before any is submitted (see ``_submit_scoped_batch``).
 
         Returns:
             List of GerritSubmitResult for each change.
@@ -172,7 +174,7 @@ class GerritSubmitManager(_GerritSubmitOperationMixin):
         review_labels: dict[str, int] | None = None,
         dry_run: bool = False,
         bind_revisions: bool = False,
-        scope: Mapping[int, str] | None = None,
+        scope: GroupCheck | None = None,
     ) -> list[GerritSubmitResult]:
         """
         Submit multiple changes in parallel.
@@ -184,10 +186,10 @@ class GerritSubmitManager(_GerritSubmitOperationMixin):
             bind_revisions: If True, act on each change only at the
                 revision it carries, refusing one with a newer patchset.
             scope: With ``bind_revisions``, each change number the batch
-                submits mapped to its revision; a change Gerrit would
-                submit with anything else is refused before its vote.
-                Every change is then voted on before any is submitted
-                (see ``_submit_scoped_batch``).
+                submits mapped to its revision, or a ``SubmissionGuard``;
+                a change Gerrit would submit with anything either forbids
+                is refused before its vote.  Every change is then voted
+                on before any is submitted (see ``_submit_scoped_batch``).
 
         Returns:
             List of GerritSubmitResult for each change.
@@ -250,7 +252,7 @@ class GerritSubmitManager(_GerritSubmitOperationMixin):
         changes: list[tuple[GerritChangeInfo, GerritComparisonResult | None]],
         review_labels: dict[str, int],
         dry_run: bool,
-        scope: Mapping[int, str],
+        scope: GroupCheck,
         max_workers: int,
     ) -> list[GerritSubmitResult]:
         """Vote on every change of a scoped batch, then submit them.
@@ -359,7 +361,7 @@ class GerritSubmitManager(_GerritSubmitOperationMixin):
         review_labels: dict[str, int],
         dry_run: bool,
         bind_revision: bool = False,
-        scope: Mapping[int, str] | None = None,
+        scope: GroupCheck | None = None,
     ) -> GerritSubmitResult:
         """Submit a single change while driving the progress tracker.
 

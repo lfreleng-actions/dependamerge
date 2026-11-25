@@ -7,7 +7,9 @@ Reviewing and submitting a batch of Gerrit changes.
 Prints the changes in scope, previews what submission would do, and ---
 once confirmed --- votes and submits them.  A change URL scopes the
 batch to the changes similar to it; a query URL scopes it to exactly
-the open changes its query matches (see ``_gerrit_query``).
+the open changes its query matches (see ``_gerrit_query``).  Major
+version bumps pass the gate in ``_gerrit_major_gate`` first, a change
+URL's batch by way of ``_gerrit_change_gate``.
 """
 
 from pathlib import Path
@@ -30,6 +32,7 @@ from ..gerrit import (
     GerritService,
     GerritServiceError,
     GerritSubmitResult,
+    SubmissionGuard,
 )
 from ..netrc import (
     GerritCredentials,
@@ -39,6 +42,12 @@ from ..url_parser import (
     ParsedGerritTopicUrl,
     ParsedUrl,
 )
+from ._gerrit_change_gate import (
+    _gate_change_batch,
+    _holds_source_back,
+    _submission_guard,
+)
+from ._gerrit_major_gate import _print_submitted_major_bumps
 from ._gerrit_query import (
     _batch_scope,
     _check_query_options,
@@ -87,17 +96,12 @@ def _preview_gerrit_submission(
     no_confirm: bool,
     dry_run: bool,
     console: Console,
-) -> bool:
-    """Warn about permissions and preview the run, then decide to proceed.
+) -> None:
+    """Warn about permissions and preview the run; the caller decides.
 
     Permissions are per-project in Gerrit, so this checks the source
-    change and warns if the user may lack sufficient permissions. It
-    then either stops (dry run), prompts for confirmation
-    (interactive), or proceeds straight to submission (--no-confirm).
-
-    Returns:
-        True when submission should proceed, False when the caller
-        should stop (dry run, or the user declined confirmation).
+    change and warns if the user may lack sufficient permissions.  An
+    interactive run or a dry run then previews what would be submitted.
     """
     permission_warnings = source_change.get_permission_warnings()
     if permission_warnings:
@@ -122,13 +126,6 @@ def _preview_gerrit_submission(
             console.print(
                 "   ⚠️ You may not have all required permissions (see warnings above)"
             )
-        if dry_run:
-            console.print("\n🧪 Dry run: no changes were reviewed or submitted.")
-            return False
-        if not _pkg._confirm_gerrit_submission(source_change, console):
-            return False
-
-    return True
 
 
 def _run_gerrit_submission(
@@ -138,7 +135,8 @@ def _run_gerrit_submission(
     show_progress: bool,
     console: Console,
     skipped: list[tuple[GerritChangeInfo, str]] | None = None,
-    scope: dict[int, str] | None = None,
+    scope: dict[int, str] | SubmissionGuard | None = None,
+    held: list[tuple[GerritChangeInfo, str]] | None = None,
 ) -> None:
     """Submit all changes in parallel and print the final summary.
 
@@ -148,7 +146,8 @@ def _run_gerrit_submission(
     ``scope`` maps each change of a query batch to its previewed
     revision: each is reviewed and submitted only at that revision, so a
     patchset uploaded since is never approved, and only while Gerrit
-    would submit nothing outside ``scope`` with it.
+    would submit nothing a ``scope`` or ``SubmissionGuard`` forbids with it.
+    ``held`` lists the held-back major bumps; they never set the exit code.
 
     Live in-place progress mirrors the GitHub merge path: the submit
     manager records each change's transitory and terminal states
@@ -160,9 +159,9 @@ def _run_gerrit_submission(
     submission setup or the run itself raises.
     """
     console.print(f"\n🚀 Submitting {len(all_changes)} changes...")
-    if skipped and not all_changes:
-        # Every change of the query batch is blocked: nothing to submit.
-        _finish_gerrit_submission([], all_changes, console, skipped)
+    if (skipped or held) and not all_changes:
+        # Every change is blocked or held back: nothing to submit.
+        _finish_gerrit_submission([], all_changes, console, skipped, held)
         return
 
     progress_tracker: MergeProgressTracker | None = None
@@ -193,7 +192,7 @@ def _run_gerrit_submission(
         if progress_tracker is not None:
             progress_tracker.stop()
 
-    _finish_gerrit_submission(results, all_changes, console, skipped)
+    _finish_gerrit_submission(results, all_changes, console, skipped, held)
 
 
 def _finish_gerrit_submission(
@@ -201,13 +200,15 @@ def _finish_gerrit_submission(
     all_changes: list[tuple[GerritChangeInfo, GerritComparisonResult | None]],
     console: Console,
     skipped: list[tuple[GerritChangeInfo, str]] | None,
+    held: list[tuple[GerritChangeInfo, str]] | None = None,
 ) -> None:
     """Print the final summary and exit non-zero if anything was left.
 
     As for a GitHub run: a change left unsubmitted needs a human, and an
     exit of 0 would tell a script or scheduled workflow otherwise.
     """
-    _print_gerrit_final_summary(results, all_changes, console, skipped)
+    _print_gerrit_final_summary(results, all_changes, console, skipped, held)
+    _print_submitted_major_bumps(results, all_changes, console)
 
     code = int(ExitCode.MERGE_ERROR)
     failed = sum(1 for result in results if not result.success)
@@ -235,7 +236,7 @@ def _merge_gerrit_query(
     batch = _prepare_gerrit_query_batch(service, parsed_url, comparator, console, run)
     if batch is None:
         return
-    to_submit, skipped = batch
+    to_submit, skipped, held = batch
     _run_gerrit_submission(
         parsed_url,
         credentials,
@@ -244,6 +245,7 @@ def _merge_gerrit_query(
         console,
         skipped=skipped,
         scope=_batch_scope(to_submit),
+        held=held,
     )
 
 
@@ -268,9 +270,10 @@ def _merge_gerrit_change(
         dry_run=run.dry_run,
     )
 
-    source_change = _maybe_rebase_gerrit_change(
-        service, source_change, credentials, console, dry_run=run.dry_run
-    )
+    if not _holds_source_back(run, source_change):
+        source_change = _maybe_rebase_gerrit_change(
+            service, source_change, credentials, console, dry_run=run.dry_run
+        )
 
     candidate_scope = _gerrit_candidate_scope(
         source_change, run.topic, comparator, only_automation, parsed_url.host
@@ -290,13 +293,29 @@ def _merge_gerrit_change(
         source_entry,
     ]
 
-    if not _preview_gerrit_submission(
+    _preview_gerrit_submission(
         source_change, all_changes, run.no_confirm, run.dry_run, console
-    ):
+    )
+    gate = _gate_change_batch(
+        service, run, parsed_url.host, all_changes, console, source_change
+    )
+
+    if run.dry_run:
+        console.print("\n🧪 Dry run: no changes were reviewed or submitted.")
+        return
+    ask = not run.no_confirm and bool(gate.kept)
+    if ask and not _pkg._confirm_gerrit_submission(source_change, console):
         return
 
     _run_gerrit_submission(
-        parsed_url, credentials, all_changes, run.show_progress, console
+        parsed_url,
+        credentials,
+        gate.kept,
+        run.show_progress,
+        console,
+        skipped=gate.skipped or None,
+        scope=_submission_guard(gate),
+        held=gate.held,
     )
 
 
@@ -314,6 +333,8 @@ def _handle_gerrit_merge(
     topic: str | None = None,
     show_progress: bool = True,
     include_human_prs: bool = False,
+    allow_major: bool = False,
+    gate_zero_minor: bool = False,
 ) -> None:
     """
     Handle merge operation for a Gerrit change or query URL.
@@ -346,6 +367,8 @@ def _handle_gerrit_merge(
             merge path) instead of printing per-change status lines.
         include_human_prs: Bring a non-automation source change, and the
             changes similar to it, into scope once ``override`` confirms.
+        allow_major: Submit major version bumps like any other change.
+        gate_zero_minor: Gate 0.x minor version bumps as major ones.
     """
     is_query = isinstance(parsed_url, ParsedGerritTopicUrl)
     if is_query:
@@ -379,6 +402,8 @@ def _handle_gerrit_merge(
             include_human_prs=include_human_prs,
             show_progress=show_progress,
             topic=topic,
+            allow_major=allow_major,
+            gate_zero_minor=gate_zero_minor,
         )
         if isinstance(parsed_url, ParsedGerritTopicUrl):
             _merge_gerrit_query(

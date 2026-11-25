@@ -47,6 +47,7 @@ from ..url_parser import (
     ParsedGerritTopicUrl,
     ParsedUrl,
 )
+from ._gerrit_major_gate import _print_held_back
 from ._human_gate import _confirm_human_override, _given_override
 from ._sha import _generate_gerrit_override_sha
 from ._similarity import _display_change_info
@@ -57,6 +58,7 @@ def _print_gerrit_final_summary(
     all_changes: list[tuple[GerritChangeInfo, GerritComparisonResult | None]],
     console: Console,
     skipped: list[tuple[GerritChangeInfo, str]] | None = None,
+    held: list[tuple[GerritChangeInfo, str]] | None = None,
 ) -> None:
     """Print the post-run 🚀 Final Results line and failure recap.
 
@@ -76,6 +78,9 @@ def _print_gerrit_final_summary(
         skipped: Changes left out of submission, each with its reason.
             When given (a query batch), the tally counts them and the
             recap lists them; None leaves both out.
+        held: Major version bumps held back, each with its reason; the
+            tally counts them and the recap lists them, apart from
+            ``skipped``.
     """
     submitted = sum(1 for r in results if r.submitted)
     failed = [r for r in results if not r.success]
@@ -84,6 +89,8 @@ def _print_gerrit_final_summary(
     parts = [f"{submitted} submitted", f"{len(failed)} failed"]
     if skipped is not None:
         parts.append(f"{len(skipped)} skipped")
+    if held:
+        parts.append(f"{len(held)} held back")
     if reviewed_only > 0:
         parts.append(f"{reviewed_only} reviewed (not submitted)")
     console.print(f"\n🚀 Final Results: {', '.join(parts)}")
@@ -93,6 +100,8 @@ def _print_gerrit_final_summary(
         for change, reason in skipped:
             label = change.url or f"{change.project} #{change.number}"
             console.print(f"   • {label}\n     {reason}", markup=False)
+
+    _print_held_back(held or [], console)
 
     if not failed:
         return

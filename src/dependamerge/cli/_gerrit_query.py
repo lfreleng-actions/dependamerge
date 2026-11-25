@@ -9,7 +9,8 @@ finds the changes similar to it.  A query URL (``/q/...``) has no anchor:
 its batch is every open change the query returns, and nothing else.  No
 similarity scoring or owner matching runs, nothing is rebased, and a
 change Gerrit already reports as blocked stays in the batch but is
-skipped rather than voted on.
+skipped rather than voted on.  A major version bump among the rest
+passes the gate in ``_gerrit_major_gate`` first.
 """
 
 import math
@@ -31,6 +32,8 @@ from ..gerrit import (
     GerritService,
 )
 from ..url_parser import ParsedGerritTopicUrl
+from ._gerrit_blocked import _blocked_reason
+from ._gerrit_major_gate import _Held, _print_held_back, _settle_major_bumps
 from ._human_gate import _confirm_human_override, _given_override
 from ._sha import _generate_gerrit_query_sha
 
@@ -40,6 +43,13 @@ _DEFAULT_THRESHOLD = 0.8
 
 #: A change to submit, paired as the submit manager expects.
 _Entry = tuple[GerritChangeInfo, GerritComparisonResult | None]
+
+#: The changes a query batch submits, skips as blocked and holds back.
+_QueryBatch = tuple[
+    list[_Entry],
+    list[tuple[GerritChangeInfo, str]],
+    list[tuple[GerritChangeInfo, str]],
+]
 
 
 @dataclass(frozen=True)
@@ -53,6 +63,10 @@ class _GerritRunOptions:
         include_human_prs: Bring non-automation changes into scope.
         show_progress: Drive a live progress tracker during submission.
         topic: ``--topic``; a change URL only.
+        allow_major: ``--allow-major``: submit major version bumps like
+            any other change.
+        gate_zero_minor: ``--gate-zero-minor``: gate 0.x minor bumps as
+            major ones.
     """
 
     no_confirm: bool
@@ -61,6 +75,8 @@ class _GerritRunOptions:
     include_human_prs: bool
     show_progress: bool
     topic: str | None = None
+    allow_major: bool = False
+    gate_zero_minor: bool = False
 
 
 def _check_query_options(
@@ -90,48 +106,6 @@ def _check_query_options(
             "ℹ️ --threshold does not apply to a Gerrit query URL; "
             "the batch is exactly the query's result set."
         )
-
-
-#: Submit requirement statuses that keep a change from being submitted.
-_FAILING_REQUIREMENT = {"UNSATISFIED": "unsatisfied", "ERROR": "in error"}
-
-#: The requirement this run's own +2 is about to satisfy, and the one
-#: status of it that +2 can clear.  ``ERROR`` means Gerrit could not
-#: evaluate the requirement, which no vote fixes.
-_REVIEW_LABEL = "Code-Review"
-_AWAITING_REVIEW = "UNSATISFIED"
-
-
-def _blocked_reason(change: GerritChangeInfo) -> str | None:
-    """Why Gerrit already reports ``change`` as unable to submit, if it does.
-
-    Work in progress; a vote at a label's minimum (Gerrit's ``=MIN``,
-    such as ``Verified -1``) or a legacy ``rejected`` summary; a submit
-    requirement that is unsatisfied or in error; or ``mergeable: false``
-    where Gerrit reports it.  Code-Review's own requirement blocks only
-    when in error: when unsatisfied, the +2 this run gives is what it
-    lacks.
-    """
-    reasons: list[str] = []
-    if change.work_in_progress:
-        reasons.append("work in progress")
-    vetoed: set[str] = set()
-    for label in change.labels:
-        if label.minimum_vote is not None:
-            reasons.append(f"{label.name} {label.minimum_vote:+d}")
-            vetoed.add(label.name)
-        elif label.rejected:
-            vote = f"{label.value:+d}" if label.value is not None else "rejected"
-            reasons.append(f"{label.name} {vote}")
-            vetoed.add(label.name)
-    for name, status in change.submit_requirement_status.items():
-        failing = _FAILING_REQUIREMENT.get(status)
-        awaiting_review = name == _REVIEW_LABEL and status == _AWAITING_REVIEW
-        if failing and not awaiting_review and name not in vetoed:
-            reasons.append(f"{name} requirement {failing}")
-    if change.mergeable is False:
-        reasons.append("merge conflict")
-    return ", ".join(reasons) or None
 
 
 def _print_query_batch(
@@ -246,6 +220,7 @@ def _refuse_submission_beyond_batch(
     service: GerritService,
     to_submit: list[_Entry],
     console: Console,
+    held: list[_Held] | None = None,
 ) -> None:
     """Refuse when submitting the batch could submit anything else.
 
@@ -254,6 +229,9 @@ def _refuse_submission_beyond_batch(
     project; none of those passed this preview, the human gate or the
     revision checks.  So every change's ``submitted_together`` set must
     lie within the batch, at the revisions listed, before any vote.
+    ``held`` lists the major version bumps the gate left out of the
+    batch; a refusal recaps them with the ``--allow-major`` hint, since
+    one of them may be what a change would take along.
 
     Raises:
         SystemExit: ``VALIDATION_ERROR`` when any change's set reaches
@@ -268,15 +246,23 @@ def _refuse_submission_beyond_batch(
     console.print("\n❌ Submitting this batch could act outside it:")
     for problem in problems:
         console.print(f"   • {problem}", markup=False)
+    details = (
+        "Change the query so it matches every change Gerrit submits "
+        "together (a term such as project: or branch: can leave one "
+        "out), resolve any blocked member, then run again; or submit "
+        "those changes separately."
+    )
+    if held:
+        _print_held_back(held, console)
+        details = (
+            "The major version bumps held back are left out of the batch, "
+            "so a change Gerrit submits with one gets refused: re-run with "
+            "--allow-major to submit them with the rest. Otherwise: " + details
+        )
     exit_with_error(
         ExitCode.VALIDATION_ERROR,
         message="❌ Refusing to submit: the batch's exact scope cannot be guaranteed",
-        details=(
-            "Change the query so it matches every change Gerrit submits "
-            "together (a term such as project: or branch: can leave one "
-            "out), resolve any blocked member, then run again; or submit "
-            "those changes separately."
-        ),
+        details=details,
     )
 
 
@@ -286,13 +272,18 @@ def _prepare_gerrit_query_batch(
     comparator: GerritChangeComparator,
     console: Console,
     run: _GerritRunOptions,
-) -> tuple[list[_Entry], list[tuple[GerritChangeInfo, str]]] | None:
+) -> _QueryBatch | None:
     """Fetch, list, gate and confirm the batch a query URL names.
 
+    A gated major version bump left out of the batch also leaves the
+    scope the ``submitted_together`` guard checks, so a submission that
+    would take one along is refused.
+
     Returns:
-        The changes to submit and the blocked changes to skip, each with
-        its reason; or None when the run should stop (a dry run, or the
-        user declined).
+        The changes to submit, the blocked changes to skip and the major
+        version bumps held back, each of the last two with its reason;
+        or None when the run should stop (a dry run, or the user
+        declined).
 
     Raises:
         typer.Exit: When the query matches no open change.
@@ -331,16 +322,24 @@ def _prepare_gerrit_query_batch(
         )
         _print_permission_summary(lacking, unverified, console)
 
-    _refuse_submission_beyond_batch(service, to_submit, console)
+    gate = _settle_major_bumps(run, parsed_url.host, to_submit, console)
+    to_submit = gate.kept
+
+    _refuse_submission_beyond_batch(service, to_submit, console, gate.held)
 
     if run.dry_run:
         console.print("\n🧪 Dry run: no changes were reviewed or submitted.")
         return None
-    if not run.no_confirm:
+    # Nothing to confirm once the gate has held back every change left.
+    if not run.no_confirm and (to_submit or not gate.held):
+        held = {change.number for change, _ in gate.held}
         continue_sha = _generate_gerrit_query_sha(
-            "continue", parsed_url.host, expression, changes
+            "continue",
+            parsed_url.host,
+            expression,
+            [change for change in changes if change.number not in held],
         )
         if not _pkg._confirm_continue_sha(continue_sha, console):
             return None
 
-    return to_submit, skipped
+    return to_submit, skipped, gate.held

@@ -21,6 +21,7 @@ Usage:
     changes = client.get("/changes/?q=status:open")
 """
 
+from dependamerge.gerrit._submitted_together import SubmissionGuard
 from dependamerge.gerrit.client import (
     GerritAuthError,
     GerritNotFoundError,
@@ -86,6 +87,7 @@ __all__ = [
     "create_gerrit_comparator",
     # Submit Manager
     "GerritSubmitManager",
+    "SubmissionGuard",
     "SubmitStatus",
     "create_submit_manager",
     # Service

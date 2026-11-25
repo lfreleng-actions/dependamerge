@@ -125,6 +125,9 @@ https://gerrit.onap.org/r/q/topic:gha-sonar-migration+is:open
   `--include-human-prs` and an `--override` value bound to the host, the
   query and each change's number and current revision
 
+Both Gerrit modes gate major version bumps, as described in
+[docs/GERRIT_IMPLEMENTATION.md](docs/GERRIT_IMPLEMENTATION.md#major-version-bumps).
+
 The tool automatically detects whether a URL is for GitHub or Gerrit based on
 the URL pattern (`/pull/` for GitHub, `/c/.../+/` or `/q/` for Gerrit).
 

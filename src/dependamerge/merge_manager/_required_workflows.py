@@ -67,28 +67,7 @@ class _RequiredWorkflowWaitMixin(_MergeManagerBase):
             level="info",
         )
 
-        # Refresh so the wait loop starts from live state rather than
-        # the (possibly stale-``clean``) snapshot that let the doomed
-        # merge dispatch in the first place.
-        try:
-            refreshed = await self._github_client.get(
-                f"/repos/{owner}/{repo}/pulls/{pr_info.number}"
-            )
-            if isinstance(refreshed, dict):
-                if refreshed.get("mergeable") is not None:
-                    pr_info.mergeable = refreshed.get("mergeable")
-                refreshed_state = refreshed.get("mergeable_state")
-                if refreshed_state not in (None, "", "unknown"):
-                    pr_info.mergeable_state = refreshed_state
-                refreshed_head = (refreshed.get("head") or {}).get("sha")
-                if refreshed_head:
-                    pr_info.head_sha = refreshed_head
-        except Exception as exc:
-            self.log.debug(
-                "Failed to refresh %s before required-workflows wait: %s",
-                pr_key,
-                exc,
-            )
+        await self._refresh_before_required_workflows(pr_info, owner, repo, pr_key)
 
         # Only now, against the *live* head SHA, ask whether waiting can
         # help at all.  Checking before the refresh above would test a
@@ -114,6 +93,59 @@ class _RequiredWorkflowWaitMixin(_MergeManagerBase):
         # wait out the whole timeout on a workflow that will never run.
         judged_head = pr_info.head_sha if last_error else None
 
+        return await self._retry_until_workflows_finish(
+            pr_info, owner, repo, merge_method, deadline, judged_head
+        )
+
+    async def _refresh_before_required_workflows(
+        self, pr_info: PullRequestInfo, owner: str, repo: str, pr_key: str
+    ) -> None:
+        """Refresh the snapshot so the wait starts from live state.
+
+        The (possibly stale-``clean``) snapshot is what let the doomed
+        merge dispatch in the first place.  A failed read is logged and
+        leaves the snapshot as it was.
+        """
+        if self._github_client is None:
+            return
+        try:
+            refreshed = await self._github_client.get(
+                f"/repos/{owner}/{repo}/pulls/{pr_info.number}"
+            )
+            if isinstance(refreshed, dict):
+                if refreshed.get("mergeable") is not None:
+                    pr_info.mergeable = refreshed.get("mergeable")
+                refreshed_state = refreshed.get("mergeable_state")
+                if refreshed_state not in (None, "", "unknown"):
+                    pr_info.mergeable_state = refreshed_state
+                refreshed_head = (refreshed.get("head") or {}).get("sha")
+                if refreshed_head:
+                    pr_info.head_sha = refreshed_head
+        except Exception as exc:
+            self.log.debug(
+                "Failed to refresh %s before required-workflows wait: %s",
+                pr_key,
+                exc,
+            )
+
+    async def _retry_until_workflows_finish(
+        self,
+        pr_info: PullRequestInfo,
+        owner: str,
+        repo: str,
+        merge_method: str,
+        deadline: float,
+        judged_head: str | None,
+    ) -> bool:
+        """Alternate waiting and one merge call until the deadline.
+
+        ``judged_head`` is the head the undispatched-workflow question
+        has already been put for, or ``None`` when it has not been.
+        Returns True once a retry merged the PR or it merged during a
+        wait; False otherwise.
+        """
+        pr_key = f"{owner}/{repo}#{pr_info.number}"
+        loop = asyncio.get_running_loop()
         self._track_pr_state(pr_info, "waiting")
         try:
             while True:
@@ -161,8 +193,9 @@ class _RequiredWorkflowWaitMixin(_MergeManagerBase):
                     merged = False
                     if pr_info.head_sha != judged_head:
                         # A head we have not judged --- either the
-                        # refresh above found a force-push and skipped
-                        # the question, or one landed during the wait.
+                        # refresh before the wait found a force-push and
+                        # skipped the question, or one landed during the
+                        # wait.
                         # This rejection is evidence for the commit we
                         # are actually on, so ask now.
                         judged_head = pr_info.head_sha

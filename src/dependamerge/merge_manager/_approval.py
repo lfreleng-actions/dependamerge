@@ -14,14 +14,19 @@ returned by a rejected merge, so approval and retry are intertwined.
 from __future__ import annotations
 
 import asyncio
-from typing import Any
 
 from ..bot_policy import BotPolicy
 from ..github_async import ApprovalError
 from ..github_async import PermissionError as GitHubPermissionError
-from ..merge_signals import DraftPullRequestError, DraftStateUnknownError
+from ..merge_signals import (
+    DraftPullRequestError,
+    DraftStateUnknownError,
+    PullRequestStopSignal,
+    ReviewsUnreadableError,
+)
 from ..models import PullRequestInfo
 from ..rule_violations import violation_verb
+from ._approval_check import already_sufficiently_approved
 from ._base import _MergeManagerBase
 from ._write_guards import (
     draft_state_now,
@@ -70,6 +75,8 @@ class _ApprovalMixin(_MergeManagerBase):
                 bot policy, or its repository's policy is invalid.
             DraftPullRequestError: When the PR is a draft, including one
                 its author converted since the scan.
+            ReviewsUnreadableError: When the PR's reviews cannot all be
+                read to rule out an approval of ours.
         """
         refuse_out_of_scope_approval(self.bot_policy, pr_info, owner, repo)
         approved = await self._approve_pr(owner, repo, pr_info.number)
@@ -299,47 +306,16 @@ class _ApprovalMixin(_MergeManagerBase):
             return False
         return "not satisfied" in lowered[idx:] and violation_verb(detail) != "failed"
 
-    @staticmethod
-    def _already_sufficiently_approved(
-        pr_data: dict[str, Any],
-        reviews_data: list[Any],
-        current_user: str,
-    ) -> tuple[bool, str | None]:
-        """Return ``(skip, approvers)`` when the PR needs no new approval.
-
-        ``skip`` is True when the current user has already approved, or when
-        other reviewers have approved a ``clean`` PR.  ``approvers`` names the
-        relevant approver(s) for the debug log.
-        """
-        for review in reviews_data:
-            if not isinstance(review, dict):
-                continue
-            if (review.get("user") or {}).get("login") == current_user and review.get(
-                "state"
-            ) == "APPROVED":
-                return True, current_user
-
-        approved_reviews = [
-            review
-            for review in reviews_data
-            if isinstance(review, dict)
-            and review.get("state") == "APPROVED"
-            and (review.get("user") or {}).get("login") != current_user
-        ]
-        if approved_reviews and pr_data.get("mergeable_state") == "clean":
-            # A review may carry ``"user": null`` or ``{"login": null}``;
-            # coerce both to a string so join() cannot see a None login.
-            approvers = [
-                (review.get("user") or {}).get("login") or "unknown"
-                for review in approved_reviews
-            ]
-            return True, ", ".join(approvers)
-        return False, None
-
     async def _should_skip_approval(
         self, owner: str, repo: str, pr_number: int
     ) -> tuple[bool, str | None]:
-        """Return ``(skip, approvers)`` when the PR already has adequate approval."""
+        """Return ``(skip, approvers)`` when the PR already has adequate approval.
+
+        Raises:
+            ReviewsUnreadableError: When the reviews cannot all be read,
+                so neither "already approved" nor "not yet approved" is
+                known.
+        """
         if self._github_client is None:
             raise RuntimeError("GitHub client not initialized")
         pr_data = await self._github_client.get(
@@ -351,14 +327,16 @@ class _ApprovalMixin(_MergeManagerBase):
         # call — the login is session-constant, so this costs one
         # round-trip per run instead of one per PR).
         current_user = await self._github_client.get_authenticated_user_login()
+        reading = await self._github_client.read_pull_request_reviews(
+            owner, repo, pr_number
+        )
+        # A partial reading proves neither that the PR is approved
+        # enough nor that it lacks our approval, so it stops the PR.
+        if not reading.complete:
+            raise ReviewsUnreadableError(f"{owner}/{repo}#{pr_number}")
         if not current_user:
             return False, None
-        reviews_data = await self._github_client.get(
-            f"/repos/{owner}/{repo}/pulls/{pr_number}/reviews"
-        )
-        if not isinstance(reviews_data, list):
-            return False, None
-        return self._already_sufficiently_approved(pr_data, reviews_data, current_user)
+        return already_sufficiently_approved(pr_data, reading.entries, current_user)
 
     async def _approve_pr(self, owner: str, repo: str, pr_number: int) -> bool:
         """
@@ -373,6 +351,7 @@ class _ApprovalMixin(_MergeManagerBase):
             True if approval was added, False if already approved/sufficient
 
         Raises:
+            ReviewsUnreadableError: If the reviews cannot all be read
             Exception: If approval fails
         """
         if not self._github_client:
@@ -403,6 +382,8 @@ class _ApprovalMixin(_MergeManagerBase):
                 "🤖 Dependamerge\nApproved this pull request ✅",
             )
             return True
+        except PullRequestStopSignal:
+            raise
         except GitHubPermissionError:
             # Let typed permission errors propagate to the caller's
             # dedicated handler in ``_merge_single_pr``.  Wrapping

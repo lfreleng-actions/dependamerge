@@ -25,6 +25,7 @@ __all__ = [
     "DraftPullRequestError",
     "DraftStateUnknownError",
     "PullRequestStopSignal",
+    "ReviewsUnreadableError",
 ]
 
 
@@ -53,4 +54,14 @@ class DraftStateUnknownError(PullRequestStopSignal):
     a draft would satisfy required reviews once it is marked ready, and
     refusing the later merge cannot undo it.  So the pull request fails
     without the approval, and a re-run tries again.
+    """
+
+
+class ReviewsUnreadableError(PullRequestStopSignal):
+    """The reviews could not all be read before an approval or its retry.
+
+    Only a whole reading shows the pull request lacks this run's own
+    approval, and a failed POST may still have created one.  So the pull
+    request is skipped, neither approved again nor merged, and a re-run
+    tries again.
     """

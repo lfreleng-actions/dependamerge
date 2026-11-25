@@ -16,6 +16,7 @@ import pytest
 from dependamerge.github_async import (
     GitHubAsync,
     GraphQLError,
+    ReviewReading,
 )
 from dependamerge.github_client import GitHubClient
 from dependamerge.github_service import GitHubService
@@ -369,12 +370,13 @@ class TestGitHubClientAsyncIntegration:
         def mock_get_side_effect(url):
             if url == "/repos/owner/repo/pulls/42":
                 return pr_data
-            elif url == "/repos/owner/repo/pulls/42/reviews":
-                return []  # Empty reviews list
             else:
                 return {}
 
         mock_async.get.side_effect = mock_get_side_effect
+        mock_async.read_pull_request_reviews = AsyncMock(
+            return_value=ReviewReading([], True)
+        )
 
         # Create proper async iterator mock
         class MockAsyncIterator:
@@ -410,9 +412,11 @@ class TestGitHubClientAsyncIntegration:
         assert pr_info.author == "test-user"
 
         # Verify async methods were called (PR info and reviews)
-        assert mock_async.get.call_count == 2
+        assert mock_async.get.call_count == 1
         mock_async.get.assert_any_call("/repos/owner/repo/pulls/42")
-        mock_async.get.assert_any_call("/repos/owner/repo/pulls/42/reviews")
+        mock_async.read_pull_request_reviews.assert_awaited_once_with(
+            "owner", "repo", 42
+        )
         mock_async.get_paginated.assert_called_once_with(
             "/repos/owner/repo/pulls/42/files", per_page=100
         )

@@ -24,6 +24,7 @@ from typing import (
 # split, and callers substitute them there.
 import dependamerge.github_async as _pkg
 
+from ..merge_signals import ReviewsUnreadableError
 from ._base import _GitHubAsyncBase
 from ._errors import (
     _APPROVE_MAX_ATTEMPTS,
@@ -95,7 +96,10 @@ class _ReviewsMixin(_GitHubAsyncBase):
         more after the final attempt --- the review list is re-read, and
         an approval already present counts as success rather than
         stacking a duplicate review.  The first attempt skips that check,
-        so the common path costs exactly one request.
+        so the common path costs exactly one request.  When that re-read
+        cannot identify the authenticated user, or cannot account for
+        every review and finds no approval of ours, the approval stops with :class:`ReviewsUnreadableError` rather
+        than risk a duplicate.
 
         A ``422`` is classified by GitHub's response body.  One saying
         the review was "submitted too quickly" is GitHub's
@@ -108,6 +112,9 @@ class _ReviewsMixin(_GitHubAsyncBase):
         Raises:
             PermissionError: If GitHub says the approval is not permitted
             ApprovalError: If GitHub refused the approval for another reason
+            ReviewsUnreadableError: If, after a failed POST, the
+                authenticated user is unknown, or the reviews cannot all
+                be read and none read is our approval
         """
         target = f"{owner}/{repo}#{number}"
         last_exc: Exception | None = None
@@ -199,64 +206,52 @@ class _ReviewsMixin(_GitHubAsyncBase):
     async def _has_own_approval(self, owner: str, repo: str, number: int) -> bool:
         """Whether the authenticated user already has an APPROVED review.
 
-        Paginates: a single default page caps at 30 reviews, and missing
-        an existing approval on a busy PR would defeat the
-        duplicate-suppression this exists for and post another review.
+        Reads every page: missing an existing approval on a busy PR would
+        defeat the duplicate-suppression this exists for and post another
+        review.  An approval found in a partial reading still counts.
+
+        Raises:
+            ReviewsUnreadableError: When the authenticated user cannot be
+                identified, or the reading is partial and holds no
+                approval of ours: the failed POST may have created one
+                that cannot be recognised, so retrying could post a
+                duplicate.
         """
         try:
             login = await self.get_authenticated_user_login()
-            if not login:
-                # The lookup returns ``None`` on failure rather than
-                # raising.  Without this guard a review carrying
-                # ``user: null`` yields ``None == None`` and reports an
-                # approval that does not exist --- which would stop
-                # ``approve_pull_request`` retrying and let it report
-                # success having approved nothing.
-                self.log.debug(
-                    "Cannot confirm existing approval on %s/%s#%s: "
-                    "authenticated user unknown",
-                    owner,
-                    repo,
-                    number,
-                )
-                return False
-            async for page in self.get_paginated(
-                f"/repos/{owner}/{repo}/pulls/{number}/reviews",
-                per_page=100,
-            ):
-                if not isinstance(page, list):
-                    continue
-                for review in page:
-                    if not isinstance(review, dict):
-                        continue
-                    if review.get("state") != "APPROVED":
-                        continue
-                    user = review.get("user") or {}
-                    reviewer = user.get("login")
-                    if reviewer and reviewer == login:
-                        return True
         except Exception as exc:
             self.log.debug(
-                "Could not read reviews for %s/%s#%s: %s", owner, repo, number, exc
+                "Could not read the authenticated user for %s/%s#%s: %s",
+                owner,
+                repo,
+                number,
+                exc,
             )
-            return False
+            raise ReviewsUnreadableError(f"{owner}/{repo}#{number}") from exc
+        if not login:
+            # The lookup returns ``None`` on failure rather than
+            # raising.  Matching on it would let a review carrying
+            # ``user: null`` yield ``None == None`` and report an
+            # approval that does not exist; reporting none instead
+            # would let a retry post a duplicate.  Neither is safe.
+            self.log.debug(
+                "Cannot confirm existing approval on %s/%s#%s: "
+                "authenticated user unknown",
+                owner,
+                repo,
+                number,
+            )
+            raise ReviewsUnreadableError(f"{owner}/{repo}#{number}")
+        reading = await self.read_pull_request_reviews(owner, repo, number)
+        if any(
+            review.get("state") == "APPROVED"
+            and (review.get("user") or {}).get("login") == login
+            for review in reading.entries
+        ):
+            return True
+        if not reading.complete:
+            raise ReviewsUnreadableError(f"{owner}/{repo}#{number}")
         return False
-
-    async def get_pull_request_review_comments(
-        self, owner: str, repo: str, number: int
-    ) -> list[dict[str, Any]]:
-        """
-        Get review comments for a pull request.
-
-        REST: GET /repos/{owner}/{repo}/pulls/{pull_number}/comments
-        """
-        try:
-            data = await self.get(f"/repos/{owner}/{repo}/pulls/{number}/comments")
-            return data if isinstance(data, list) else []
-        except Exception as e:
-            # If we can't get review comments, return empty list
-            self.log.debug(f"Could not fetch review comments for PR {number}: {e}")
-            return []
 
     async def list_issue_comments(
         self, owner: str, repo: str, number: int

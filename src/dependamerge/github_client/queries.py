@@ -9,10 +9,11 @@ the organization-wide unmergeable-PR scan.  Each one runs the async
 client for the duration of a single call via :func:`asyncio.run`, which
 is what makes them usable from the synchronous CLI.
 
-The three module-level helpers below carry the pieces of
+The module-level helpers below carry the pieces of
 :meth:`_GitHubQueryMixin.get_pull_request_info` that are independent of
-the client: fetching the changed files, fetching the reviews, and
-assembling the :class:`PullRequestInfo` from the raw REST payload.
+the client: fetching the changed files and assembling the
+:class:`PullRequestInfo` from the raw REST payload.  The reviews come
+from :func:`dependamerge.review_reading.read_reviews`.
 
 ``GitHubAsync`` and ``GitHubService`` are imported inside the methods
 that use them, not at module scope, so that patching them in their own
@@ -37,6 +38,7 @@ from ..models import (
     PullRequestInfo,
     ReviewInfo,
 )
+from ..review_reading import read_reviews
 
 if TYPE_CHECKING:
     from ..github_async import GitHubAsync
@@ -85,42 +87,6 @@ async def _fetch_pr_files(
     return files_changed
 
 
-async def _fetch_pr_reviews(
-    api: GitHubAsync, owner: str, repo: str, pr_number: int
-) -> list[ReviewInfo]:
-    """Fetch a pull request's reviews, tolerating a failed review call."""
-    reviews: list[ReviewInfo] = []
-    try:
-        review_response = await api.get(
-            f"/repos/{owner}/{repo}/pulls/{pr_number}/reviews"
-        )
-        assert isinstance(review_response, list), "reviews must be a list"
-        review_data = review_response
-        # review_data is a list of review dictionaries
-        for review in review_data:
-            if not isinstance(review, dict):
-                continue
-            if review.get("user") and review.get("state"):
-                reviews.append(
-                    ReviewInfo(
-                        # NOTE: REST API returns string IDs that look numeric but may be node IDs
-                        # Do not convert to int() - keep as string to match GraphQL behavior
-                        id=review.get("id", ""),
-                        user=(review.get("user") or {}).get("login", ""),
-                        state=review.get("state", ""),
-                        submitted_at=review.get("submitted_at", ""),
-                        body=review.get("body"),
-                    )
-                )
-    except Exception as exc:
-        # If review fetching fails, continue without reviews
-        api.log.debug(
-            f"Review fetch failed for PR #{pr_number}: {exc}",
-            exc_info=True,
-        )
-    return reviews
-
-
 def _build_pull_request_info(
     pr: dict[str, Any],
     owner: str,
@@ -128,6 +94,7 @@ def _build_pull_request_info(
     pr_number: int,
     files_changed: list[FileChange],
     reviews: list[ReviewInfo],
+    reviews_complete: bool = True,
 ) -> PullRequestInfo:
     """Assemble a ``PullRequestInfo`` from a REST pull request payload."""
     return PullRequestInfo(
@@ -148,6 +115,7 @@ def _build_pull_request_info(
         repository_full_name=f"{owner}/{repo}",
         html_url=pr.get("html_url") or "",
         reviews=reviews,
+        reviews_complete=reviews_complete,
         # Populate head/base repo identity so the
         # signature-preserving local-rebase path can
         # tell whether the PR is from a fork (and
@@ -193,9 +161,17 @@ class _GitHubQueryMixin:
                 assert isinstance(pr_response, dict), "PR endpoint must return a dict"
                 pr: dict[str, Any] = pr_response
                 files_changed = await _fetch_pr_files(api, owner, repo, pr_number)
-                reviews = await _fetch_pr_reviews(api, owner, repo, pr_number)
+                reviews, reviews_complete = await read_reviews(
+                    api, owner, repo, pr_number
+                )
                 return _build_pull_request_info(
-                    pr, owner, repo, pr_number, files_changed, reviews
+                    pr,
+                    owner,
+                    repo,
+                    pr_number,
+                    files_changed,
+                    reviews,
+                    reviews_complete,
                 )
 
         return asyncio.run(_run())  # type: ignore[no-any-return]

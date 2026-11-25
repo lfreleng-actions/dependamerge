@@ -13,6 +13,7 @@ the PR's fate, or ``None`` to let it through to the next one.
 from __future__ import annotations
 
 from ..github2gerrit_detector import build_gerrit_skip_message
+from ..review_reading import complete_pr_reviews
 from ._base import _MergeManagerBase
 from ._single_pr_context import _MergeFlow
 from ._types import MergeResult, MergeStatus
@@ -164,7 +165,8 @@ class _SinglePrGatesMixin(_MergeManagerBase):
         rebase`` + wait; other authors → report and fail fast) rather
         than the generic not-mergeable skip below.  Skipped in preview
         (no side effects) and under ``force=all`` (which intentionally
-        attempts the merge regardless of state).
+        attempts the merge regardless of state).  Conflict recovery
+        approves and arms auto-merge, so the review gate runs first.
         """
         pr_info = flow.pr_info
         result = flow.result
@@ -173,12 +175,32 @@ class _SinglePrGatesMixin(_MergeManagerBase):
             and not self.preview_mode
             and self.force_level != "all"
         ):
+            blocked = await self._gate_reviews(flow)
+            if blocked is not None:
+                return blocked
             return await self._handle_merge_conflict(
                 pr_info, flow.repo_owner, flow.repo_name, result
             )
 
         if not self._is_pr_mergeable(pr_info):
             return await self._handle_not_mergeable_pr(pr_info, result)
+
+        return await self._gate_reviews(flow)
+
+    async def _gate_reviews(self, flow: _MergeFlow) -> MergeResult | None:
+        """Stop on a change request, or on reviews that cannot all be read."""
+        pr_info = flow.pr_info
+        result = flow.result
+        if self.force_level != "all" and not await self._read_all_reviews(flow):
+            # A change request may sit among the reviews not read.
+            reason = "reviews could not all be read to rule out a change request"
+            result.status = MergeStatus.SKIPPED
+            result.error = f"Skipped: {reason}"
+            self._pr_status(
+                f"⚠️ Skipped: {pr_info.html_url} [{reason}]",
+                level="warning",
+            )
+            return result
 
         # Check for blocking reviews (changes requested)
         if self._has_blocking_reviews(pr_info):
@@ -198,6 +220,21 @@ class _SinglePrGatesMixin(_MergeManagerBase):
                         f"⚠️ Overriding blocking reviews for {pr_info.repository_full_name}#{pr_info.number} (--force=all)"
                     )
         return None
+
+    async def _read_all_reviews(self, flow: _MergeFlow) -> bool:
+        """Make the PR's review list whole; return whether it is.
+
+        The scan reads only the first page of reviews, so a PR with
+        more carries a partial list until this reads the rest.
+        """
+        pr_info = flow.pr_info
+        if pr_info.reviews_complete:
+            return True
+        if self._github_client is None:
+            return False
+        return await complete_pr_reviews(
+            self._github_client, pr_info, flow.repo_owner, flow.repo_name
+        )
 
     async def _repair_blocked_pr(self, flow: _MergeFlow) -> None:
         """Clear the self-inflicted reasons a PR is ``blocked``.
@@ -291,22 +328,24 @@ class _SinglePrGatesMixin(_MergeManagerBase):
         result = flow.result
         copilot_processing_successful = True
         if self.dismiss_copilot and self._copilot_handler:
-            # Analyze what types of reviews we have
-            self._copilot_handler.analyze_copilot_review_dismissibility(pr_info)
-
-            try:
-                (
-                    processed_count,
-                    total_count,
-                ) = await self._copilot_handler.dismiss_copilot_comments_for_pr(pr_info)
-                if total_count > 0:
-                    # Silent processing in background
-                    pass
-            except Exception as e:
+            # The handler reads ``pr_info.reviews``: a Copilot review
+            # beyond the scan's first page must be on it.
+            if not await self._read_all_reviews(flow):
                 self.log.warning(
-                    f"⚠️ Failed to process Copilot items for PR {pr_info.number}: {e}"
+                    f"⚠️ Could not read every review on PR {pr_info.number} "
+                    "to find its Copilot reviews"
                 )
                 copilot_processing_successful = False
+            else:
+                # Analyze what types of reviews we have
+                self._copilot_handler.analyze_copilot_review_dismissibility(pr_info)
+                try:
+                    await self._copilot_handler.dismiss_copilot_comments_for_pr(pr_info)
+                except Exception as e:
+                    self.log.warning(
+                        f"⚠️ Failed to process Copilot items for PR {pr_info.number}: {e}"
+                    )
+                    copilot_processing_successful = False
 
         if not copilot_processing_successful:
             result.status = MergeStatus.FAILED

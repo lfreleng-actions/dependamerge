@@ -24,6 +24,10 @@ from ..bot_identity import is_copilot
 from ..models import PullRequestInfo, ReviewInfo
 
 
+class ReviewCommentsIncompleteError(RuntimeError):
+    """A pull request's review comments could not all be read."""
+
+
 class _CopilotReviewMixin:
     """Review-level Copilot handling shared into ``CopilotCommentHandler``."""
 
@@ -265,30 +269,37 @@ class _CopilotReviewMixin:
 
         Returns:
             List of Copilot review comments
+
+        Raises:
+            ReviewCommentsIncompleteError: When the review comments
+                could not all be read, so finding no Copilot comment
+                proves nothing.
         """
         try:
-            all_comments = await self.github_client.get_pull_request_review_comments(
+            reading = await self.github_client.read_pull_request_review_comments(
                 owner, repo, pr_number
             )
-            copilot_comments = []
-
-            for comment in all_comments:
-                author = (comment.get("user") or {}).get("login", "")
-                # Check if comment is from Copilot
-                if is_copilot(author):
-                    copilot_comments.append(comment)
-                    if self.debug:
-                        self.log.info(
-                            f"🤖 Found Copilot review comment: {comment.get('id')} on {comment.get('path', 'unknown')}"
-                        )
-
-            return copilot_comments
-
         except Exception as e:
-            self.log.warning(
-                f"⚠️ Could not fetch review comments for PR {pr_number}: {e}"
+            raise ReviewCommentsIncompleteError(
+                f"could not fetch review comments for PR {pr_number}: {e}"
+            ) from e
+        if not reading.complete:
+            raise ReviewCommentsIncompleteError(
+                f"could not read every review comment on PR {pr_number}"
             )
-            return []
+
+        copilot_comments = []
+        for comment in reading.entries:
+            author = (comment.get("user") or {}).get("login", "")
+            # Check if comment is from Copilot
+            if is_copilot(author):
+                copilot_comments.append(comment)
+                if self.debug:
+                    self.log.info(
+                        f"🤖 Found Copilot review comment: {comment.get('id')} on {comment.get('path', 'unknown')}"
+                    )
+
+        return copilot_comments
 
     async def _resolve_review_comment_thread(self, comment: dict[str, Any]) -> bool:
         """

@@ -198,7 +198,7 @@ runs:
     - name: "Set up uv"
       id: setup-uv
       # yamllint disable-line rule:line-length
-      uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
+      uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d  # v10.4.0
       # No step sees a token it does not use: tokens inherited from the
       # caller's job are masked here, as on every step below. So are
       # BASH_ENV, which bash sources before a step's first line, and

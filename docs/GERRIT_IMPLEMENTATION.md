@@ -136,6 +136,86 @@ the query returns, and nothing else:
 - `--topic` gets refused, and `--threshold` prints a note that it does not
   apply.
 
+### Major Version Bumps
+
+Both modes gate a change that bumps a dependency across a major
+version, as the GitHub paths gate a pull request.
+`cli/_gerrit_major_gate.py` reads each change's subject and commit
+message with `version_bumps.classify()`. The gate takes a change when
+that gives `major`, or `zero-minor` under `--gate-zero-minor`; never
+`other` or `unknown`. Dependabot's `update-type:
+version-update:semver-major` counts, so the gate takes a change whose
+subject names no versions too. Under `--allow-major` it takes none.
+
+- **Interactive** (no `--no-confirm`): the gated changes get listed
+  apart after the preview. A second value includes them; Enter, any
+  other input, EOF or an interrupt holds them back.
+- **Unattended** (`--no-confirm`): held back, with no vote and no
+  submit, and listed with each dependency and its versions, then the
+  hint to re-run with `--allow-major`.
+- **`--allow-major`**: submitted like any other change, and listed at
+  the end of the run.
+
+- The gate applies to the changes that would otherwise get submitted. A
+  query batch's blocked change gets skipped as blocked whether gated or
+  not. A change URL's changes come without submit requirements, and its
+  similar changes without detailed labels, so once the gate takes any
+  of them `cli/_gerrit_change_gate.py` reads the batch again with a
+  query batch's options (`get_open_changes_by_number()`), falling back without
+  `SUBMIT_REQUIREMENTS` on an older server. A gated change Gerrit then
+  reports as blocked (`_blocked_reason()` in `cli/_gerrit_blocked.py`)
+  gets skipped as blocked before the gate, with no vote, and fails the
+  run as a skipped change; a blocked change the gate would not take
+  goes to the submit manager as before.
+- The second value derives from the host and each gated change's number
+  and current revision, under its own purpose prefix
+  (`_generate_gerrit_majors_sha()` in `cli/_sha.py`), so it cannot
+  stand in for a continue or override value. A new patchset, or another
+  gated change joining the set, changes it. The continue prompt then
+  follows; in a query batch its value covers the changes that remain.
+- A change URL whose source change gets gated asks for no second value
+  in an interactive run, since the operator named the bump: it prints a
+  warning above the existing confirmation, after rebasing a conflicting
+  source as it does any other. An unattended run holds the source back
+  with the rest, and does not rebase it.
+- Once the gate holds a change back, or a value or a gated source
+  confirms gated changes, a change URL's batch gets submitted with
+  `bind_revisions`, so a patchset uploaded since the preview never gets
+  a vote. A query batch always binds.
+- A held-back change must not get submitted along with another. A query
+  batch leaves it out of the scope the `submitted_together` check reads;
+  the run then gets refused when a remaining change would take it along,
+  and the refusal recaps the held-back changes with the `--allow-major`
+  hint. A change URL has no such scope, so the run asks Gerrit what
+  each remaining change would submit with it
+  (`submitted_together_numbers()`), and holds back, with a reason, any
+  change that would take a held-back change along, or for which Gerrit
+  does not say. A blocked change stays with the submit manager instead,
+  whose guard refuses it before its vote, so the block still fails the
+  run.
+- The batch then goes to the submit manager with a `SubmissionGuard`:
+  the numbers of the changes held back or skipped as blocked major
+  bumps, and each remaining change's confirmed revision. Every change
+  gets its vote before any submit, and Gerrit's `submitted_together`
+  set gets read again before each vote and each submit. A change gets
+  refused while its set holds a held-back change, one that joined its
+  topic during the continue prompt for instance, a skipped major bump
+  whose blocker has cleared since, or a confirmed change at a newer
+  patchset. It gets refused too while its set holds changes hidden from
+  the caller, or Gerrit leaves that count out, since a held-back change
+  made private since shows in the count alone. Unlike a query scope,
+  the guard lets a visible change outside the batch along, as a change
+  URL always has.
+- A held-back change is its own outcome, apart from skipped: the final
+  line counts it (`… 2 skipped, 1 held back`), a recap lists each with
+  its reason and then the hint once, and it never changes the exit
+  code. Failed and skipped changes alone decide that.
+- After a real run, the changes submitted that bump a major version get
+  listed below the final results line, with their dependencies and
+  versions. A Gerrit run writes no results document.
+- A dry run lists the gated changes, says what a real run would do in
+  the mode given, and prompts for nothing.
+
 ---
 
 ## Phase 1: URL Detection and Parsing

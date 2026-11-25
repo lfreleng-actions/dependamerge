@@ -27,7 +27,10 @@ from dependamerge.gerrit.client import GerritRestClient, GerritRestError
 from dependamerge.gerrit.models import GerritChangeInfo
 
 from ._service_errors import GerritServiceError
-from ._submitted_together import submitted_together_problems
+from ._submitted_together import (
+    submitted_together_numbers,
+    submitted_together_problems,
+)
 
 log = logging.getLogger("dependamerge.gerrit.service")
 
@@ -153,6 +156,25 @@ class _GerritQueryBatchMixin:
             "changes settle"
         )
 
+    def get_open_changes_by_number(self, numbers: list[int]) -> list[GerritChangeInfo]:
+        """Read the open changes among *numbers* with a query batch's options.
+
+        A change URL's source and similar changes are read without
+        SUBMIT_REQUIREMENTS, and the similar ones without DETAILED_LABELS;
+        this reads what Gerrit reports as blocking each, falling back as
+        :meth:`get_open_changes_for_query` does on an older server.  A
+        change no longer open is left out.
+
+        Raises:
+            GerritRestError: If a page cannot be fetched.
+            GerritServiceError: If a returned change cannot be parsed.
+        """
+        unique = sorted(set(numbers))
+        if not unique:
+            return []
+        expression = " OR ".join(f"change:{number}" for number in unique)
+        return self.get_open_changes_for_query(expression, ceiling=len(unique))
+
     def submitted_together_problems(
         self, change_number: int, scope: Mapping[int, str]
     ) -> list[str]:
@@ -161,6 +183,13 @@ class _GerritQueryBatchMixin:
         See :func:`~._submitted_together.submitted_together_problems`.
         """
         return submitted_together_problems(self._client, change_number, scope)
+
+    def submitted_together_numbers(self, change_number: int) -> set[int] | None:
+        """The changes Gerrit would submit with a change, by number.
+
+        See :func:`~._submitted_together.submitted_together_numbers`.
+        """
+        return submitted_together_numbers(self._client, change_number)
 
     def _read_query_pages(
         self,

@@ -23,13 +23,12 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Mapping
 
 from dependamerge.gerrit.client import GerritRestClient, GerritRestError
 from dependamerge.gerrit.models import GerritChangeInfo, GerritSubmitResult
 
 from ._submit_results import _GerritSubmitResultMixin
-from ._submitted_together import submitted_together_problems
+from ._submitted_together import GroupCheck, group_problems
 
 log = logging.getLogger("dependamerge.gerrit.submit_manager")
 
@@ -46,7 +45,7 @@ class _GerritSubmitOperationMixin(_GerritSubmitResultMixin):
         review_labels: dict[str, int],
         dry_run: bool,
         bind_revision: bool = False,
-        scope: Mapping[int, str] | None = None,
+        scope: GroupCheck | None = None,
     ) -> GerritSubmitResult:
         """
         Submit a single change (review + submit).
@@ -62,7 +61,10 @@ class _GerritSubmitOperationMixin(_GerritSubmitResultMixin):
             scope: When given, each change number the batch submits
                 mapped to its previewed revision; the change is refused
                 before any vote when Gerrit would submit anything else
-                with it (see ``submitted_together_problems``).
+                with it (see ``submitted_together_problems``).  A
+                ``SubmissionGuard`` instead refuses it when Gerrit would
+                submit a held-back change with it, or a confirmed one at
+                another revision (see ``guard_problems``).
 
         Returns:
             GerritSubmitResult indicating success or failure.
@@ -134,16 +136,17 @@ class _GerritSubmitOperationMixin(_GerritSubmitResultMixin):
             return self._submit_error_result(change, exc, reviewed, start_time)
 
     def _bound_refusal(
-        self, change: GerritChangeInfo, scope: Mapping[int, str] | None
+        self, change: GerritChangeInfo, scope: GroupCheck | None
     ) -> str | None:
         """Why *change* may not be voted on at its previewed revision, if so.
 
         Refuses a change with a newer patchset and, given *scope*, one
-        Gerrit would submit together with anything outside it.
+        Gerrit would submit together with anything outside it, or given
+        a ``SubmissionGuard``, with anything the guard forbids.
         """
         refusal = self._stale_revision_error(change)
         if refusal is None and scope is not None:
-            problems = submitted_together_problems(self._client, change.number, scope)
+            problems = group_problems(self._client, change.number, scope)
             refusal = "; ".join(problems) or None
         return refusal
 
@@ -152,7 +155,7 @@ class _GerritSubmitOperationMixin(_GerritSubmitResultMixin):
         change: GerritChangeInfo,
         review_labels: dict[str, int],
         dry_run: bool,
-        scope: Mapping[int, str],
+        scope: GroupCheck,
         start_time: float,
     ) -> GerritSubmitResult | None:
         """Vote on *change* at its previewed revision, without submitting.
@@ -194,7 +197,7 @@ class _GerritSubmitOperationMixin(_GerritSubmitResultMixin):
     def _submit_reviewed(
         self,
         change: GerritChangeInfo,
-        scope: Mapping[int, str],
+        scope: GroupCheck,
         start_time: float,
     ) -> GerritSubmitResult:
         """Submit a voted change at its previewed revision.

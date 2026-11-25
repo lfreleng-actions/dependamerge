@@ -181,6 +181,8 @@ def _dispatch_gerrit(
         include_human_prs=ctx.include_human_prs,
         topic=topic,
         show_progress=ctx.show_progress,
+        allow_major=ctx.allow_major,
+        gate_zero_minor=ctx.gate_zero_minor,
     )
 
 

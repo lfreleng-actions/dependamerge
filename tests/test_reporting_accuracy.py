@@ -514,7 +514,7 @@ class TestApproveRetry:
         c.post = AsyncMock(return_value={})  # type: ignore[method-assign]
         c.get = AsyncMock()  # type: ignore[method-assign]
 
-        await c.approve_pull_request("o", "r", 1, "lgtm")
+        await c.approve_pull_request("o", "r", 1, "lgtm", commit_id="abc123")
 
         c.post.assert_awaited_once()
         c.get.assert_not_called()
@@ -528,7 +528,7 @@ class TestApproveRetry:
         c.post = AsyncMock(side_effect=[_http_error(500), {}])  # type: ignore[method-assign]
         c._has_own_approval = AsyncMock(return_value=False)  # type: ignore[method-assign]
 
-        await c.approve_pull_request("o", "r", 1, "lgtm")
+        await c.approve_pull_request("o", "r", 1, "lgtm", commit_id="abc123")
 
         assert c.post.await_count == 2
         await c.aclose()
@@ -543,7 +543,7 @@ class TestApproveRetry:
         c.post = AsyncMock(side_effect=_http_error(500))  # type: ignore[method-assign]
         c._has_own_approval = AsyncMock(return_value=True)  # type: ignore[method-assign]
 
-        await c.approve_pull_request("o", "r", 1, "lgtm")
+        await c.approve_pull_request("o", "r", 1, "lgtm", commit_id="abc123")
 
         # One attempt only; the retry saw the approval already present.
         assert c.post.await_count == 1
@@ -557,7 +557,7 @@ class TestApproveRetry:
         c._has_own_approval = AsyncMock(return_value=False)  # type: ignore[method-assign]
 
         with pytest.raises(httpx.HTTPStatusError):
-            await c.approve_pull_request("o", "r", 1, "lgtm")
+            await c.approve_pull_request("o", "r", 1, "lgtm", commit_id="abc123")
         await c.aclose()
 
     @pytest.mark.asyncio
@@ -568,7 +568,7 @@ class TestApproveRetry:
         c._has_own_approval = AsyncMock(return_value=False)  # type: ignore[method-assign]
 
         with pytest.raises(ApprovalError):
-            await c.approve_pull_request("o", "r", 1, "lgtm")
+            await c.approve_pull_request("o", "r", 1, "lgtm", commit_id="abc123")
         assert c.post.await_count == 1
         await c.aclose()
 
@@ -586,7 +586,7 @@ class TestApproveRetry:
         c._has_own_approval = AsyncMock(return_value=False)  # type: ignore[method-assign]
 
         with pytest.raises(httpx.HTTPStatusError):
-            await c.approve_pull_request("o", "r", 1, "lgtm")
+            await c.approve_pull_request("o", "r", 1, "lgtm", commit_id="abc123")
         assert c.post.await_count == 1
         await c.aclose()
 
@@ -599,7 +599,7 @@ class TestApproveRetry:
         # the last POST created it despite reporting failure.
         c._has_own_approval = AsyncMock(side_effect=[False, False, True])  # type: ignore[method-assign]
 
-        await c.approve_pull_request("o", "r", 1, "lgtm")
+        await c.approve_pull_request("o", "r", 1, "lgtm", commit_id="abc123")
         await c.aclose()
 
 
@@ -620,10 +620,10 @@ class TestHasOwnApproval:
             [
                 {"state": "COMMENTED", "user": {"login": "me"}},
                 {"state": "APPROVED", "user": {"login": "someone-else"}},
-                {"state": "APPROVED", "user": {"login": "me"}},
+                {"state": "APPROVED", "user": {"login": "me"}, "commit_id": "abc123"},
             ]
         )
-        assert await c._has_own_approval("o", "r", 1)
+        assert await c._has_own_approval("o", "r", 1, commit_id="abc123")
         await c.aclose()
 
     @pytest.mark.asyncio
@@ -633,9 +633,59 @@ class TestHasOwnApproval:
         c.get_authenticated_user_login = AsyncMock(return_value="me")  # type: ignore[method-assign]
         c.get_paginated = self._pages(  # type: ignore[method-assign,assignment]
             [{"state": "COMMENTED", "user": {"login": "bot"}}] * 100,
-            [{"state": "APPROVED", "user": {"login": "me"}}],
+            [{"state": "APPROVED", "user": {"login": "me"}, "commit_id": "abc123"}],
         )
-        assert await c._has_own_approval("o", "r", 1)
+        assert await c._has_own_approval("o", "r", 1, commit_id="abc123")
+        await c.aclose()
+
+    @pytest.mark.asyncio
+    async def test_false_when_our_approval_names_another_commit(self) -> None:
+        """An approval of an earlier head does not vouch for this one."""
+        c = GitHubAsync(token="t")
+        c.get_authenticated_user_login = AsyncMock(return_value="me")  # type: ignore[method-assign]
+        c.get_paginated = self._pages(  # type: ignore[method-assign,assignment]
+            [
+                {"state": "APPROVED", "user": {"login": "me"}, "commit_id": "old"},
+                {"state": "APPROVED", "user": {"login": "me"}},
+            ]
+        )
+        assert not await c._has_own_approval("o", "r", 1, commit_id="abc123")
+        await c.aclose()
+
+    @pytest.mark.asyncio
+    async def test_retry_posts_again_over_an_approval_of_another_commit(
+        self, monkeypatch
+    ) -> None:
+        """A failed POST is not rescued by our approval of an old head."""
+        monkeypatch.setattr(asyncio, "sleep", AsyncMock())
+        c = GitHubAsync(token="t")
+        c.get_authenticated_user_login = AsyncMock(return_value="me")  # type: ignore[method-assign]
+        c.get_paginated = self._pages(  # type: ignore[method-assign,assignment]
+            [{"state": "APPROVED", "user": {"login": "me"}, "commit_id": "old"}]
+        )
+        c.post = AsyncMock(side_effect=[_http_error(500), {}])  # type: ignore[method-assign]
+
+        await c.approve_pull_request("o", "r", 1, "lgtm", commit_id="abc123")
+
+        assert c.post.await_count == 2
+        assert c.post.await_args is not None
+        assert c.post.await_args.kwargs["json"]["commit_id"] == "abc123"
+        await c.aclose()
+
+    @pytest.mark.asyncio
+    async def test_exhaustion_is_not_rescued_by_another_commit(
+        self, monkeypatch
+    ) -> None:
+        monkeypatch.setattr(asyncio, "sleep", AsyncMock())
+        c = GitHubAsync(token="t")
+        c.get_authenticated_user_login = AsyncMock(return_value="me")  # type: ignore[method-assign]
+        c.get_paginated = self._pages(  # type: ignore[method-assign,assignment]
+            [{"state": "APPROVED", "user": {"login": "me"}, "commit_id": "old"}]
+        )
+        c.post = AsyncMock(side_effect=_http_error(500))  # type: ignore[method-assign]
+
+        with pytest.raises(httpx.HTTPStatusError):
+            await c.approve_pull_request("o", "r", 1, "lgtm", commit_id="abc123")
         await c.aclose()
 
     @pytest.mark.asyncio
@@ -645,7 +695,7 @@ class TestHasOwnApproval:
         c.get_paginated = self._pages(  # type: ignore[method-assign,assignment]
             [{"state": "APPROVED", "user": {"login": "other"}}]
         )
-        assert not await c._has_own_approval("o", "r", 1)
+        assert not await c._has_own_approval("o", "r", 1, commit_id="abc123")
         await c.aclose()
 
     @pytest.mark.asyncio
@@ -654,7 +704,7 @@ class TestHasOwnApproval:
         c = GitHubAsync(token="t")
         c.get_authenticated_user_login = AsyncMock(side_effect=RuntimeError("nope"))  # type: ignore[method-assign]
         with pytest.raises(ReviewsUnreadableError):
-            await c._has_own_approval("o", "r", 1)
+            await c._has_own_approval("o", "r", 1, commit_id="abc123")
         await c.aclose()
 
     @pytest.mark.asyncio
@@ -672,7 +722,7 @@ class TestHasOwnApproval:
             [{"state": "APPROVED", "user": None}]
         )
         with pytest.raises(ReviewsUnreadableError):
-            await c._has_own_approval("o", "r", 1)
+            await c._has_own_approval("o", "r", 1, commit_id="abc123")
         await c.aclose()
 
     @pytest.mark.asyncio
@@ -685,5 +735,5 @@ class TestHasOwnApproval:
                 {"state": "APPROVED", "user": {"login": None}},
             ]
         )
-        assert not await c._has_own_approval("o", "r", 1)
+        assert not await c._has_own_approval("o", "r", 1, commit_id="abc123")
         await c.aclose()

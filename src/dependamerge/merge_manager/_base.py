@@ -135,7 +135,7 @@ class _MergeManagerBase:
     ) -> None:
         raise NotImplementedError
 
-    async def _approve_pr(self, owner: str, repo: str, pr_number: int) -> bool:
+    async def _approve_pr(self, owner: str, repo: str, pr: PullRequestInfo) -> bool:
         raise NotImplementedError
 
     async def _await_in_progress_merge(

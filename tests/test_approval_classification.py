@@ -20,7 +20,7 @@ import pytest
 
 import dependamerge.github_async as ga
 from dependamerge.github_async import GitHubAsync
-from tests.conftest import make_merge_manager
+from tests.conftest import make_merge_manager, make_pr_info
 
 
 def _status_error(
@@ -133,7 +133,7 @@ class TestApprovePullRequest:
         c._has_own_approval = AsyncMock(return_value=False)  # type: ignore[method-assign]
 
         with pytest.raises(ga.ApprovalError) as info:
-            await c.approve_pull_request("o", "r", 1, "lgtm")
+            await c.approve_pull_request("o", "r", 1, "lgtm", commit_id="abc123")
 
         assert "Head sha moved" in str(info.value)
         assert not isinstance(info.value, ga.PermissionError)
@@ -148,7 +148,7 @@ class TestApprovePullRequest:
         c.post = AsyncMock(side_effect=[_status_error(422, THROTTLED), {}])  # type: ignore[method-assign]
         c._has_own_approval = AsyncMock(return_value=False)  # type: ignore[method-assign]
 
-        await c.approve_pull_request("o", "r", 1, "lgtm")
+        await c.approve_pull_request("o", "r", 1, "lgtm", commit_id="abc123")
 
         assert c.post.await_count == 2
         c._has_own_approval.assert_awaited_once()
@@ -165,7 +165,7 @@ class TestApprovePullRequest:
         c.post = AsyncMock(side_effect=[throttled, {}])  # type: ignore[method-assign]
         c._has_own_approval = AsyncMock(return_value=False)  # type: ignore[method-assign]
 
-        await c.approve_pull_request("o", "r", 1, "lgtm")
+        await c.approve_pull_request("o", "r", 1, "lgtm", commit_id="abc123")
 
         assert sleep.await_args_list[-1].args[0] == 90
         await c.aclose()
@@ -177,7 +177,7 @@ class TestApprovePullRequest:
         c.post = AsyncMock(side_effect=_status_error(422, THROTTLED))  # type: ignore[method-assign]
         c._has_own_approval = AsyncMock(return_value=True)  # type: ignore[method-assign]
 
-        await c.approve_pull_request("o", "r", 1, "lgtm")
+        await c.approve_pull_request("o", "r", 1, "lgtm", commit_id="abc123")
 
         c.post.assert_awaited_once()
         await c.aclose()
@@ -193,7 +193,7 @@ class TestApprovePullRequest:
         c._has_own_approval = AsyncMock(return_value=False)  # type: ignore[method-assign]
 
         with pytest.raises(ga.ApprovalError) as info:
-            await c.approve_pull_request("o", "r", 1, "lgtm")
+            await c.approve_pull_request("o", "r", 1, "lgtm", commit_id="abc123")
 
         assert "submitted too quickly" in str(info.value)
         delays = [call.args[0] for call in sleep.await_args_list]
@@ -214,4 +214,4 @@ class TestManagerReportsGitHubsMessage:
         )
 
         with pytest.raises(Exception, match="Head sha moved"):
-            await mgr._approve_pr("o", "r", 1)
+            await mgr._approve_pr("o", "r", make_pr_info())

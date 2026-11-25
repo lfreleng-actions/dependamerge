@@ -16,6 +16,7 @@ import asyncio
 from ..bot_identity import is_dependabot
 from ..models import PullRequestInfo
 from ._conflict_wait import _MergeConflictWaitMixin
+from ._head_pin import stop_after_head_move
 from ._rebase_request import _RebaseRequestMixin
 from ._types import MergeResult, MergeStatus
 
@@ -74,6 +75,10 @@ class _MergeConflictMixin(_RebaseRequestMixin, _MergeConflictWaitMixin):
         commit; when it is already rebasing on its own we say so and
         leave it to finish rather than sending a duplicate macro.  A
         request the cooldown held back prints its own line instead.
+
+        Raises:
+            ConfirmedHeadSignal: For a confirmed PR once a rebase is
+                under way, requested or not; nothing waits for it.
         """
         if already_rebasing:
             self._rebase_suppressed.pop(f"{owner}/{repo}#{pr_info.number}", None)
@@ -81,6 +86,7 @@ class _MergeConflictMixin(_RebaseRequestMixin, _MergeConflictWaitMixin):
                 f"🔄 Dependabot already rebasing: {pr_info.html_url}",
                 level="info",
             )
+            stop_after_head_move(self, pr_info, "rebase")
             return True
         requested = await self._request_dependabot_rebase(pr_info, owner, repo)
         if f"{owner}/{repo}#{pr_info.number}" not in self._rebase_suppressed:

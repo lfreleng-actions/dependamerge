@@ -68,7 +68,9 @@ class TestEnableAutoMergeSuccess:
 
         assert result is True
         assert "owner/repo#42" in mgr._auto_merge_enabled
-        client.enable_auto_merge.assert_called_once_with("PR_kwDOTestNode42", "merge")
+        client.enable_auto_merge.assert_called_once_with(
+            "PR_kwDOTestNode42", "merge", expected_head_oid="abc123def456"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -894,7 +896,9 @@ class TestStep5_5EnablesAutoMergeAndTimesOut:
             result = await mgr._merge_single_pr(pr)
 
         # Auto-merge was enabled by Step 5.5 itself.
-        client.enable_auto_merge.assert_awaited_once_with("PR_kwDOTestNode42", "merge")
+        client.enable_auto_merge.assert_awaited_once_with(
+            "PR_kwDOTestNode42", "merge", expected_head_oid="abc123def456"
+        )
         assert "owner/repo#42" in mgr._auto_merge_enabled
 
         # Wait timed out while still blocked, so the skip gate
@@ -991,7 +995,9 @@ class TestStep5_5HandlesMergeableNone:
 
         # Step 5.5 entry gate accepted mergeable=None and enabled
         # auto-merge.
-        client.enable_auto_merge.assert_awaited_once_with("PR_kwDOTestNode42", "merge")
+        client.enable_auto_merge.assert_awaited_once_with(
+            "PR_kwDOTestNode42", "merge", expected_head_oid="abc123def456"
+        )
         assert "owner/repo#42" in mgr._auto_merge_enabled
         # Step 6 skip gate also accepted mergeable=None and routed
         # to AUTO_MERGE_PENDING instead of the manual merge
@@ -1407,7 +1413,9 @@ class TestStep5_5UnstableRoutesToAutoMerge:
         # Auto-merge enabled; Step 6 skip gate routes ``unstable``
         # straight to AUTO_MERGE_PENDING (no analyze_block_reason
         # needed for this state).
-        client.enable_auto_merge.assert_awaited_once_with("PR_kwDOTestNode42", "merge")
+        client.enable_auto_merge.assert_awaited_once_with(
+            "PR_kwDOTestNode42", "merge", expected_head_oid="abc123def456"
+        )
         assert "owner/repo#42" in mgr._auto_merge_enabled
         assert result.status == MergeStatus.AUTO_MERGE_PENDING
         mock_merge_retry.assert_not_called()

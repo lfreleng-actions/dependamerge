@@ -12,6 +12,7 @@ import asyncio
 from ..merge_signals import DraftPullRequestError
 from ..models import PullRequestInfo
 from ._base import _MergeManagerBase
+from ._head_pin import check_payload_head
 
 
 class _MergeabilityRefreshMixin(_MergeManagerBase):
@@ -57,6 +58,10 @@ class _MergeabilityRefreshMixin(_MergeManagerBase):
         caller's downstream logic still runs.
 
         Raises:
+            ConfirmedHeadSignal: When a confirmed PR's head is no longer
+                the confirmed commit, checked before the reading is
+                recorded so no recovery acts on a commit nobody
+                confirmed.
             DraftPullRequestError: When the PR has become a draft, so it
                 ends as skipped rather than entering conflict recovery.
         """
@@ -90,6 +95,7 @@ class _MergeabilityRefreshMixin(_MergeManagerBase):
 
             if not isinstance(data, dict):
                 return
+            check_payload_head(self, pr_info, data)
 
             state = data.get("state")
             if isinstance(state, str) and state:

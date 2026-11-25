@@ -12,6 +12,7 @@ from typing import Any
 
 from ..check_names import summarise_check_names
 from ..models import PullRequestInfo
+from ._head_pin import payload_head_stop
 from ._live_blockers import _LiveBlockerMixin
 from ._types import MergeResult, MergeStatus, _merged_from_payload
 
@@ -45,6 +46,13 @@ class _NotMergeableMixin(_LiveBlockerMixin):
         Best-effort by construction: any error here leaves the original
         result untouched, because the verification must never be able to
         turn a reportable failure into a crash.
+
+        A confirmed PR read at another head, open or merged, or read as
+        merged with no head, is reported skipped with the reason, as a
+        moved head is everywhere else: a merge at that head is not this
+        run's, and a failure at it is not the confirmed commit's.  Only
+        a PR closed unmerged keeps its own outcome, since no commit of
+        it merged.
         """
         if result.status != MergeStatus.FAILED:
             return result
@@ -83,6 +91,23 @@ class _NotMergeableMixin(_LiveBlockerMixin):
         # it as unknown throughout, so an ambiguous response can neither
         # invent a merge nor assert the absence of one.
         merged = _merged_from_payload(refreshed)
+        closed = refreshed.get("state") == "closed"
+
+        stop = None
+        if not (merged is False and closed):
+            stop = payload_head_stop(self, pr_info, refreshed)
+        if stop is not None:
+            self.log.info(
+                "Reported failure for %s: not at the confirmed commit (%s)",
+                pr_info.html_url,
+                stop,
+            )
+            self._pr_status(f"⏭️ Skipped: {pr_info.html_url} [{stop}]", level="warning")
+            result.status = MergeStatus.SKIPPED
+            result.error = stop
+            if closed:
+                pr_info.state = "closed"
+            return result
 
         if merged:
             self.log.info(
@@ -101,7 +126,7 @@ class _NotMergeableMixin(_LiveBlockerMixin):
             pr_info.state = "closed"
             return result
 
-        if merged is False and refreshed.get("state") == "closed":
+        if merged is False and closed:
             self.log.info(
                 "Reported failure for %s was stale; the PR is closed unmerged",
                 pr_info.html_url,

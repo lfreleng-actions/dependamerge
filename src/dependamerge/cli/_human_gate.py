@@ -28,6 +28,7 @@ from typing import Any
 import typer
 
 from ..error_codes import ExitCode, exit_for_configuration_error, exit_with_error
+from ..merge_manager import ConfirmedHead, head_key
 from ..models import PullRequestInfo
 from ._app import console
 from ._context import _MergeContext
@@ -40,6 +41,7 @@ __all__ = [
     "_confirm_human_prs_in_scope",
     "_given_override",
     "_human_set_override",
+    "_record_confirmed_human_heads",
     "_refuse_human_source",
     "_require_override_pairing",
 ]
@@ -198,3 +200,23 @@ def _confirm_human_prs_in_scope(
     except SystemExit:
         _conclude_run(ctx, [], preview=True)
         raise
+    if _given_override(ctx.override) is not None:
+        _record_confirmed_human_heads(ctx, human_prs)
+
+
+def _record_confirmed_human_heads(
+    ctx: _MergeContext, prs: list[PullRequestInfo]
+) -> None:
+    """Record the head each human PR was confirmed at by ``--override``.
+
+    The value derives from these heads, so the merge pass approves and
+    merges each only at its head.  A PR the scan read no head for is
+    recorded all the same, so the merge pass skips it rather than treat
+    it as unconfirmed.  A dry run merges nothing and records nothing.
+    """
+    if ctx.dry_run:
+        return
+    for pr in prs:
+        ctx.confirmed_heads[head_key(pr.repository_full_name, pr.number)] = (
+            ConfirmedHead(pr.head_sha or "")
+        )

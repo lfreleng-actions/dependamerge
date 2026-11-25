@@ -20,16 +20,32 @@ class _MergeMixin(_GitHubAsyncBase):
     """Merge and auto-merge operations for ``GitHubAsync``."""
 
     async def merge_pull_request(
-        self, owner: str, repo: str, number: int, merge_method: str = "merge"
+        self,
+        owner: str,
+        repo: str,
+        number: int,
+        merge_method: str = "merge",
+        *,
+        sha: str,
     ) -> bool:
         """
-        Merge a pull request.
+        Merge a pull request at a named commit.
 
         REST: PUT /repos/{owner}/{repo}/pulls/{pull_number}/merge
 
+        ``sha`` is the head commit the caller evaluated.  GitHub refuses
+        the merge (409) when the head has moved since, so a merge never
+        lands a commit nobody checked.
+
         Raises:
+            ValueError: If ``sha`` is empty
             PermissionError: If token lacks required permissions
         """
+        if not sha:
+            raise ValueError(
+                f"Refusing to merge PR #{number} in {owner}/{repo} "
+                "without a head commit"
+            )
         # A merge attempt changes the PR's state whether it succeeds or
         # is refused, so any memoised block reason describes the past.
         self.invalidate_block_reason(owner, repo, number)
@@ -39,7 +55,7 @@ class _MergeMixin(_GitHubAsyncBase):
             )
             data = await self.put(
                 f"/repos/{owner}/{repo}/pulls/{number}/merge",
-                json={"merge_method": merge_method},
+                json={"merge_method": merge_method, "sha": sha},
             )
             # The API returns {"merged": true/false, ...}
             merged = bool(data.get("merged", False))
@@ -118,7 +134,7 @@ class _MergeMixin(_GitHubAsyncBase):
             # JSON parsing), and the state adds context to the error we
             # raise.
             return await self._validate_merge_result(
-                owner, repo, number, e, github_detail
+                owner, repo, number, e, github_detail, sha
             )
 
     @staticmethod
@@ -137,13 +153,17 @@ class _MergeMixin(_GitHubAsyncBase):
         number: int,
         error: Exception,
         github_detail: str,
+        sha: str,
     ) -> bool:
         """Re-check PR state after a merge attempt raised an exception.
 
         The merge may have actually succeeded despite the exception (a race
         where the API call lands but we still see an error from
         rate-limiting, network, or JSON parsing).  When the PR is confirmed
-        merged, return ``True``.  Otherwise raise an enhanced exception that
+        merged at ``sha``, the commit the merge named, return ``True``.  A
+        merge at another commit, or one the read shows no head for, was
+        not this call's, so it is reported as the refusal it was.
+        Otherwise raise an enhanced exception that
         preserves the original error text (its HTTP status line is
         string-matched by ``_merge_pr_with_retry`` to classify retryable vs
         terminal failures) and adds GitHub's actionable response body plus
@@ -159,12 +179,14 @@ class _MergeMixin(_GitHubAsyncBase):
             state = pr_data.get("state")
             merged = pr_data.get("merged", False)
             draft = pr_data.get("draft", False)
+            head = pr_data.get("head")
+            merged_head = head.get("sha") if isinstance(head, dict) else None
 
             # Check if the merge actually succeeded despite the exception.
             # This handles race conditions where the API succeeds but we get
             # an exception due to rate limiting, network issues, JSON
             # parsing, etc.
-            if state == "closed" and merged:
+            if state == "closed" and merged and merged_head == sha:
                 self.log.info(
                     f"PR #{number} in {owner}/{repo} was successfully merged despite exception: {error}"
                 )
@@ -190,7 +212,10 @@ class _MergeMixin(_GitHubAsyncBase):
             # Note common state-based causes for 405-style errors.  A
             # draft reports ``blocked`` or ``dirty`` like any other PR, so
             # it is checked first or it would be misreported as either.
-            if draft:
+            if state == "closed" and merged:
+                at = merged_head[:7] if merged_head else "an unknown commit"
+                error_msg += f" [merged at {at}, not {sha[:7]}]"
+            elif draft:
                 error_msg += " [cannot merge draft PR]"
             elif mergeable_state == "blocked":
                 error_msg += " [blocked by branch protection / required checks]"
@@ -225,7 +250,11 @@ class _MergeMixin(_GitHubAsyncBase):
             raise error from inner_e
 
     async def enable_auto_merge(
-        self, pull_request_node_id: str, merge_method: str = "MERGE"
+        self,
+        pull_request_node_id: str,
+        merge_method: str = "MERGE",
+        *,
+        expected_head_oid: str,
     ) -> bool:
         """
         Enable auto-merge on a pull request via GraphQL.
@@ -238,6 +267,10 @@ class _MergeMixin(_GitHubAsyncBase):
             merge_method: Merge method - "MERGE", "SQUASH", or "REBASE".
                 Lowercase values ("merge", "squash", "rebase") are
                 automatically uppercased.
+            expected_head_oid: The head commit the caller evaluated.
+                GitHub refuses to arm auto-merge when the head differs.
+                The check holds at arming only; what GitHub merges
+                later is governed by the repository's own rules.
 
         Returns:
             True if auto-merge was successfully enabled, False otherwise.
@@ -253,12 +286,16 @@ class _MergeMixin(_GitHubAsyncBase):
             )
             graphql_method = "MERGE"
 
+        if not expected_head_oid:
+            raise ValueError("Refusing to arm auto-merge without a head commit")
+
         try:
             result = await self.graphql(
                 ENABLE_AUTO_MERGE,
                 {
                     "pullRequestId": pull_request_node_id,
                     "mergeMethod": graphql_method,
+                    "expectedHeadOid": expected_head_oid,
                 },
             )
             auto_merge_data = (

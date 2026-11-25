@@ -17,6 +17,7 @@ from ..bot_identity import is_dependabot
 from ..ci_report import in_github_actions
 from ..models import PullRequestInfo
 from ._failure_summary import _FailureSummaryFromExceptionMixin, _is_state_verdict
+from ._head_pin import stop_after_head_move
 from ._types import MergeResult, MergeStatus
 
 
@@ -379,14 +380,16 @@ class _FailureReportingMixin(_FailureSummaryFromExceptionMixin):
                     f"PR {owner}/{repo}#{pr_info.number} is behind - updating branch"
                 )
                 await self._github_client.update_branch(owner, repo, pr_info.number)
-                self._record_rebase()
-                # Wait a moment for GitHub to process the update
-                await asyncio.sleep(min(2.0, self._merge_recheck_interval))
-                return True
             except Exception as e:
                 self.log.error(
                     f"Failed to update branch for PR {owner}/{repo}#{pr_info.number}: {e}"
                 )
+                return False
+            self._record_rebase()
+            stop_after_head_move(self, pr_info, "rebase")
+            # Wait a moment for GitHub to process the update
+            await asyncio.sleep(min(2.0, self._merge_recheck_interval))
+            return True
 
         # For other failure types, don't retry
         return False

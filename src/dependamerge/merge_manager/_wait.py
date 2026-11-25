@@ -17,6 +17,7 @@ from typing import Any
 
 from ..merge_signals import DraftPullRequestError
 from ..models import PullRequestInfo
+from ._head_pin import check_payload_head
 from ._wait_head_start import _WaitHeadStartMixin
 
 
@@ -59,7 +60,9 @@ class _AutoMergeWaitMixin(_WaitHeadStartMixin):
         Mutates ``pr_info`` in place (``mergeable``,
         ``mergeable_state``, ``head_sha``, ``state``, ``is_draft``).
         Returns ``(closed_during_wait, merged_during_wait)``, or raises
-        :class:`DraftPullRequestError` for a PR marked draft meanwhile.
+        :class:`DraftPullRequestError` for a PR marked draft meanwhile,
+        and :class:`ConfirmedHeadSignal` for a confirmed PR whose head
+        is no longer the confirmed commit, closed or not.
         """
         # Resolved through the package at call time rather than bound at
         # import time, so that a test rebinding the constant on
@@ -234,9 +237,8 @@ class _AutoMergeWaitMixin(_WaitHeadStartMixin):
 
         return closed_during_wait, merged_during_wait
 
-    @staticmethod
     def _apply_wait_refresh(
-        pr_info: PullRequestInfo, refreshed: dict[str, Any]
+        self, pr_info: PullRequestInfo, refreshed: dict[str, Any]
     ) -> bool:
         """Fold a polled snapshot into *pr_info*; report whether it closed.
 
@@ -259,6 +261,10 @@ class _AutoMergeWaitMixin(_WaitHeadStartMixin):
             DraftPullRequestError: When the open PR is now a draft.  No
                 check can make it mergeable until it is marked ready, so
                 waiting on would time out and report auto-merge pending.
+            ConfirmedHeadSignal: When a confirmed PR's head is no longer
+                the confirmed commit, or a closed reading carries no
+                head, checked before a closed reading can count as a
+                merge.
         """
         if "mergeable" in refreshed:
             refreshed_mergeable = refreshed.get("mergeable")
@@ -271,6 +277,7 @@ class _AutoMergeWaitMixin(_WaitHeadStartMixin):
         refreshed_head = (refreshed.get("head") or {}).get("sha")
         if refreshed_head:
             pr_info.head_sha = refreshed_head
+        check_payload_head(self, pr_info, refreshed)
         if refreshed.get("state") == "closed":
             pr_info.state = "closed"
             return True

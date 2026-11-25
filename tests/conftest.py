@@ -89,6 +89,7 @@ import pytest
 
 from dependamerge.github_async import GitHubAsync
 from dependamerge.merge_manager import AsyncMergeManager
+from dependamerge.models import PullRequestInfo
 from dependamerge.url_parser import set_gerrit_host, set_github_host
 
 _RUN_INTEGRATION_ENV = "DEPENDAMERGE_RUN_INTEGRATION"
@@ -372,6 +373,31 @@ def make_merge_manager(**overrides: Any) -> tuple[AsyncMergeManager, AsyncMock]:
     client.clear_block_reasons = MagicMock()
     mgr._github_client = client
     return mgr, client
+
+
+def make_pr_info(**overrides: Any) -> PullRequestInfo:
+    """Build an open, clean dependabot ``PullRequestInfo`` for ``o/r#1``.
+
+    Keyword arguments replace any field.
+    """
+    fields: dict[str, Any] = {
+        "number": 1,
+        "title": "Chore: Bump foo from 1.0.0 to 1.0.1",
+        "body": "bump",
+        "author": "dependabot[bot]",
+        "head_sha": "a" * 40,
+        "base_branch": "main",
+        "head_branch": "dependabot/foo",
+        "state": "open",
+        "mergeable": True,
+        "mergeable_state": "clean",
+        "behind_by": None,
+        "files_changed": [],
+        "repository_full_name": "o/r",
+        "html_url": "https://github.com/o/r/pull/1",
+    }
+    fields.update(overrides)
+    return PullRequestInfo(**fields)
 
 
 def make_github_async_mock() -> AsyncMock:

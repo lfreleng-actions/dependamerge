@@ -28,9 +28,11 @@ from ..models import PullRequestInfo
 from ..rule_violations import violation_verb
 from ._approval_check import already_sufficiently_approved
 from ._base import _MergeManagerBase
+from ._head_pin import approval_head, approve_at_head
 from ._write_guards import (
-    draft_state_now,
+    draft_from_state,
     is_draft_now,
+    pr_state_now,
     refuse_out_of_scope_approval,
 )
 
@@ -79,7 +81,7 @@ class _ApprovalMixin(_MergeManagerBase):
                 read to rule out an approval of ours.
         """
         refuse_out_of_scope_approval(self.bot_policy, pr_info, owner, repo)
-        approved = await self._approve_pr(owner, repo, pr_info.number)
+        approved = await self._approve_pr(owner, repo, pr_info)
         if approved:
             pr_key = f"{owner}/{repo}#{pr_info.number}"
             self._recently_approved.add(pr_key)
@@ -338,34 +340,42 @@ class _ApprovalMixin(_MergeManagerBase):
             return False, None
         return already_sufficiently_approved(pr_data, reading.entries, current_user)
 
-    async def _approve_pr(self, owner: str, repo: str, pr_number: int) -> bool:
+    async def _approve_pr(self, owner: str, repo: str, pr: PullRequestInfo) -> bool:
         """
         Approve a pull request if not already approved by the current user or sufficiently approved.
+
+        The approval names the commit it vouches for: the confirmed
+        commit for a PR a person confirmed, otherwise the live head.
 
         Args:
             owner: Repository owner
             repo: Repository name
-            pr_number: Pull request number
+            pr: The pull request; its head is refreshed from the live
+                read made here
 
         Returns:
             True if approval was added, False if already approved/sufficient
 
         Raises:
             ReviewsUnreadableError: If the reviews cannot all be read
+            ConfirmedHeadSignal: If a confirmed PR's head has moved
             Exception: If approval fails
         """
         if not self._github_client:
             raise RuntimeError("GitHub client not initialized")
+        pr_number = pr.number
 
         # Every approval passes here, recovery paths' included, so a PR
         # marked not ready since the scan is caught here.  Only an explicit
         # "not a draft" lets it through (an approval to a draft satisfies
         # required reviews once it is ready).  Outside the try below.
-        draft = await draft_state_now(self, owner, repo, pr_number)
+        state = await pr_state_now(self, owner, repo, pr_number)
+        draft = draft_from_state(state)
         if draft is None:
             raise DraftStateUnknownError(f"{owner}/{repo}#{pr_number}")
         if draft:
             raise DraftPullRequestError(f"{owner}/{repo}#{pr_number}")
+        commit_id = approval_head(self, pr, state)
 
         try:
             skip, approvers = await self._should_skip_approval(owner, repo, pr_number)
@@ -375,12 +385,7 @@ class _ApprovalMixin(_MergeManagerBase):
                 )
                 return False
 
-            await self._github_client.approve_pull_request(
-                owner,
-                repo,
-                pr_number,
-                "🤖 Dependamerge\nApproved this pull request ✅",
-            )
+            await approve_at_head(self, owner, repo, pr, commit_id)
             return True
         except PullRequestStopSignal:
             raise

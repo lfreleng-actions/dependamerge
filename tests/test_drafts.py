@@ -155,7 +155,7 @@ class TestMergeManager:
             return_value={"state": "open", "draft": True, "mergeable_state": "blocked"}
         )
         with pytest.raises(DraftPullRequestError):
-            await mgr._approve_pr("acme", "widget", 1)
+            await mgr._approve_pr("acme", "widget", _pr(1, is_draft=False))
         client.approve_pull_request.assert_not_called()
 
     @pytest.mark.asyncio
@@ -283,7 +283,7 @@ class TestDraftStateUnknown:
         mgr, client = make_merge_manager()
         mgr._fetch_pr_state = reading  # type: ignore[method-assign]
         with pytest.raises(DraftStateUnknownError):
-            await mgr._approve_pr("acme", "widget", 1)
+            await mgr._approve_pr("acme", "widget", _pr(1, is_draft=False))
         client.approve_pull_request.assert_not_called()
 
     @pytest.mark.asyncio
@@ -291,7 +291,7 @@ class TestDraftStateUnknown:
         mgr, client = make_merge_manager()
         mgr._fetch_pr_state = AsyncMock(return_value={"draft": False})  # type: ignore[method-assign]
         mgr._should_skip_approval = AsyncMock(return_value=(False, None))  # type: ignore[method-assign]
-        assert await mgr._approve_pr("acme", "widget", 1) is True
+        assert await mgr._approve_pr("acme", "widget", _pr(1, is_draft=False)) is True
         client.approve_pull_request.assert_called_once()
 
     @pytest.mark.asyncio
@@ -456,7 +456,7 @@ class TestRecoveryAndPolling:
         mgr, client = make_merge_manager()
         mgr._pr_poller = PullRequestStatePoller(api, window=0.0)
         with pytest.raises(DraftStateUnknownError):
-            await mgr._approve_pr("acme", "widget", 1)
+            await mgr._approve_pr("acme", "widget", _pr(1, is_draft=False))
         client.approve_pull_request.assert_not_called()
 
     def test_a_null_is_draft_is_left_out_of_the_shape(self) -> None:

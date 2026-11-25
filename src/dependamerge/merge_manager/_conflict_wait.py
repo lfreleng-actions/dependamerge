@@ -15,6 +15,11 @@ from __future__ import annotations
 from ..merge_signals import DraftPullRequestError, PullRequestStopSignal
 from ..models import PullRequestInfo
 from ._failure_summary import _FailureSummaryFromExceptionMixin
+from ._head_pin import (
+    HEAD_CHANGED_DURING_MERGE,
+    ApprovalHeadMovedError,
+    stop_after_head_move,
+)
 from ._types import MergeResult, MergeStatus
 from ._write_guards import is_draft_now
 
@@ -68,17 +73,23 @@ class _MergeConflictWaitMixin(_FailureSummaryFromExceptionMixin):
 
         A request the cooldown held back still arms auto-merge, but
         neither the status line nor the result claims a rebase.
+
+        Raises:
+            ConfirmedHeadSignal: For a confirmed PR once a rebase is
+                under way, requested or not, before any approval.
         """
         note: str | None = None
         if already_rebasing:
             self._rebase_suppressed.pop(f"{owner}/{repo}#{pr_info.number}", None)
+            # As ``_request_dependabot_rebase`` does when it finds one.
+            stop_after_head_move(self, pr_info, "rebase")
         else:
             await self._request_dependabot_rebase(pr_info, owner, repo)
             note = self._rebase_suppressed.get(
                 f"{pr_info.repository_full_name}#{pr_info.number}"
             )
         try:
-            await self._approve_pr(owner, repo, pr_info.number)
+            await self._approve_pr(owner, repo, pr_info)
         except PullRequestStopSignal:
             # A draft, or draft state unknown: never approved here.
             raise
@@ -190,7 +201,7 @@ class _MergeConflictWaitMixin(_FailureSummaryFromExceptionMixin):
         would lose the conflict-recovery context.
         """
         try:
-            await self._approve_pr(owner, repo, pr_info.number)
+            await self._approve_pr(owner, repo, pr_info)
         except PullRequestStopSignal:
             # A draft, or draft state unknown: never approved here.
             raise
@@ -241,6 +252,12 @@ class _MergeConflictWaitMixin(_FailureSummaryFromExceptionMixin):
             exc,
         )
         result.status = MergeStatus.FAILED
+        if isinstance(exc, ApprovalHeadMovedError):
+            # GitHub judging the head, which a later reading can settle.
+            result.merge_refused = True
+            result.error = HEAD_CHANGED_DURING_MERGE
+            self._pr_status(f"❌ Failed: {pr_info.html_url}", level="error")
+            return result
         # Deliberately *not* marked as a refusal.  Approval raised, which
         # is the run failing rather than GitHub judging the pull
         # request, so a later clean reading says nothing about whether

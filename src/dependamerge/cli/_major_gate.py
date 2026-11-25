@@ -25,7 +25,7 @@ import hashlib
 
 import typer
 
-from ..merge_manager import MergeResult, MergeStatus
+from ..merge_manager import ConfirmedHead, MergeResult, MergeStatus
 from ..models import PullRequestInfo
 from ..version_bumps import MAJOR, ZERO_MINOR, Classification, Update, classify
 from ._app import console
@@ -175,8 +175,19 @@ def _pr_key(pr: PullRequestInfo) -> tuple[str, int]:
     return (pr.repository_full_name.lower(), pr.number)
 
 
-def _record_confirmed_heads(ctx: _MergeContext, prs: list[PullRequestInfo]) -> None:
-    ctx.confirmed_major_heads.update({_pr_key(pr): pr.head_sha for pr in prs})
+def _record_confirmed_heads(
+    ctx: _MergeContext, gated: list[tuple[PullRequestInfo, Classification]]
+) -> None:
+    """Record the head each gated PR was confirmed at, with its gate reason.
+
+    The merge pass then approves and merges each only at that commit.
+    A PR the scan read no head for is recorded all the same, so the
+    merge pass skips it rather than treat it as unconfirmed.
+    """
+    for pr, bump in gated:
+        ctx.confirmed_heads[_pr_key(pr)] = ConfirmedHead(
+            pr.head_sha or "", _gate_reason(ctx, bump)
+        )
 
 
 def _live_head(ctx: _MergeContext, pr: PullRequestInfo) -> str | None:
@@ -204,18 +215,18 @@ def _recheck_major_heads(
         ``results``, with every such PR replaced by a skipped result at
         the same position.
     """
-    if not ctx.confirmed_major_heads:
+    if not ctx.confirmed_heads:
         return results
     rechecked: list[MergeResult] = []
     moved: list[PullRequestInfo] = []
     for result in results:
-        confirmed = ctx.confirmed_major_heads.get(_pr_key(result.pr_info))
+        confirmed = ctx.confirmed_heads.get(_pr_key(result.pr_info))
         bump = _gated_bump(ctx, result.pr_info)
         if (
             result.status.value != "merged"
             or confirmed is None
             or bump is None
-            or _live_head(ctx, result.pr_info) == confirmed
+            or _live_head(ctx, result.pr_info) == confirmed.sha
         ):
             rechecked.append(result)
             continue
@@ -310,7 +321,9 @@ def _confirm_major_bumps(
                 markup=False,
             )
             if not ctx.dry_run:
-                _record_confirmed_heads(ctx, [result.pr_info for _, result, _ in gated])
+                _record_confirmed_heads(
+                    ctx, [(result.pr_info, bump) for _, result, bump in gated]
+                )
         return results
 
     _print_gated(ctx, [(result, bump) for _, result, bump in gated])
@@ -327,7 +340,9 @@ def _confirm_major_bumps(
     entered = _ask_for_value(value)
     if entered == value:
         console.print("✅ Major version bumps included.")
-        _record_confirmed_heads(ctx, gated_prs)
+        _record_confirmed_heads(
+            ctx, [(result.pr_info, bump) for _, result, bump in gated]
+        )
         return results
     if entered is None:
         console.print("\n⏭️ No value entered: major version bumps left out.")

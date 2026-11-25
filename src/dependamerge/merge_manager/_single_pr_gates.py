@@ -13,8 +13,10 @@ the PR's fate, or ``None`` to let it through to the next one.
 from __future__ import annotations
 
 from ..github2gerrit_detector import build_gerrit_skip_message
+from ..merge_signals import PullRequestStopSignal
 from ..review_reading import complete_pr_reviews
 from ._base import _MergeManagerBase
+from ._head_pin import check_payload_head, record_live_head
 from ._single_pr_context import _MergeFlow
 from ._types import MergeResult, MergeStatus
 
@@ -264,6 +266,11 @@ class _SinglePrGatesMixin(_MergeManagerBase):
         settled the PR and still reports it ``blocked``; ``error`` and
         aged-``pending`` remain stuck in both states, because each is a
         reading rather than an absence.
+
+        Raises:
+            ConfirmedHeadSignal: When the refresh after the re-run shows
+                a confirmed PR at another head, before that commit's
+                mergeability can send it into a rebase.
         """
         pr_info = flow.pr_info
         if not (
@@ -284,8 +291,12 @@ class _SinglePrGatesMixin(_MergeManagerBase):
                     f"/repos/{flow.repo_owner}/{flow.repo_name}/pulls/{pr_info.number}"
                 )
                 if isinstance(updated, dict):
+                    check_payload_head(self, pr_info, updated)
+                    record_live_head(pr_info, updated)
                     pr_info.mergeable = updated.get("mergeable")
                     pr_info.mergeable_state = updated.get("mergeable_state")
+            except PullRequestStopSignal:
+                raise
             except Exception as e:
                 self.log.debug(
                     "Failed to refresh PR %s mergeable state after "

@@ -202,26 +202,9 @@ class TestAsyncIntegration:
         mock_async_class.return_value.__aenter__ = AsyncMock(return_value=mock_async)
         mock_async_class.return_value.__aexit__ = AsyncMock(return_value=None)
 
-        # Mock async methods
-        mock_async.approve_pull_request = AsyncMock()
-        mock_async.merge_pull_request = AsyncMock(return_value=True)
         mock_async.update_branch = AsyncMock()
 
         client = GitHubClient(token="test_token")
-
-        # Test approve
-        result = client.approve_pull_request("owner", "repo", 42, "LGTM")
-        assert result is True
-        mock_async.approve_pull_request.assert_called_once_with(
-            "owner", "repo", 42, "LGTM"
-        )
-
-        # Test merge
-        result = client.merge_pull_request("owner", "repo", 42, "squash")
-        assert result is True
-        mock_async.merge_pull_request.assert_called_once_with(
-            "owner", "repo", 42, "squash"
-        )
 
         # Test branch update
         result = client.fix_out_of_date_pr("owner", "repo", 42)

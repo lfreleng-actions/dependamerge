@@ -30,6 +30,7 @@ from typing import Any
 from ..models import PullRequestInfo
 from ._base import _MergeManagerBase
 from ._constants import DEFAULT_REBASE_COOLDOWN_HOURS
+from ._head_pin import stop_after_head_move
 
 _REBASE_MACRO = "@dependabot rebase"
 
@@ -98,7 +99,21 @@ class _RebaseRequestMixin(_MergeManagerBase):
             held it back.  The latter is recorded in
             ``_rebase_suppressed``, which callers consult so that they
             neither wait nor fall back to another rebase path.
+
+        Raises:
+            ConfirmedHeadSignal: When a rebase is under way for a PR
+                confirmed at its current commit; the request is made and
+                counted first.
         """
+        under_way = await self._ask_dependabot_to_rebase(pr_info, owner, repo)
+        if under_way:
+            stop_after_head_move(self, pr_info, "rebase")
+        return under_way
+
+    async def _ask_dependabot_to_rebase(
+        self, pr_info: PullRequestInfo, owner: str, repo: str
+    ) -> bool:
+        """The request itself; see :meth:`_request_dependabot_rebase`."""
         pr_key = f"{owner}/{repo}#{pr_info.number}"
         previous_note = self._rebase_suppressed.pop(pr_key, None)
         if self._dependabot_is_rebasing(pr_info.body):

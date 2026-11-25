@@ -157,7 +157,7 @@ class TestScopeAwareMergeClassifier:
         api.check_workflow_scope = AsyncMock(return_value=False)
 
         with pytest.raises(GitHubPermissionError) as exc_info:
-            await api.merge_pull_request("owner", "repo", 1)
+            await api.merge_pull_request("owner", "repo", 1, sha="abc123")
 
         assert exc_info.value.operation == "merge_workflow"
 
@@ -170,7 +170,7 @@ class TestScopeAwareMergeClassifier:
         api.check_workflow_scope = AsyncMock(return_value=True)
 
         with pytest.raises(GitHubPermissionError) as exc_info:
-            await api.merge_pull_request("owner", "repo", 1)
+            await api.merge_pull_request("owner", "repo", 1, sha="abc123")
 
         err = exc_info.value
         assert err.operation == "merge_workflow_restricted"

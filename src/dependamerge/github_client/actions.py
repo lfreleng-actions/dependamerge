@@ -3,11 +3,11 @@
 """
 The state-changing GitHub API calls behind ``GitHubClient``.
 
-:class:`_GitHubActionMixin` carries the three operations that write:
-approving a pull request, merging one, and updating an out-of-date branch.
-All three share the same contract — they swallow failures, log a warning
-and report a boolean — so that a bulk run is never derailed by one
-repository refusing an operation.
+:class:`_GitHubActionMixin` carries the one synchronous operation that
+writes: updating an out-of-date branch.  It swallows failures, logs a
+warning and reports a boolean, so that a bulk run is never derailed by
+one repository refusing it.  Merges and approvals go through the async
+client only, where every write names the commit it acts on.
 
 ``GitHubAsync`` is imported inside each method, not at module scope, so
 that patching it in its own module stays effective.  Every attribute this
@@ -38,43 +38,6 @@ class _GitHubActionMixin:
     # github.com.  Annotated rather than defined, to avoid shadowing
     # the real method through the MRO.
     _new_async: Callable[..., GitHubAsync]
-
-    def approve_pull_request(
-        self,
-        owner: str,
-        repo: str,
-        pr_number: int,
-        message: str = "Auto-approved by dependamerge",
-    ) -> bool:
-        """Approve a pull request using the async REST client."""
-        try:
-
-            async def _run():
-                async with self._new_async() as api:
-                    await api.approve_pull_request(owner, repo, pr_number, message)
-                    return True
-
-            return bool(asyncio.run(_run()))
-        except Exception as e:
-            logger.warning("Failed to approve PR %s: %s", pr_number, e, exc_info=True)
-            return False
-
-    def merge_pull_request(
-        self, owner: str, repo: str, pr_number: int, merge_method: str = "merge"
-    ) -> bool:
-        """Merge a pull request using the async REST client."""
-        try:
-
-            async def _run():
-                async with self._new_async() as api:
-                    return await api.merge_pull_request(
-                        owner, repo, pr_number, merge_method
-                    )
-
-            return bool(asyncio.run(_run()))
-        except Exception as e:
-            logger.warning("Failed to merge PR %s: %s", pr_number, e, exc_info=True)
-            return False
 
     def fix_out_of_date_pr(self, owner: str, repo: str, pr_number: int) -> bool:
         """Fix an out-of-date PR by updating the branch."""

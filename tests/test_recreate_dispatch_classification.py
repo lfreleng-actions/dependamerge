@@ -72,7 +72,7 @@ class TestTheDispatchSaysWhichKindOfFailure:
         mgr, client = _mgr()
         client.merge_pull_request = AsyncMock(return_value=False)
 
-        merged, refused = await mgr._dispatch_recreated_merge(OWNER, REPO, _pr())
+        merged, refused, _ = await mgr._dispatch_recreated_merge(OWNER, REPO, _pr())
 
         assert merged is False
         assert refused is True
@@ -83,7 +83,7 @@ class TestTheDispatchSaysWhichKindOfFailure:
         mgr, client = _mgr()
         client.merge_pull_request = AsyncMock(return_value=True)
 
-        merged, refused = await mgr._dispatch_recreated_merge(OWNER, REPO, _pr())
+        merged, refused, _ = await mgr._dispatch_recreated_merge(OWNER, REPO, _pr())
 
         assert merged is True
         assert refused is False
@@ -98,7 +98,7 @@ class TestTheDispatchSaysWhichKindOfFailure:
             )
         )
 
-        merged, refused = await mgr._dispatch_recreated_merge(OWNER, REPO, _pr())
+        merged, refused, _ = await mgr._dispatch_recreated_merge(OWNER, REPO, _pr())
 
         assert merged is False
         assert refused is False
@@ -119,7 +119,7 @@ class TestTheDispatchSaysWhichKindOfFailure:
             )
         )
 
-        merged, refused = await mgr._dispatch_recreated_merge(OWNER, REPO, _pr())
+        merged, refused, _ = await mgr._dispatch_recreated_merge(OWNER, REPO, _pr())
 
         assert merged is False
         assert refused is False
@@ -130,7 +130,7 @@ class TestTheDispatchSaysWhichKindOfFailure:
         mgr, _ = _mgr()
         mgr._github_client = None
 
-        merged, refused = await mgr._dispatch_recreated_merge(OWNER, REPO, _pr())
+        merged, refused, _ = await mgr._dispatch_recreated_merge(OWNER, REPO, _pr())
 
         assert merged is False
         assert refused is False
@@ -147,7 +147,7 @@ class TestTheDispatchSaysWhichKindOfFailure:
             )
         )
 
-        merged, refused = await mgr._dispatch_recreated_merge(OWNER, REPO, _pr())
+        merged, refused, _ = await mgr._dispatch_recreated_merge(OWNER, REPO, _pr())
 
         assert merged is False
         assert refused is True
@@ -181,7 +181,7 @@ class TestTheReplacementOutcomeFollowsTheClassification:
         mgr, client = _mgr()
         replacement = _pr()
         mgr._approve_pr = AsyncMock(return_value=True)  # type: ignore[method-assign]
-        mgr._dispatch_recreated_merge = AsyncMock(return_value=(False, True))  # type: ignore[method-assign]
+        mgr._dispatch_recreated_merge = AsyncMock(return_value=(False, True, False))  # type: ignore[method-assign]
         # By confirmation time the replacement reads mergeable.
         client.get = AsyncMock(
             return_value={
@@ -211,7 +211,7 @@ class TestTheReplacementOutcomeFollowsTheClassification:
         mgr, client = _mgr()
         replacement = _pr()
         mgr._approve_pr = AsyncMock(return_value=True)  # type: ignore[method-assign]
-        mgr._dispatch_recreated_merge = AsyncMock(return_value=(False, False))  # type: ignore[method-assign]
+        mgr._dispatch_recreated_merge = AsyncMock(return_value=(False, False, False))  # type: ignore[method-assign]
         client.get = AsyncMock(
             return_value={
                 "state": "open",

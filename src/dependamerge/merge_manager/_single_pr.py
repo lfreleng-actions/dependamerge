@@ -44,6 +44,7 @@ from ..github_async import (
     github_error_detail,
 )
 from ..merge_signals import (
+    ConfirmedHeadSignal,
     DraftPullRequestError,
     DraftStateUnknownError,
     PullRequestStopSignal,
@@ -51,6 +52,11 @@ from ..merge_signals import (
 )
 from ..models import PullRequestInfo
 from ._base import _MergeManagerBase
+from ._head_pin import (
+    HEAD_CHANGED_DURING_MERGE,
+    ApprovalHeadMovedError,
+    check_confirmed_pr,
+)
 from ._single_pr_context import _MergeFlow
 from ._single_pr_gates import _SinglePrGatesMixin
 from ._single_pr_merge import _SinglePrMergeMixin
@@ -147,6 +153,14 @@ class _SinglePullRequestMixin(
             self._pr_status(
                 f"⏭️ Skipped: {stopped.html_url} [now a draft PR]", level="warning"
             )
+        except ConfirmedHeadSignal as signal:
+            # Confirmed at one commit; the head is, or will be, another.
+            stopped = self._stopped_pr(result, signal)
+            result.status = MergeStatus.SKIPPED
+            result.error = signal.reason
+            self._pr_status(
+                f"⏭️ Skipped: {stopped.html_url} [{signal.reason}]", level="warning"
+            )
         except DraftStateUnknownError as signal:
             # Not approved without knowing it is no draft; a re-run retries.
             stopped = self._stopped_pr(result, signal)
@@ -162,6 +176,15 @@ class _SinglePullRequestMixin(
             result.error = "reviews could not all be read; not approved"
             self._pr_status(
                 f"⚠️ Skipped: {stopped.html_url} [{result.error}]", level="warning"
+            )
+        except ApprovalHeadMovedError:
+            # GitHub judging the head, so a later reading can settle it.
+            result.status = MergeStatus.FAILED
+            result.merge_refused = True
+            result.error = HEAD_CHANGED_DURING_MERGE
+            self._pr_status(
+                f"❌ Failed: {result.pr_info.html_url} [{result.error}]",
+                level="error",
             )
         except GitHubPermissionError as e:
             self._report_permission_error(flow, e)
@@ -183,6 +206,7 @@ class _SinglePullRequestMixin(
         early = await self._gate_pr_still_open(flow)
         if early is not None:
             return early
+        await check_confirmed_pr(self, flow.pr_info, flow.repo_owner, flow.repo_name)
         early = await self._gate_mergeable_state(flow)
         if early is not None:
             return early

@@ -76,12 +76,16 @@ class _ReviewsMixin(_GitHubAsyncBase):
         )
 
     async def approve_pull_request(
-        self, owner: str, repo: str, number: int, body: str
+        self, owner: str, repo: str, number: int, body: str, *, commit_id: str
     ) -> None:
         """
-        Approve a pull request.
+        Approve a pull request at a named commit.
 
         REST: POST /repos/{owner}/{repo}/pulls/{pull_number}/reviews
+
+        ``commit_id`` is the head commit the caller evaluated, so the
+        approval names the commit it vouches for rather than whatever
+        the head is when GitHub records it.
 
         This endpoint returns a transient ``500`` with some regularity.
         ``500`` is deliberately absent from ``_is_retryable_status`` --- a
@@ -95,11 +99,13 @@ class _ReviewsMixin(_GitHubAsyncBase):
         approval to have landed.  So before each *retry* --- and once
         more after the final attempt --- the review list is re-read, and
         an approval already present counts as success rather than
-        stacking a duplicate review.  The first attempt skips that check,
-        so the common path costs exactly one request.  When that re-read
-        cannot identify the authenticated user, or cannot account for
-        every review and finds no approval of ours, the approval stops with :class:`ReviewsUnreadableError` rather
-        than risk a duplicate.
+        stacking a duplicate review.  Only an approval of ``commit_id``
+        counts: one of ours at an earlier commit does not vouch for this
+        one.  The first attempt skips that check, so the common path
+        costs exactly one request.  When that re-read cannot identify the
+        authenticated user, or cannot account for every review and finds
+        no approval of ours at ``commit_id``, the approval stops with
+        :class:`ReviewsUnreadableError` rather than risk a duplicate.
 
         A ``422`` is classified by GitHub's response body.  One saying
         the review was "submitted too quickly" is GitHub's
@@ -114,15 +120,20 @@ class _ReviewsMixin(_GitHubAsyncBase):
             ApprovalError: If GitHub refused the approval for another reason
             ReviewsUnreadableError: If, after a failed POST, the
                 authenticated user is unknown, or the reviews cannot all
-                be read and none read is our approval
+                be read and none read is our approval of ``commit_id``
         """
+        if not commit_id:
+            raise ValueError(
+                f"Refusing to approve PR #{number} in {owner}/{repo} "
+                "without a head commit"
+            )
         target = f"{owner}/{repo}#{number}"
         last_exc: Exception | None = None
         server_failures = 0
         throttled = 0
         while True:
             if last_exc is not None and await self._has_own_approval(
-                owner, repo, number
+                owner, repo, number, commit_id=commit_id
             ):
                 self.log.debug(
                     "Approval for %s already present after an error; "
@@ -137,7 +148,11 @@ class _ReviewsMixin(_GitHubAsyncBase):
             try:
                 await self.post(
                     f"/repos/{owner}/{repo}/pulls/{number}/reviews",
-                    json={"event": "APPROVE", "body": body},
+                    json={
+                        "event": "APPROVE",
+                        "body": body,
+                        "commit_id": commit_id,
+                    },
                 )
                 # The PR's block reason has just changed by construction.
                 self.invalidate_block_reason(owner, repo, number)
@@ -193,7 +208,7 @@ class _ReviewsMixin(_GitHubAsyncBase):
 
         # Attempts exhausted.  One last look: the final POST may have
         # created the review despite reporting failure.
-        if await self._has_own_approval(owner, repo, number):
+        if await self._has_own_approval(owner, repo, number, commit_id=commit_id):
             self.log.info(
                 "Approval for %s landed despite a reported error",
                 target,
@@ -203,8 +218,14 @@ class _ReviewsMixin(_GitHubAsyncBase):
         assert last_exc is not None
         raise last_exc
 
-    async def _has_own_approval(self, owner: str, repo: str, number: int) -> bool:
-        """Whether the authenticated user already has an APPROVED review.
+    async def _has_own_approval(
+        self, owner: str, repo: str, number: int, *, commit_id: str
+    ) -> bool:
+        """Whether the authenticated user already approved ``commit_id``.
+
+        An approval of ours at another commit does not count: the head
+        may have moved since, and that review vouches for a different
+        commit than the one this request names.
 
         Reads every page: missing an existing approval on a busy PR would
         defeat the duplicate-suppression this exists for and post another
@@ -213,7 +234,7 @@ class _ReviewsMixin(_GitHubAsyncBase):
         Raises:
             ReviewsUnreadableError: When the authenticated user cannot be
                 identified, or the reading is partial and holds no
-                approval of ours: the failed POST may have created one
+                approval of ours at ``commit_id``: the failed POST may have created one
                 that cannot be recognised, so retrying could post a
                 duplicate.
         """
@@ -246,6 +267,7 @@ class _ReviewsMixin(_GitHubAsyncBase):
         if any(
             review.get("state") == "APPROVED"
             and (review.get("user") or {}).get("login") == login
+            and review.get("commit_id") == commit_id
             for review in reading.entries
         ):
             return True

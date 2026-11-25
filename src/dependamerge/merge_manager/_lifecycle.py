@@ -22,6 +22,7 @@ import asyncio
 import logging
 import math
 import os
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +36,7 @@ from ..progress_tracker import MergeProgressTracker
 from ..url_parser import default_github_host, derive_api_urls
 from ._base import _MergeManagerBase
 from ._constants import DEFAULT_MERGE_TIMEOUT, DEFAULT_REBASE_COOLDOWN_HOURS
+from ._head_pin import ConfirmedHead
 from ._types import MergeResult
 
 
@@ -63,6 +65,7 @@ class _LifecycleMixin(_MergeManagerBase):
         host: str | None = None,
         preflight_repository: str | None = None,
         bot_policy: BotPolicy | None = None,
+        confirmed_heads: Mapping[tuple[str, int], ConfirmedHead] | None = None,
         rebase_cooldown: float = DEFAULT_REBASE_COOLDOWN_HOURS,
     ):
         # Resolved through the package at call time rather than bound at
@@ -83,6 +86,9 @@ class _LifecycleMixin(_MergeManagerBase):
         self.progress_tracker = progress_tracker
         self.preview_mode = preview_mode
         self.bot_policy = bot_policy or BotPolicy()
+        # The commits a person confirmed, keyed by ``head_key``: those
+        # PRs are approved and merged only at that commit.
+        self._confirmed_heads = dict(confirmed_heads or {})
         self.dismiss_copilot = dismiss_copilot
         self.force_level = force_level
         self.github2gerrit_mode = github2gerrit_mode

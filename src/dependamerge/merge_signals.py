@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from .models import PullRequestInfo
 
 __all__ = [
+    "ConfirmedHeadSignal",
     "DraftPullRequestError",
     "DraftStateUnknownError",
     "PullRequestStopSignal",
@@ -65,3 +66,20 @@ class ReviewsUnreadableError(PullRequestStopSignal):
     request is skipped, neither approved again nor merged, and a re-run
     tries again.
     """
+
+
+class ConfirmedHeadSignal(PullRequestStopSignal):
+    """A confirmed pull request cannot be merged at its confirmed commit.
+
+    Its head moved since a person confirmed it, or the run asked for a
+    rebase or recreate that will move it.  So the pull request is
+    skipped, neither approved at nor merged at a commit nobody
+    confirmed, and a re-run asks again.
+
+    Attributes:
+        reason: The skip reason shown for the pull request.
+    """
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason

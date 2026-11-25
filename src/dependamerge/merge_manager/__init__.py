@@ -86,6 +86,7 @@ from ._constants import (
 from ._dependabot_recreate import _DependabotRecreateMixin
 from ._failure import _FailureReportingMixin
 from ._gerrit_submit import _GerritSubmitMixin
+from ._head_pin import ConfirmedHead, head_key
 from ._lifecycle import _LifecycleMixin
 from ._mergeability import _MergeabilityMixin
 from ._mergeability_refresh import _MergeabilityRefreshMixin
@@ -166,6 +167,7 @@ __all__ = [
     "Any",
     "AsyncMergeManager",
     "ComparisonResult",
+    "ConfirmedHead",
     "Console",
     "CopilotCommentHandler",
     "DEFAULT_MERGE_RECHECK_INTERVAL",
@@ -218,6 +220,7 @@ __all__ = [
     "failing_check_names",
     "fetch_gitreview_from_github",
     "fnmatch",
+    "head_key",
     "holding_slot",
     "is_automation_author",
     "is_dependabot",

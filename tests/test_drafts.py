@@ -62,6 +62,8 @@ class TestRecognition:
             "isDraft": is_draft,
             "mergeStateStatus": merge_state,
             "author": {"__typename": "Bot", "login": "dependabot"},
+            "files": {"totalCount": 0, "nodes": []},
+            "reviews": {"totalCount": 0, "nodes": []},
         }
         pr = GitHubService(token="t").to_pull_request_info("acme/widget", node)
         assert pr.is_draft is is_draft

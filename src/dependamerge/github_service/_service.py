@@ -117,7 +117,7 @@ class GitHubService(
             # registered, and this service's own must still fire: without
             # ``_on_rate_limited`` the ``_rate_limited`` flag never sets,
             # and the GraphQL paging below silently stops shrinking its
-            # page sizes under rate-limit pressure.  Chain rather than
+            # pull request page size under rate-limit pressure.  Chain rather than
             # replace so the owner's callbacks keep working too.
             self._attach_callbacks(client)
         self._progress = progress_tracker

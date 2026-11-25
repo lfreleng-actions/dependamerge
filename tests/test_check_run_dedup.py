@@ -296,7 +296,7 @@ class TestGraphQLRollupExtraction:
         assert GitHubService._extract_failing_checks(pr) == ["pre-commit.ci - pr"]
 
     def test_no_commits_returns_empty(self):
-        assert GitHubService._extract_failing_checks({}) == []
+        assert GitHubService._extract_failing_checks({"commits": {"nodes": []}}) == []
 
 
 @pytest.mark.usefixtures("listings_via_get")

@@ -9,7 +9,11 @@ from __future__ import annotations
 from typing import Any
 
 from ..check_runs import failing_check_names
-from ..github_graphql.pull_requests import SCAN_REVIEWS_PAGE_SIZE
+from ..github_graphql.pull_requests import (
+    SCAN_COMMENTS_PAGE_SIZE,
+    SCAN_FILES_PAGE_SIZE,
+    SCAN_REVIEWS_PAGE_SIZE,
+)
 from ..models import (
     CopilotComment,
     FileChange,
@@ -18,20 +22,89 @@ from ..models import (
 from ._base import _GitHubServiceBase
 
 
-def scan_reviews_complete(pr: dict[str, Any]) -> bool:
-    """Whether a PR node's ``reviews`` connection holds every review.
+class ListNotSelectedError(LookupError):
+    """A scan read a nested list its page query did not select.
 
-    A page short of the size the query selects is the whole list; a full
-    one is whole only when the connection's ``totalCount`` says so.
+    The page query omits an unselected list from each node.  Reading
+    that absence as an empty list would be a silent wrong answer, so the
+    extractors raise instead.
     """
-    connection = pr.get("reviews") or {}
-    nodes = connection.get("nodes") or []
-    if len(nodes) < SCAN_REVIEWS_PAGE_SIZE:
-        return True
-    total = connection.get("totalCount")
-    return (
-        isinstance(total, int) and not isinstance(total, bool) and len(nodes) >= total
-    )
+
+
+def _selected(pr: dict[str, Any], key: str) -> Any:
+    """The node's ``key`` field, which the page query must have selected."""
+    if key not in pr:
+        raise ListNotSelectedError(
+            f"Pull request node #{pr.get('number', '?')} carries no {key!r}: "
+            "the scan did not select that list"
+        )
+    return pr[key]
+
+
+def _int_or_none(value: Any) -> int | None:
+    """``value`` when it is an integer (not a bool), else ``None``."""
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _page_complete(read: int, total: int | None, page_size: int) -> bool:
+    """Whether a page of ``read`` entries is the whole list.
+
+    The list's total decides when there is one, since a page can come
+    back short of it with an entry that could not be read.  Without a
+    total, a page short of the size the query selects is the whole list.
+    """
+    if total is not None:
+        return read >= total
+    return read < page_size
+
+
+def _scan_list(
+    pr: dict[str, Any], key: str, page_size: int
+) -> tuple[list[dict[str, Any]], bool]:
+    """A selected connection's entries, and whether they are the whole list.
+
+    A connection GitHub answered with ``null`` holds nothing that was
+    read, so it is not known to be whole.
+    """
+    connection = _selected(pr, key)
+    if not isinstance(connection, dict):
+        return [], False
+    nodes = [node for node in connection.get("nodes") or [] if isinstance(node, dict)]
+    total = _int_or_none(connection.get("totalCount"))
+    return nodes, _page_complete(len(nodes), total, page_size)
+
+
+def scan_files(pr: dict[str, Any]) -> tuple[list[dict[str, Any]], bool]:
+    """A PR node's changed files, and whether they are all of them."""
+    return _scan_list(pr, "files", SCAN_FILES_PAGE_SIZE)
+
+
+def scan_comments(pr: dict[str, Any]) -> tuple[list[dict[str, Any]], bool]:
+    """A PR node's comments, and whether they are all of them."""
+    return _scan_list(pr, "comments", SCAN_COMMENTS_PAGE_SIZE)
+
+
+def scan_reviews(pr: dict[str, Any]) -> tuple[list[dict[str, Any]], bool]:
+    """A PR node's reviews, and whether they are all of them."""
+    return _scan_list(pr, "reviews", SCAN_REVIEWS_PAGE_SIZE)
+
+
+def scan_reviews_complete(pr: dict[str, Any]) -> bool:
+    """Whether a PR node's ``reviews`` connection holds every review."""
+    return scan_reviews(pr)[1]
+
+
+def scan_check_contexts(pr: dict[str, Any]) -> list[dict[str, Any]]:
+    """The check runs and status contexts on a PR node's latest commit page.
+
+    An empty list when the commit carries no rollup.
+    """
+    commits = (_selected(pr, "commits") or {}).get("nodes") or []
+    if not commits:
+        return []
+    commit = (commits[0] or {}).get("commit") or {}
+    rollup = commit.get("statusCheckRollup") or {}
+    return (rollup.get("contexts") or {}).get("nodes") or []
 
 
 class _PullRequestExtractMixin(_GitHubServiceBase):
@@ -87,7 +160,7 @@ class _PullRequestExtractMixin(_GitHubServiceBase):
         return normalized
 
     def _extract_file_changes(self, pr: dict[str, Any]) -> list[FileChange]:
-        files = (pr.get("files") or {}).get("nodes", []) or []
+        files, _ = scan_files(pr)
         result: list[FileChange] = []
         for f in files:
             additions = int(f.get("additions") or 0)
@@ -105,7 +178,7 @@ class _PullRequestExtractMixin(_GitHubServiceBase):
 
     def _extract_reviews(self, pr: dict[str, Any]) -> list[ReviewInfo]:
         """Extract PR reviews from GraphQL node."""
-        reviews = (pr.get("reviews") or {}).get("nodes", []) or []
+        reviews, _ = scan_reviews(pr)
         result: list[ReviewInfo] = []
 
         for review in reviews:
@@ -124,7 +197,7 @@ class _PullRequestExtractMixin(_GitHubServiceBase):
         return result
 
     def _extract_copilot_comments(self, pr: dict[str, Any]) -> list[CopilotComment]:
-        comments = (pr.get("comments") or {}).get("nodes", []) or []
+        comments, _ = scan_comments(pr)
         result: list[CopilotComment] = []
         for c in comments:
             author = ((c.get("author") or {}).get("login") or "").lower()
@@ -150,14 +223,7 @@ class _PullRequestExtractMixin(_GitHubServiceBase):
         matching GitHub's own merge protection; see ``check_runs``.
         """
         failing: list[str] = []
-
-        commits = (pr.get("commits") or {}).get("nodes", []) or []
-        if not commits:
-            return failing
-
-        commit = (commits[0] or {}).get("commit") or {}
-        rollup = commit.get("statusCheckRollup") or {}
-        contexts = (rollup.get("contexts") or {}).get("nodes", []) or []
+        contexts = scan_check_contexts(pr)
 
         check_runs: list[dict[str, Any]] = []
 

@@ -22,6 +22,7 @@ from ..models import ComparisonResult, PullRequestInfo
 from ._base import _GitHubServiceBase
 from ._comparison_debug import print_comparison_debug
 from ._repositories import _listed_without_open_prs
+from ._scan_lists import MERGE_SCAN_LISTS
 
 
 class _Fetched(NamedTuple):
@@ -239,7 +240,7 @@ class _SimilarPullRequestsMixin(_GitHubServiceBase):
                 )
             owner_n, name_n = repo_full_name.split("/", 1)
             first_nodes, page_info = await self._fetch_repo_prs_first_page(
-                owner_n, name_n
+                owner_n, name_n, lists=MERGE_SCAN_LISTS
             )
             if self._valid_repository_policy(bot_policy, repo_full_name) is None:
                 return _Fetched(
@@ -254,7 +255,7 @@ class _SimilarPullRequestsMixin(_GitHubServiceBase):
             if page_info.get("hasNextPage"):
                 end_cursor = page_info.get("endCursor") or None
                 async for pr_node in self._iter_repo_open_prs_pages(
-                    owner_n, name_n, end_cursor
+                    owner_n, name_n, end_cursor, lists=MERGE_SCAN_LISTS
                 ):
                     nodes.append(pr_node)
             prs = [self.to_pull_request_info(repo_full_name, node) for node in nodes]

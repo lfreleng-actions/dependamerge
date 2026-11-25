@@ -65,6 +65,10 @@ class PullRequestInfo(BaseModel):
     is_draft: bool = False
     behind_by: int | None  # Number of commits behind the base branch
     files_changed: list[FileChange]
+    # Whether ``files_changed`` holds every changed file.  A source that
+    # reads only the first page sets it False when more exist; a decision
+    # that rests on the files reads the full list first.
+    files_complete: bool = True
     repository_full_name: str
     html_url: str
     reviews: list[ReviewInfo] = []  # PR reviews

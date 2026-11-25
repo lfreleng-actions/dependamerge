@@ -31,7 +31,12 @@ from dependamerge.github_graphql import (
     USER_REPOS_ONLY,
 )
 from dependamerge.github_service import GitHubService
+from dependamerge.github_service._scan_lists import (
+    BLOCKED_SCAN_LISTS,
+    MERGE_SCAN_LISTS,
+)
 from dependamerge.models import ComparisonResult, PullRequestInfo
+from tests.conftest import with_selected_lists
 
 CODE_MONKEY = "lf-releng-code-monkey-bot"
 
@@ -95,7 +100,11 @@ def _service(
             return httpx.Response(200, json={"name": "x", "value": value})
         payload = json.loads(request.content)
         sent.append((payload["query"], payload["variables"]))
-        return httpx.Response(200, json=answer(payload["query"], payload["variables"]))
+        query, sent_variables = payload["query"], payload["variables"]
+        response = answer(query, sent_variables)
+        if query == REPO_OPEN_PRS_PAGE:
+            response = with_selected_lists(response, sent_variables)
+        return httpx.Response(200, json=response)
 
     svc = GitHubService(token="t", read_policies=True)
     svc._api._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
@@ -272,11 +281,13 @@ class TestFirstPullRequestPage:
 
         svc, sent = _service(answer)
         try:
-            nodes, page_info = await svc._fetch_repo_prs_first_page("Acme", "Widget")
+            nodes, page_info = await svc._fetch_repo_prs_first_page(
+                "Acme", "Widget", lists=MERGE_SCAN_LISTS
+            )
             rest = [
                 node
                 async for node in svc._iter_repo_open_prs_pages(
-                    "Acme", "Widget", page_info["endCursor"]
+                    "Acme", "Widget", page_info["endCursor"], lists=MERGE_SCAN_LISTS
                 )
             ]
         finally:
@@ -305,7 +316,9 @@ class TestFirstPullRequestPage:
         svc._read_policies = False
         try:
             await _list(svc, "acme")
-            await svc._fetch_repo_prs_first_page("acme", "widget")
+            await svc._fetch_repo_prs_first_page(
+                "acme", "widget", lists=BLOCKED_SCAN_LISTS
+            )
         finally:
             await svc.close()
         flags = [v["withPolicy"] for _, v in sent if "withPolicy" in v]

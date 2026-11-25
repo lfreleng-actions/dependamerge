@@ -2,133 +2,47 @@
 # SPDX-FileCopyrightText: 2025 The Linux Foundation
 
 """
-Open pull request queries.
+The open pull request page query.
 
-The two queries here carry the full per-PR payload the scanner needs —
-mergeability, base/head refs and repositories, changed files, recent
-comments, reviews and the latest commit's status check rollup — so a scan
-does not have to fall back to per-PR REST calls.
+``REPO_OPEN_PRS_PAGE`` reads one page of a repository's open pull
+requests with the payload the scans read — mergeability, base/head refs
+and repositories, and four nested lists: changed files, recent comments,
+reviews and the latest commit's status check rollup — so a scan does not
+have to fall back to per-PR REST calls.
 
-``ORG_REPOS_WITH_OPEN_PRS`` walks an organization repository-by-repository
-with a first page of PRs attached; ``REPO_OPEN_PRS_PAGE`` continues a
-single repository's PR pagination and takes its page sizes as variables.
+Each nested list has its own ``@include`` switch, so a scan asks only
+for the lists it reads, and each carries its total, so a reader can tell
+a short page from the whole list.  The nested sizes are fixed: only the
+pull request page size is a variable.
 """
 
 from __future__ import annotations
 
-#: The ``reviews(first: ...)`` page size both queries below select.  The
-#: connection's ``totalCount`` rides along, so a reader can tell a pull
-#: request with more reviews than this from one with exactly this many.
+#: The ``files(first: ...)`` page size.
+SCAN_FILES_PAGE_SIZE = 50
+
+#: The ``comments(first: ...)`` page size.
+SCAN_COMMENTS_PAGE_SIZE = 10
+
+#: The ``reviews(first: ...)`` page size.  The connection's
+#: ``totalCount`` rides along, so a reader can tell a pull request with
+#: more reviews than this from one with exactly this many.
 SCAN_REVIEWS_PAGE_SIZE = 20
 
-# Fetch organization repositories with a first page of their open PRs.
-# Use the returned pageInfo to continue paging repositories.
-# Each repository node also includes pageInfo for its pull requests; for repos
-# with more than 50 open PRs, use REPO_OPEN_PRS_PAGE to paginate further.
-ORG_REPOS_WITH_OPEN_PRS = """
-query($org: String!, $reposCursor: String) {
-  organization(login: $org) {
-    repositories(first: 30, after: $reposCursor, orderBy: { field: NAME, direction: ASC }) {
-      pageInfo {
-        hasNextPage
-        endCursor
-      }
-      nodes {
-        nameWithOwner
-        isArchived
-        pullRequests(
-          states: OPEN
-          first: 30
-          orderBy: { field: CREATED_AT, direction: DESC }
-        ) {
-          pageInfo {
-            hasNextPage
-            endCursor
-          }
-          nodes {
-            id
-            number
-            title
-            body
-            url
-            isDraft
-            author { __typename login }
-            mergeable
-            mergeStateStatus
-            baseRefName
-            headRefName
-            headRefOid
-            headRepository { nameWithOwner url isFork }
-            baseRepository { nameWithOwner url }
-            createdAt
-            updatedAt
-            files(first: 50) {
-              nodes {
-                path
-                additions
-                deletions
-              }
-            }
-            comments(first: 10, orderBy: { field: UPDATED_AT, direction: DESC }) {
-              nodes {
-                author { login }
-                body
-                createdAt
-              }
-            }
-            reviews(first: 20, states: [PENDING, COMMENTED, APPROVED, CHANGES_REQUESTED]) {
-              totalCount
-              nodes {
-                id
-                author { login }
-                state
-                body
-                createdAt
-                updatedAt
-              }
-            }
+#: The status check rollup's ``contexts(first: ...)`` page size.  The
+#: connection's per-state counts ride along, exact whatever the length
+#: of the list.
+SCAN_CHECKS_PAGE_SIZE = 100
 
-            commits(last: 1) {
-              nodes {
-                commit {
-                  oid
-                  statusCheckRollup {
-                    state
-                    contexts(first: 20) {
-                      nodes {
-                        __typename
-                        ... on CheckRun {
-                          name
-                          status
-                          conclusion
-                          startedAt
-                          completedAt
-                        }
-                        ... on StatusContext {
-                          context
-                          state
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-}
-"""
-
-# Paginate open PRs for a specific repository when there are more than 50.
-# Provide the repository owner/name and the PR cursor returned by previous pages.
+# Read one page of a repository's open PRs; pass the previous page's
+# cursor to continue.  ``$withFiles``, ``$withComments``, ``$withReviews``
+# and ``$withChecks`` select the nested lists; an unselected list is absent
+# from each node, not empty.
 # The first page also asks for the repository's bot policy file, on its
 # default branch, which rides along at no extra cost (``$withPolicy``);
 # see OWNER_PROFILE in :mod:`.repos` for the shape of ``policy``.
-REPO_OPEN_PRS_PAGE = """
-query($owner: String!, $name: String!, $prsCursor: String, $prsPageSize: Int!, $filesPageSize: Int!, $commentsPageSize: Int!, $contextsPageSize: Int!, $withPolicy: Boolean!) {
+_REPO_OPEN_PRS_PAGE_TEMPLATE = """
+query($owner: String!, $name: String!, $prsCursor: String, $prsPageSize: Int!, $withPolicy: Boolean!, $withFiles: Boolean!, $withComments: Boolean!, $withReviews: Boolean!, $withChecks: Boolean!) {
   repository(owner: $owner, name: $name) {
     nameWithOwner
     policy: object(expression: "HEAD:.github/dependamerge/config.json") @include(if: $withPolicy) {
@@ -161,21 +75,23 @@ query($owner: String!, $name: String!, $prsCursor: String, $prsPageSize: Int!, $
         baseRepository { nameWithOwner url }
         createdAt
         updatedAt
-        files(first: $filesPageSize) {
+        files(first: <files>) @include(if: $withFiles) {
+          totalCount
           nodes {
             path
             additions
             deletions
           }
         }
-        comments(first: $commentsPageSize, orderBy: { field: UPDATED_AT, direction: DESC }) {
+        comments(first: <comments>, orderBy: { field: UPDATED_AT, direction: DESC }) @include(if: $withComments) {
+          totalCount
           nodes {
             author { login }
             body
             createdAt
           }
         }
-        reviews(first: 20, states: [PENDING, COMMENTED, APPROVED, CHANGES_REQUESTED]) {
+        reviews(first: <reviews>, states: [PENDING, COMMENTED, APPROVED, CHANGES_REQUESTED]) @include(if: $withReviews) {
           totalCount
           nodes {
             id
@@ -187,13 +103,17 @@ query($owner: String!, $name: String!, $prsCursor: String, $prsPageSize: Int!, $
           }
         }
 
-        commits(last: 1) {
+        commits(last: 1) @include(if: $withChecks) {
           nodes {
             commit {
               oid
               statusCheckRollup {
                 state
-                contexts(first: $contextsPageSize) {
+                contexts(first: <checks>) {
+                  checkRunCount
+                  checkRunCountsByState { state count }
+                  statusContextCount
+                  statusContextCountsByState { state count }
                   nodes {
                     __typename
                     ... on CheckRun {
@@ -218,3 +138,18 @@ query($owner: String!, $name: String!, $prsCursor: String, $prsPageSize: Int!, $
   }
 }
 """
+
+
+def _with_page_sizes(template: str) -> str:
+    """``template`` with each ``<list>`` placeholder set to its page size."""
+    for name, size in (
+        ("files", SCAN_FILES_PAGE_SIZE),
+        ("comments", SCAN_COMMENTS_PAGE_SIZE),
+        ("reviews", SCAN_REVIEWS_PAGE_SIZE),
+        ("checks", SCAN_CHECKS_PAGE_SIZE),
+    ):
+        template = template.replace(f"<{name}>", str(size))
+    return template
+
+
+REPO_OPEN_PRS_PAGE = _with_page_sizes(_REPO_OPEN_PRS_PAGE_TEMPLATE)

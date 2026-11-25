@@ -315,7 +315,7 @@ class TestGitHubServiceAsync:
                 }
 
                 # Mock the repository processing function
-                async def mock_fetch_repo_prs(owner, name):
+                async def mock_fetch_repo_prs(owner, name, *, lists):
                     await mock_process_repo_delay(f"{owner}/{name}")
                     return [], {"hasNextPage": False, "endCursor": None}
 

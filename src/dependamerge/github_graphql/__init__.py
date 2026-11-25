@@ -26,10 +26,7 @@ from .merge_policy import (
     ENABLE_AUTO_MERGE,
     GET_BRANCH_PROTECTION,
 )
-from .pull_requests import (
-    ORG_REPOS_WITH_OPEN_PRS,
-    REPO_OPEN_PRS_PAGE,
-)
+from .pull_requests import REPO_OPEN_PRS_PAGE
 from .repos import (
     ORG_REPOS_ONLY,
     OWNER_PROFILE,
@@ -45,7 +42,6 @@ __all__ = [
     "ORG_REPOS_ONLY",
     "USER_REPOS_ONLY",
     "OWNER_PROFILE",
-    "ORG_REPOS_WITH_OPEN_PRS",
     "REPO_OPEN_PRS_PAGE",
     "ENABLE_AUTO_MERGE",
     "GET_BRANCH_PROTECTION",

@@ -21,7 +21,7 @@ from ._helpers import (
     _clone_url_with_git_suffix,
     _str_or_none,
 )
-from ._pr_extract import scan_reviews_complete
+from ._pr_extract import scan_files, scan_reviews_complete
 
 
 class _PullRequestNodeMixin(_GitHubServiceBase):
@@ -168,6 +168,7 @@ class _PullRequestNodeMixin(_GitHubServiceBase):
             is_draft=pr.get("isDraft") is True,
             behind_by=None,  # Not included in GraphQL; could be computed if needed
             files_changed=files,
+            files_complete=scan_files(pr)[1],
             repository_full_name=repo_full_name,
             html_url=pr.get("url") or "",
             reviews=reviews,

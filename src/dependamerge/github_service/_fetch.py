@@ -16,6 +16,7 @@ from ..github_async import (
 from ..models import PullRequestInfo
 from ._base import _GitHubServiceBase
 from ._repositories import _listed_without_open_prs
+from ._scan_lists import MERGE_SCAN_LISTS
 
 if TYPE_CHECKING:
     from ..repo_selection import RepoSelection
@@ -44,7 +45,9 @@ class _FetchMixin(_GitHubServiceBase):
         """
         repo_full_name = f"{owner}/{repo}"
 
-        first_nodes, page_info = await self._fetch_repo_prs_first_page(owner, repo)
+        first_nodes, page_info = await self._fetch_repo_prs_first_page(
+            owner, repo, lists=MERGE_SCAN_LISTS
+        )
         pr_nodes = list(first_nodes)
         has_next = bool(page_info.get("hasNextPage"))
         end_cursor = page_info.get("endCursor") or None
@@ -52,7 +55,7 @@ class _FetchMixin(_GitHubServiceBase):
         # Fetch additional pages if present
         if has_next:
             async for pr_node in self._iter_repo_open_prs_pages(
-                owner, repo, end_cursor
+                owner, repo, end_cursor, lists=MERGE_SCAN_LISTS
             ):
                 pr_nodes.append(pr_node)
 

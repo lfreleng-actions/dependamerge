@@ -12,12 +12,8 @@ from typing import Any
 from ..github_async import GraphQLError
 from ..github_graphql import REPO_OPEN_PRS_PAGE
 from ._base import _GitHubServiceBase
-from ._constants import (
-    DEFAULT_COMMENTS_PAGE_SIZE,
-    DEFAULT_CONTEXTS_PAGE_SIZE,
-    DEFAULT_FILES_PAGE_SIZE,
-    DEFAULT_PRS_PAGE_SIZE,
-)
+from ._constants import DEFAULT_PRS_PAGE_SIZE
+from ._scan_lists import ScanLists
 
 
 def _listed_without_open_prs(repo: Mapping[str, Any]) -> bool:
@@ -177,36 +173,36 @@ class _RepositoriesMixin(_GitHubServiceBase):
             cursor = page_info.get("endCursor")
 
     def _open_prs_page_variables(
-        self, owner: str, name: str, cursor: str | None, *, with_policy: bool
+        self,
+        owner: str,
+        name: str,
+        cursor: str | None,
+        *,
+        with_policy: bool,
+        lists: ScanLists,
     ) -> dict[str, Any]:
         """Variables for one ``REPO_OPEN_PRS_PAGE`` request.
 
-        Page sizes halve while rate limited.  ``with_policy`` also asks
-        for the repository's bot policy file, which only the first page
-        needs.
+        The pull request page size halves while rate limited; the nested
+        list sizes are fixed, so rate limiting never changes a result.
+        ``with_policy`` also asks for the repository's bot policy file,
+        which only the first page needs, and ``lists`` selects the nested
+        lists the scan reads.
         """
         prs_size = DEFAULT_PRS_PAGE_SIZE
-        files_size = DEFAULT_FILES_PAGE_SIZE
-        comments_size = DEFAULT_COMMENTS_PAGE_SIZE
-        contexts_size = DEFAULT_CONTEXTS_PAGE_SIZE
         if getattr(self, "_rate_limited", False):
             prs_size = max(10, prs_size // 2)
-            files_size = max(20, files_size // 2)
-            comments_size = max(5, comments_size // 2)
-            contexts_size = max(10, contexts_size // 2)
         return {
             "owner": owner,
             "name": name,
             "prsCursor": cursor,
             "prsPageSize": prs_size,
-            "filesPageSize": files_size,
-            "commentsPageSize": comments_size,
-            "contextsPageSize": contexts_size,
             "withPolicy": with_policy,
+            **lists.variables(),
         }
 
     async def _iter_repo_open_prs_pages(
-        self, owner: str, name: str, cursor: str | None
+        self, owner: str, name: str, cursor: str | None, *, lists: ScanLists
     ) -> AsyncIterator[dict[str, Any]]:
         """
         Iterate additional pages of open PRs for a specific repository.
@@ -214,7 +210,7 @@ class _RepositoriesMixin(_GitHubServiceBase):
         prs_cursor = cursor
         while prs_cursor:
             variables = self._open_prs_page_variables(
-                owner, name, prs_cursor, with_policy=False
+                owner, name, prs_cursor, with_policy=False, lists=lists
             )
             async with self._page_semaphore:
                 data = await self._api.graphql(REPO_OPEN_PRS_PAGE, variables)
@@ -230,17 +226,18 @@ class _RepositoriesMixin(_GitHubServiceBase):
             prs_cursor = page_info.get("endCursor")
 
     async def _fetch_repo_prs_first_page(
-        self, owner: str, name: str
+        self, owner: str, name: str, *, lists: ScanLists
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         """
         Fetch the first page of open PRs for a repository using GraphQL.
         Returns a tuple of (nodes, pageInfo).
 
-        The repository's bot policy file comes with it when the service
+        ``lists`` selects the nested lists each node carries.  The
+        repository's bot policy file comes with it when the service
         reads policy, and is kept for ``policy_files``.
         """
         variables = self._open_prs_page_variables(
-            owner, name, None, with_policy=self._read_policies
+            owner, name, None, with_policy=self._read_policies, lists=lists
         )
         async with self._page_semaphore:
             data = await self._api.graphql(REPO_OPEN_PRS_PAGE, variables)

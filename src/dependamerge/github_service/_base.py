@@ -31,6 +31,7 @@ from ..models import (
 
 if TYPE_CHECKING:
     from ..bot_policy import BotPolicy
+    from ._scan_lists import ScanLists
 
 
 class _GitHubServiceBase:
@@ -75,7 +76,7 @@ class _GitHubServiceBase:
         ) -> AsyncIterator[dict[str, Any]]: ...
 
         def _iter_repo_open_prs_pages(
-            self, owner: str, name: str, cursor: str | None
+            self, owner: str, name: str, cursor: str | None, *, lists: ScanLists
         ) -> AsyncIterator[dict[str, Any]]: ...
 
         async def _read_owner_profile(
@@ -97,7 +98,7 @@ class _GitHubServiceBase:
         async def _read_repository_variable(self, repository: str) -> None: ...
 
         async def _fetch_repo_prs_first_page(
-            self, owner: str, name: str
+            self, owner: str, name: str, *, lists: ScanLists
         ) -> tuple[list[dict[str, Any]], dict[str, Any]]: ...
 
         async def _analyze_pr_node(

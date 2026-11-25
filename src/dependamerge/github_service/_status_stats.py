@@ -15,6 +15,8 @@ from ..bot_identity import (
     rest_author_login,
 )
 from ._base import _GitHubServiceBase
+from ._pr_extract import ListNotSelectedError, scan_files
+from ._scan_lists import STATUS_SCAN_LISTS
 
 # Bounds the cost of the merged-since read: 10 pages of 100.
 _MERGED_PRS_PER_PAGE = 100
@@ -60,14 +62,14 @@ class _StatusStatsMixin(_GitHubServiceBase):
             page_info: dict[str, Any] = {}
             if read_open_prs:
                 first_nodes, page_info = await self._fetch_repo_prs_first_page(
-                    owner, name
+                    owner, name, lists=STATUS_SCAN_LISTS
                 )
                 open_prs.extend(first_nodes)
 
             # Get additional pages if needed
             if page_info.get("hasNextPage"):
                 async for pr_node in self._iter_repo_open_prs_pages(
-                    owner, name, page_info.get("endCursor")
+                    owner, name, page_info.get("endCursor"), lists=STATUS_SCAN_LISTS
                 ):
                     open_prs.append(pr_node)
 
@@ -87,7 +89,7 @@ class _StatusStatsMixin(_GitHubServiceBase):
                     stats["open_prs_human"] += 1
 
                 # Check if PR affects actions or workflows
-                files = (pr.get("files") or {}).get("nodes", []) or []
+                files, _ = scan_files(pr)
                 affects_action = self._affects_action_files(files)
                 affects_workflow = self._affects_workflow_files(files)
 
@@ -116,6 +118,8 @@ class _StatusStatsMixin(_GitHubServiceBase):
                     else:
                         stats["merged_prs_human"] += 1
 
+        except ListNotSelectedError:
+            raise
         except Exception as e:
             self.log.debug(f"Error gathering PR statistics for {owner}/{name}: {e}")
 

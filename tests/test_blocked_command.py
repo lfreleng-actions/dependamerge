@@ -266,6 +266,8 @@ class TestBlockedCommandServiceIntegration:
             "isDraft": True,
             "mergeable": "MERGEABLE",
             "mergeStateStatus": "draft",
+            "commits": {"nodes": []},
+            "comments": {"totalCount": 0, "nodes": []},
             "createdAt": "2025-01-01T00:00:00Z",
             "updatedAt": "2025-01-01T00:00:00Z",
         }
@@ -292,6 +294,8 @@ class TestBlockedCommandServiceIntegration:
             "isDraft": True,
             "mergeable": "MERGEABLE",
             "mergeStateStatus": "draft",
+            "commits": {"nodes": []},
+            "comments": {"totalCount": 0, "nodes": []},
             "createdAt": "2025-01-01T00:00:00Z",
             "updatedAt": "2025-01-01T00:00:00Z",
         }
@@ -321,6 +325,8 @@ class TestBlockedCommandServiceIntegration:
             "isDraft": True,
             "mergeable": "CONFLICTING",
             "mergeStateStatus": "dirty",
+            "commits": {"nodes": []},
+            "comments": {"totalCount": 0, "nodes": []},
             "createdAt": "2025-01-01T00:00:00Z",
             "updatedAt": "2025-01-01T00:00:00Z",
         }
@@ -374,6 +380,7 @@ class TestBlockedCommandServiceIntegration:
                     }
                 ]
             },
+            "comments": {"totalCount": 0, "nodes": []},
             "createdAt": "2025-01-01T00:00:00Z",
             "updatedAt": "2025-01-01T00:00:00Z",
         }
@@ -414,6 +421,8 @@ class TestBlockedCommandServiceIntegration:
             "isDraft": False,
             "mergeable": "MERGEABLE",
             "mergeStateStatus": "behind",
+            "commits": {"nodes": []},
+            "comments": {"totalCount": 0, "nodes": []},
             "createdAt": "2025-01-01T00:00:00Z",
             "updatedAt": "2025-01-01T00:00:00Z",
         }

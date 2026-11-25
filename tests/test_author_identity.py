@@ -50,6 +50,8 @@ def _graphql_node(login: str, typename: str) -> dict[str, Any]:
         "title": "t",
         "url": "https://github.com/acme/widget/pull/7",
         "author": {"__typename": typename, "login": login},
+        "files": {"totalCount": 0, "nodes": []},
+        "reviews": {"totalCount": 0, "nodes": []},
     }
 
 
@@ -127,8 +129,14 @@ class TestStatusStatistics:
     async def test_open_and_merged_counts_use_account_type(self) -> None:
         svc = GitHubService(token="test_token")
         open_nodes = [
-            {"author": {"__typename": "Bot", "login": "dependabot"}},
-            {"author": {"__typename": "User", "login": "renovate"}},
+            {
+                "author": {"__typename": "Bot", "login": "dependabot"},
+                "files": {"totalCount": 0, "nodes": []},
+            },
+            {
+                "author": {"__typename": "User", "login": "renovate"},
+                "files": {"totalCount": 0, "nodes": []},
+            },
         ]
         merged = [
             {"user": {"login": "pre-commit-ci[bot]", "type": "Bot", "id": 66853113}},

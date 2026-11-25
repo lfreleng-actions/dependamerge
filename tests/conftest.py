@@ -454,3 +454,35 @@ def make_github_async_mock() -> AsyncMock:
     client.__aenter__ = AsyncMock(return_value=client)
     client.__aexit__ = AsyncMock(return_value=None)
     return client
+
+
+# What each selected nested list of ``REPO_OPEN_PRS_PAGE`` holds when
+# empty, keyed by the query's ``@include`` switch.
+_EMPTY_SELECTED_LISTS: dict[str, tuple[str, dict[str, Any]]] = {
+    "withFiles": ("files", {"totalCount": 0, "nodes": []}),
+    "withReviews": ("reviews", {"totalCount": 0, "nodes": []}),
+    "withComments": ("comments", {"totalCount": 0, "nodes": []}),
+    "withChecks": ("commits", {"nodes": []}),
+}
+
+
+def with_selected_lists(
+    response: dict[str, Any], variables: dict[str, Any]
+) -> dict[str, Any]:
+    """Shape a fake open pull request page as GitHub would for ``variables``.
+
+    A node gains an empty connection for each list the request selects
+    and the node does not carry, and loses each list it did not select,
+    as the query's ``@include`` switches make GitHub answer.
+    """
+    data = response.get("data", response)
+    repository = (data or {}).get("repository") or {}
+    for node in (repository.get("pullRequests") or {}).get("nodes") or []:
+        if not isinstance(node, dict):
+            continue
+        for switch, (key, empty) in _EMPTY_SELECTED_LISTS.items():
+            if variables.get(switch):
+                node.setdefault(key, dict(empty))
+            else:
+                node.pop(key, None)
+    return response

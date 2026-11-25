@@ -13,6 +13,7 @@ from typing import Any
 from ..bot_identity import is_dependabot
 from ..models import PullRequestInfo
 from ._base import _MergeManagerBase
+from ._head_pin import stop_after_head_move
 from ._types import RecreateCause, RecreateResult
 
 
@@ -98,6 +99,7 @@ class _DependabotRecreateMixin(_MergeManagerBase):
 
         if not await self._post_recreate_comment(repo_owner, repo_name, pr_info):
             return RecreateResult.none()
+        stop_after_head_move(self, pr_info, "recreate")
 
         # Poll for the old PR to close and a replacement to appear.
         return await self._await_dependabot_recreate(repo_owner, repo_name, pr_info)

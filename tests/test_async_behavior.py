@@ -429,12 +429,12 @@ class TestGitHubClientAsyncIntegration:
         mock_async_class.return_value.__aenter__ = AsyncMock(return_value=mock_async)
         mock_async_class.return_value.__aexit__ = AsyncMock(return_value=None)
 
-        mock_async.merge_pull_request.side_effect = Exception("Async error")
+        mock_async.update_branch.side_effect = Exception("Async error")
 
         client = GitHubClient(token="test_token")
 
         # Should handle async exception gracefully and return False
-        result = client.merge_pull_request("owner", "repo", 42)
+        result = client.fix_out_of_date_pr("owner", "repo", 42)
         assert result is False
 
     @patch("dependamerge.github_service.GitHubService")

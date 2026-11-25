@@ -15,6 +15,7 @@ import re
 
 from ..models import PullRequestInfo
 from ._base import _MergeManagerBase
+from ._head_pin import HEAD_CHANGED_DURING_MERGE, says_head_moved
 from ._types import _github_error_detail
 
 #: The HTTP status in an httpx error message, e.g. ``Client error '405
@@ -135,6 +136,10 @@ class _FailureSummaryFromExceptionMixin(_MergeManagerBase):
         """
         error_msg = str(last_exception)
         self.log.debug(f"Last exception for {pr_key}: {error_msg[:200]}")
+        # The merge named a commit and GitHub found another at the head,
+        # every retry included.
+        if says_head_moved(error_msg):
+            return HEAD_CHANGED_DURING_MERGE, True
         # The merge layer (github_async.merge_pull_request) embeds
         # GitHub's own explanation after a "GitHub: " marker — the
         # ruleset violation, "Required workflows ... are not

@@ -86,6 +86,7 @@ from ._constants import (
 from ._dependabot_recreate import _DependabotRecreateMixin
 from ._failure import _FailureReportingMixin
 from ._gerrit_submit import _GerritSubmitMixin
+from ._head_pin import ConfirmedHead, head_key
 from ._lifecycle import _LifecycleMixin
 from ._mergeability import _MergeabilityMixin
 from ._mergeability_refresh import _MergeabilityRefreshMixin
@@ -96,6 +97,7 @@ from ._outcomes import _OutcomeTrackingMixin
 from ._pr_state import _PullRequestStateMixin
 from ._precommit_ci import _PrecommitCiMixin
 from ._prediction import _PredictionMixin
+from ._preview import _PreviewSimulationMixin
 from ._recreated_pr import _RecreatedPullRequestMixin
 from ._recreated_pr_poll import _RecreatedPollMixin
 from ._required_workflows import _RequiredWorkflowWaitMixin
@@ -127,6 +129,7 @@ class AsyncMergeManager(
     _GerritSubmitMixin,
     _SinglePullRequestMixin,
     _NotMergeableMixin,
+    _PreviewSimulationMixin,
     _MergeabilityMixin,
     _AutoMergeEnableMixin,
     _ApprovalMixin,
@@ -164,6 +167,7 @@ __all__ = [
     "Any",
     "AsyncMergeManager",
     "ComparisonResult",
+    "ConfirmedHead",
     "Console",
     "CopilotCommentHandler",
     "DEFAULT_MERGE_RECHECK_INTERVAL",
@@ -216,6 +220,7 @@ __all__ = [
     "failing_check_names",
     "fetch_gitreview_from_github",
     "fnmatch",
+    "head_key",
     "holding_slot",
     "is_automation_author",
     "is_dependabot",

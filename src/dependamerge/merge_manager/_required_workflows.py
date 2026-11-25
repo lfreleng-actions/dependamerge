@@ -13,6 +13,14 @@ from ..github_async import PermissionError as GitHubPermissionError
 from ..merge_signals import DraftPullRequestError, PullRequestStopSignal
 from ..models import PullRequestInfo
 from ._base import _MergeManagerBase
+from ._head_pin import (
+    check_payload_head,
+    confirmed_head,
+    merge_head,
+    refresh_head,
+    says_head_moved,
+    stop_after_refused_head,
+)
 from ._write_guards import is_draft_now
 
 
@@ -67,28 +75,7 @@ class _RequiredWorkflowWaitMixin(_MergeManagerBase):
             level="info",
         )
 
-        # Refresh so the wait loop starts from live state rather than
-        # the (possibly stale-``clean``) snapshot that let the doomed
-        # merge dispatch in the first place.
-        try:
-            refreshed = await self._github_client.get(
-                f"/repos/{owner}/{repo}/pulls/{pr_info.number}"
-            )
-            if isinstance(refreshed, dict):
-                if refreshed.get("mergeable") is not None:
-                    pr_info.mergeable = refreshed.get("mergeable")
-                refreshed_state = refreshed.get("mergeable_state")
-                if refreshed_state not in (None, "", "unknown"):
-                    pr_info.mergeable_state = refreshed_state
-                refreshed_head = (refreshed.get("head") or {}).get("sha")
-                if refreshed_head:
-                    pr_info.head_sha = refreshed_head
-        except Exception as exc:
-            self.log.debug(
-                "Failed to refresh %s before required-workflows wait: %s",
-                pr_key,
-                exc,
-            )
+        await self._refresh_before_required_workflows(pr_info, owner, repo, pr_key)
 
         # Only now, against the *live* head SHA, ask whether waiting can
         # help at all.  Checking before the refresh above would test a
@@ -114,6 +101,66 @@ class _RequiredWorkflowWaitMixin(_MergeManagerBase):
         # wait out the whole timeout on a workflow that will never run.
         judged_head = pr_info.head_sha if last_error else None
 
+        return await self._retry_until_workflows_finish(
+            pr_info, owner, repo, merge_method, deadline, judged_head
+        )
+
+    async def _refresh_before_required_workflows(
+        self, pr_info: PullRequestInfo, owner: str, repo: str, pr_key: str
+    ) -> None:
+        """Refresh the snapshot so the wait starts from live state.
+
+        The (possibly stale-``clean``) snapshot is what let the doomed
+        merge dispatch in the first place.  A failed read is logged and
+        leaves the snapshot as it was.
+
+        Raises:
+            ConfirmedHeadSignal: When the read shows a confirmed PR at
+                another head.
+        """
+        if self._github_client is None:
+            return
+        try:
+            refreshed = await self._github_client.get(
+                f"/repos/{owner}/{repo}/pulls/{pr_info.number}"
+            )
+            if isinstance(refreshed, dict):
+                check_payload_head(self, pr_info, refreshed)
+                if refreshed.get("mergeable") is not None:
+                    pr_info.mergeable = refreshed.get("mergeable")
+                refreshed_state = refreshed.get("mergeable_state")
+                if refreshed_state not in (None, "", "unknown"):
+                    pr_info.mergeable_state = refreshed_state
+                refreshed_head = (refreshed.get("head") or {}).get("sha")
+                if refreshed_head:
+                    pr_info.head_sha = refreshed_head
+        except PullRequestStopSignal:
+            raise
+        except Exception as exc:
+            self.log.debug(
+                "Failed to refresh %s before required-workflows wait: %s",
+                pr_key,
+                exc,
+            )
+
+    async def _retry_until_workflows_finish(
+        self,
+        pr_info: PullRequestInfo,
+        owner: str,
+        repo: str,
+        merge_method: str,
+        deadline: float,
+        judged_head: str | None,
+    ) -> bool:
+        """Alternate waiting and one merge call until the deadline.
+
+        ``judged_head`` is the head the undispatched-workflow question
+        has already been put for, or ``None`` when it has not been.
+        Returns True once a retry merged the PR or it merged during a
+        wait; False otherwise.
+        """
+        pr_key = f"{owner}/{repo}#{pr_info.number}"
+        loop = asyncio.get_running_loop()
         self._track_pr_state(pr_info, "waiting")
         try:
             while True:
@@ -161,8 +208,9 @@ class _RequiredWorkflowWaitMixin(_MergeManagerBase):
                     merged = False
                     if pr_info.head_sha != judged_head:
                         # A head we have not judged --- either the
-                        # refresh above found a force-push and skipped
-                        # the question, or one landed during the wait.
+                        # refresh before the wait found a force-push and
+                        # skipped the question, or one landed during the
+                        # wait.
                         # This rejection is evidence for the commit we
                         # are actually on, so ask now.
                         judged_head = pr_info.head_sha
@@ -179,6 +227,23 @@ class _RequiredWorkflowWaitMixin(_MergeManagerBase):
         finally:
             self._track_pr_state(pr_info, None)
 
+    async def _refresh_after_head_moved(
+        self, pr_info: PullRequestInfo, owner: str, repo: str
+    ) -> None:
+        """Refresh the head after a merge named one that moved.
+
+        A PR nobody confirmed then waits again and retries at the new
+        head within the same deadline.  A confirmed PR does not.
+
+        Raises:
+            ConfirmedHeadSignal: For a confirmed PR, even when the read
+                fails or carries no head.
+        """
+        live = await refresh_head(self, pr_info, owner, repo)
+        confirmed = confirmed_head(self, pr_info)
+        if confirmed is not None:
+            stop_after_refused_head(confirmed, live)
+
     async def _dispatch_after_required_workflows(
         self,
         pr_info: PullRequestInfo,
@@ -187,7 +252,7 @@ class _RequiredWorkflowWaitMixin(_MergeManagerBase):
         pr_key: str,
         merge_method: str,
     ) -> bool | None:
-        """One merge call under the dispatch lock; ``None`` when now dirty.
+        """One merge call under the dispatch lock; ``None`` to stop waiting.
 
         The wait can finish ``clean`` and a sibling can then merge while
         the lock is acquired, so live state is re-read before dispatching
@@ -196,8 +261,13 @@ class _RequiredWorkflowWaitMixin(_MergeManagerBase):
         conflict recovery on the snapshot rather than issuing a doomed
         merge.  A draft is skipped even when dirty, as on that path.
 
+        A merge refused because the head moved is not a workflow
+        rejection: it returns ``False`` to wait again at the new head.
+
         Raises:
             DraftPullRequestError: When the PR has become a draft.
+            ConfirmedHeadSignal: When GitHub refuses a confirmed PR's
+                commit, or its snapshot head has moved.
         """
         if self._github_client is None:
             return None
@@ -212,9 +282,19 @@ class _RequiredWorkflowWaitMixin(_MergeManagerBase):
                 raise DraftPullRequestError(pr_key)
             if dirty:
                 return None
-            merged = await self._github_client.merge_pull_request(
-                owner, repo, pr_info.number, merge_method
-            )
+            sha = await merge_head(self, pr_info, owner, repo)
+            try:
+                merged = await self._github_client.merge_pull_request(
+                    owner, repo, pr_info.number, merge_method, sha=sha
+                )
+            except Exception as exc:
+                if not says_head_moved(str(exc)):
+                    raise
+                self._last_merge_exception[pr_key] = exc
+                self._last_merge_exception_head[pr_key] = sha
+                self._last_merge_was_answered[pr_key] = False
+                await self._refresh_after_head_moved(pr_info, owner, repo)
+                return False
             # The API answered, so this attempt supersedes any exception
             # stored before it.  Maintained here as well as in the retry
             # loop because this path dispatches its own single merge call

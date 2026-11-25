@@ -13,7 +13,7 @@ snapshot may be stale.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from ..bot_identity import is_automation_author
 from ..bot_policy import BotPolicy
@@ -23,17 +23,21 @@ from ..models import PullRequestInfo
 if TYPE_CHECKING:
     from ._base import _MergeManagerBase
 
-__all__ = ["draft_state_now", "is_draft_now", "refuse_out_of_scope_approval"]
+__all__ = [
+    "draft_from_state",
+    "draft_state_now",
+    "is_draft_now",
+    "pr_state_now",
+    "refuse_out_of_scope_approval",
+]
 
 
-async def draft_state_now(
+async def pr_state_now(
     manager: _MergeManagerBase, owner: str, repo: str, number: int
-) -> bool | None:
-    """The PR's live draft flag, or ``None`` when the read fails.
+) -> dict[str, Any] | None:
+    """The PR's live state payload, or ``None`` when the read fails.
 
-    A read through the manager's batched state poller.  Best effort: the
-    caller keeps its snapshot on a failed read, and GitHub still refuses
-    to merge a draft.
+    A read through the manager's batched state poller.
     """
     try:
         data = await manager._fetch_pr_state(owner, repo, number)
@@ -42,8 +46,24 @@ async def draft_state_now(
             "Draft check failed for %s/%s#%s: %s", owner, repo, number, exc
         )
         return None
-    draft = data.get("draft") if isinstance(data, dict) else None
+    return data if isinstance(data, dict) else None
+
+
+def draft_from_state(data: dict[str, Any] | None) -> bool | None:
+    """The draft flag in a live state payload, or ``None`` when absent."""
+    draft = data.get("draft") if data is not None else None
     return draft if isinstance(draft, bool) else None
+
+
+async def draft_state_now(
+    manager: _MergeManagerBase, owner: str, repo: str, number: int
+) -> bool | None:
+    """The PR's live draft flag, or ``None`` when the read fails.
+
+    Best effort: the caller keeps its snapshot on a failed read, and
+    GitHub still refuses to merge a draft.
+    """
+    return draft_from_state(await pr_state_now(manager, owner, repo, number))
 
 
 async def is_draft_now(

@@ -274,7 +274,8 @@ or user account in one command.
 - **Human PR Safety**: The run excludes human-authored PRs by default;
   `--include-human-prs` brings them into scope, and `--override` confirms
   the ones the run lists. Without the override the run prints its
-  value and exits `9`, having merged nothing
+  value and exits `9`, having merged nothing. A confirmed PR merges at
+  the commit the run listed; see [Commit Pinning](#commit-pinning)
 
 > **Note**: Owner-wide merging works against `github.com` and against
 > any GitHub Enterprise Server host you declare. See
@@ -1270,7 +1271,8 @@ Merging a major bump is a deliberate act, so the run gates it:
   itself a major bump, naming it makes the choice: the run warns
   and asks for no second value. Before merging, the run reads each
   confirmed bump's head again and leaves out, recorded as skipped, any
-  that moved since the run listed it.
+  that moved since the run listed it, and merges the rest at the
+  commit confirmed; see [Commit Pinning](#commit-pinning).
 - A dry run lists them and says what a real run would do.
 - `--allow-major` (the action's `allow_major` input) turns the gate off
   in every mode.
@@ -1288,6 +1290,31 @@ A merged or auto-merge pending major bump appears:
 - in the step summary, as a `⚠️ Major version bumps` table;
 - in the Slack digest's count line; and
 - in the action's `major_bumps` output.
+
+### Commit Pinning
+
+Every merge, approval and auto-merge request names the commit it means,
+so GitHub refuses it when the pull request's head has moved since:
+
+1. **A pull request a person confirmed merges at the commit they
+   confirmed, and at no other.** A confirmed pull request is a major
+   bump the interactive value included or a single pull request run
+   named as its source, or a human-authored pull request `--override`
+   brought into the run. The run approves and merges it at that commit
+   and never arms auto-merge for it. When its head moves, or the run
+   itself asks for a rebase or recreate, the run leaves it for the next
+   run, recorded as skipped with a reason that names the old and new
+   commits or the request it made. The run also skips, before any
+   approval, one that already has auto-merge enabled, since GitHub
+   could merge a later commit; disable auto-merge and re-run. A skipped
+   pull request leaves the exit code alone.
+2. **Every other pull request merges at the commit the run last
+   evaluated, and at no other.** When GitHub refuses because the head
+   moved, the run reads the head again and retries at it, within the
+   usual retry bound; one that still does not merge fails with `head
+   changed during the merge; re-run`. The run arms auto-merge at the
+   evaluated head; GitHub checks that head when auto-merge arms, and
+   the repository's own rules govern what it merges later.
 
 ### Dry Run Mode
 

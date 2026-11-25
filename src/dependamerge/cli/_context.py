@@ -19,7 +19,11 @@ import dependamerge.cli as _pkg
 
 from ..bot_policy import BotPolicy
 from ..bot_policy_files import PolicyFiles
-from ..merge_manager import DEFAULT_REBASE_COOLDOWN_HOURS, MergeResult
+from ..merge_manager import (
+    DEFAULT_REBASE_COOLDOWN_HOURS,
+    ConfirmedHead,
+    MergeResult,
+)
 from ..models import ComparisonResult, PullRequestInfo
 from ..progress_tracker import MergeProgressTracker
 from ..repo_selection import RepoSelection
@@ -84,10 +88,11 @@ class _MergeContext:
     # bumps an unattended run holds back), recorded as skipped so the
     # results document reports them.
     set_aside_results: list[MergeResult] = field(default_factory=list)
-    # The head commit of each gated PR an interactive run confirmed,
-    # keyed by lowercased ``owner/repo`` and number, so the real pass can
-    # leave out any that moved since.
-    confirmed_major_heads: dict[tuple[str, int], str] = field(default_factory=dict)
+    # The head commit of each PR a person confirmed (a gated major bump,
+    # or a human PR under --override), keyed by lowercased ``owner/repo``
+    # and number.  The real pass approves and merges each only at that
+    # commit, and leaves out a gated one that moved before it starts.
+    confirmed_heads: dict[tuple[str, int], ConfirmedHead] = field(default_factory=dict)
     # The repository and owner bot policy files the run has read.
     policy_files: PolicyFiles = field(default_factory=PolicyFiles)
     # The kinds of unreadable variable the run has warned about.

@@ -16,6 +16,7 @@ from ..github_async import PermissionError as GitHubPermissionError
 from ..merge_signals import PullRequestStopSignal
 from ..models import PullRequestInfo
 from ._base import _MergeManagerBase
+from ._head_pin import confirmed_head, merge_head, record_live_head
 
 
 class _AutoMergeEnableMixin(_MergeManagerBase):
@@ -150,6 +151,14 @@ class _AutoMergeEnableMixin(_MergeManagerBase):
           polling/merge.
         - The PR has no ``node_id`` or there is no GitHub client:
           return ``False`` without making any API calls.
+        - The PR was confirmed at a commit by a person: return
+          ``False`` without making any API calls.  Auto-merge would
+          merge whatever head GitHub sees when checks pass, so a
+          confirmed PR is only ever merged directly, at its commit.
+
+        The mutation names the head it arms auto-merge for, so GitHub
+        refuses it when the head has moved; the snapshot then takes the
+        head read by the fallback below.
 
         Args:
             pr_info: Pull request information (must have ``node_id``).
@@ -162,6 +171,11 @@ class _AutoMergeEnableMixin(_MergeManagerBase):
             it). False if auto-merge is unavailable.
         """
         if not self._github_client:
+            return False
+
+        if confirmed_head(self, pr_info) is not None:
+            # One already armed stopped the PR before this
+            # (``check_confirmed_pr``).
             return False
 
         if not pr_info.node_id:
@@ -182,8 +196,10 @@ class _AutoMergeEnableMixin(_MergeManagerBase):
         cache_key = f"{owner}/{repo}"
         merge_method = self._pr_merge_methods.get(cache_key, self.default_merge_method)
 
+        expected_head = await merge_head(self, pr_info, owner, repo)
+        already_armed = False
         enabled = await self._github_client.enable_auto_merge(
-            pr_info.node_id, merge_method
+            pr_info.node_id, merge_method, expected_head_oid=expected_head
         )
         if not enabled:
             # The GraphQL mutation reports failure when auto-merge
@@ -205,11 +221,19 @@ class _AutoMergeEnableMixin(_MergeManagerBase):
                     exc,
                 )
                 pr_payload = None
-
-            if (
+            live_head = record_live_head(pr_info, pr_payload)
+            already_armed = (
                 isinstance(pr_payload, dict)
                 and pr_payload.get("auto_merge") is not None
-            ):
+            )
+            if not already_armed and live_head and live_head != expected_head:
+                # Refused for naming a head that has since moved, as
+                # after this run's own rebase: once more at the new one.
+                enabled = await self._github_client.enable_auto_merge(
+                    pr_info.node_id, merge_method, expected_head_oid=live_head
+                )
+        if not enabled:
+            if already_armed:
                 self._auto_merge_enabled.add(pr_key)
                 self.log.debug(
                     "Auto-merge already active for %s; treating "
@@ -264,6 +288,9 @@ class _AutoMergeEnableMixin(_MergeManagerBase):
         we approve the rebased head rather than a soon-to-be-dismissed
         pre-rebase commit).
         """
+        if confirmed_head(self, pr_info) is not None:
+            # Never armed for a confirmed PR, so nothing to approve for.
+            return False
         if not self.preview_mode:
             try:
                 # No propagation delay here: we are arming auto-merge,

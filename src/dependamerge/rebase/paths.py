@@ -167,6 +167,9 @@ async def _run_dependabot_macro_path(
     )
     try:
         requested = await ctx.request_dependabot_rebase(pr_info, owner, repo)
+    except PullRequestStopSignal:
+        # Requested for a confirmed PR: it stops here, unmerged.
+        raise
     except Exception as exc:
         ctx.log.debug(
             "Dependabot rebase request raised for %s: %s",

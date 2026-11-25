@@ -15,10 +15,15 @@ from __future__ import annotations
 
 # GraphQL mutation to enable auto-merge on a pull request
 ENABLE_AUTO_MERGE = """
-mutation EnableAutoMerge($pullRequestId: ID!, $mergeMethod: PullRequestMergeMethod) {
+mutation EnableAutoMerge(
+  $pullRequestId: ID!
+  $mergeMethod: PullRequestMergeMethod
+  $expectedHeadOid: GitObjectID!
+) {
   enablePullRequestAutoMerge(input: {
     pullRequestId: $pullRequestId
     mergeMethod: $mergeMethod
+    expectedHeadOid: $expectedHeadOid
   }) {
     pullRequest {
       autoMergeRequest {

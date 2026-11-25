@@ -221,6 +221,8 @@ def _run_parallel_merge(
             max_wait=ctx.max_wait if stripe else None,
             preflight_repository=ctx.preflight_repository,
             bot_policy=ctx.bot_policy,
+            # The preview runs before anything is confirmed.
+            confirmed_heads=None if preview else ctx.confirmed_heads,
         ) as merge_manager:
             if not preview:
                 prefix = "\n" if leading_blank else ""

@@ -261,7 +261,7 @@ class TestClientWiring:
         c.post = AsyncMock(side_effect=[throttled, {}])  # type: ignore[method-assign]
         c._has_own_approval = AsyncMock(return_value=False)  # type: ignore[method-assign]
 
-        await c.approve_pull_request("o", "r", 1, "lgtm")
+        await c.approve_pull_request("o", "r", 1, "lgtm", commit_id="abc123")
 
         c.content_limiter.throttled.assert_called_once_with(None)
         await c.aclose()

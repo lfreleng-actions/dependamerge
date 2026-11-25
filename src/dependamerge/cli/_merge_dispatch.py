@@ -47,6 +47,7 @@ from ..url_parser import (
 from ._app import console
 from ._context import _MergeContext
 from ._gerrit_merge import _handle_gerrit_merge
+from ._human_gate import _given_override, _record_confirmed_human_heads
 from ._major_gate import (
     _confirm_major_bumps,
     _set_aside_major_bumps,
@@ -297,6 +298,14 @@ def _run_single_pr_merge(ctx: _MergeContext) -> None:
         return
     if defer_override:
         _validate_automation_author(ctx)
+    if (
+        _given_override(ctx.override) is not None
+        and ctx.github_client is not None
+        and not ctx.github_client.is_automation_author(ctx.source_pr.author)
+    ):
+        # The override confirmed a person's source and its similar PRs
+        # as the scan found them: each merges only at that head.
+        _record_confirmed_human_heads(ctx, [pr for pr, _ in all_prs_to_merge])
     # For the real merge (``--no-confirm``) the scan has already
     # stopped the progress tracker; stand up a fresh one so the
     # background wait-status ticker has a live display to update

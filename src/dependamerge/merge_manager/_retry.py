@@ -13,6 +13,13 @@ from enum import Enum
 from ..github_async import PermissionError as GitHubPermissionError
 from ..merge_signals import PullRequestStopSignal
 from ..models import PullRequestInfo
+from ._head_pin import (
+    confirmed_head,
+    merge_head,
+    refresh_head,
+    says_head_moved,
+    stop_after_refused_head,
+)
 from ._stale_head import _says_head_is_stale, _StaleHeadRecoveryMixin
 from ._types import _merge_already_in_progress
 
@@ -122,12 +129,15 @@ class _MergeRetryMixin(_StaleHeadRecoveryMixin):
         cache_key = f"{owner}/{repo}"
         merge_method = self._pr_merge_methods.get(cache_key, self.default_merge_method)
 
+        sha = await merge_head(self, pr_info, owner, repo)
+
         # Attempt the merge
         self.log.debug(
-            f"Attempting merge for {owner}/{repo}#{pr_info.number} with method={merge_method}"
+            f"Attempting merge for {owner}/{repo}#{pr_info.number} "
+            f"with method={merge_method} at {sha[:7]}"
         )
         merged = await self._github_client.merge_pull_request(
-            owner, repo, pr_info.number, merge_method
+            owner, repo, pr_info.number, merge_method, sha=sha
         )
         self.log.debug(
             f"Merge API returned {merged} for {owner}/{repo}#{pr_info.number}"
@@ -181,6 +191,9 @@ class _MergeRetryMixin(_StaleHeadRecoveryMixin):
         if _merge_already_in_progress(error_msg):
             return await self._watch_in_progress_merge(pr_info, owner, repo, pr_key)
 
+        if says_head_moved(error_msg):
+            return await self._retry_after_head_moved(pr_info, owner, repo, attempt)
+
         # Enhanced error handling with specific status code checks
         if "405" in error_msg and "Method Not Allowed" in error_msg:
             decision = await self._decide_after_405(
@@ -201,6 +214,34 @@ class _MergeRetryMixin(_StaleHeadRecoveryMixin):
         return await self._backoff_before_retry(
             pr_info, owner, repo, error_msg, attempt
         )
+
+    async def _retry_after_head_moved(
+        self, pr_info: PullRequestInfo, owner: str, repo: str, attempt: int
+    ) -> _RetryDecision:
+        """Decide after GitHub refused the merge for naming an old head.
+
+        The snapshot is refreshed from one live read.  A PR nobody
+        confirmed retries at the new head within the loop's bound; a
+        confirmed PR stops, because nobody confirmed the new head.
+
+        Raises:
+            ConfirmedHeadSignal: For a confirmed PR, even when the read
+                fails or carries no head.
+        """
+        live = await refresh_head(self, pr_info, owner, repo)
+        confirmed = confirmed_head(self, pr_info)
+        if confirmed is not None:
+            stop_after_refused_head(confirmed, live)
+        if attempt < self.max_retries:
+            self.log.info(
+                "Head of %s/%s#%s moved during the merge; retrying at %s",
+                owner,
+                repo,
+                pr_info.number,
+                (pr_info.head_sha or "unknown")[:7],
+            )
+            return _RetryDecision.RETRY
+        return _RetryDecision.STOP
 
     async def _watch_in_progress_merge(
         self, pr_info: PullRequestInfo, owner: str, repo: str, pr_key: str

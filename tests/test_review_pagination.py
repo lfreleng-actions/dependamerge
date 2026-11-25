@@ -424,7 +424,7 @@ class TestApprovalPastTheFirstPage:
             api.post = AsyncMock()  # type: ignore[method-assign]
             mgr._github_client = api
             with pytest.raises(ReviewsUnreadableError):
-                await mgr._approve_pr(_OWNER, _REPO, _NUMBER)
+                await mgr._approve_pr(_OWNER, _REPO, _pr_info([], complete=True))
         api.post.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -437,7 +437,7 @@ class TestApprovalPastTheFirstPage:
         """A 500 may have created the review among those not read."""
         monkeypatch.setattr(asyncio, "sleep", AsyncMock())
         login = "dependamerge-bot" if own_on_page_one else "other-maintainer"
-        reviews = [_review(1, "APPROVED", login)]
+        reviews = [{**_review(1, "APPROVED", login), "commit_id": "abc123"}]
         reviews += [_review(i) for i in range(2, 151)]
         fake = PagedListings(reviews, fail_on_page=2)
         request = httpx.Request("POST", "https://api.github.com/x")
@@ -452,9 +452,13 @@ class TestApprovalPastTheFirstPage:
             api.post = AsyncMock(side_effect=[error, {}])  # type: ignore[method-assign]
             if stops:
                 with pytest.raises(ReviewsUnreadableError):
-                    await api.approve_pull_request(_OWNER, _REPO, _NUMBER, "ok")
+                    await api.approve_pull_request(
+                        _OWNER, _REPO, _NUMBER, "ok", commit_id="abc123"
+                    )
             else:
-                await api.approve_pull_request(_OWNER, _REPO, _NUMBER, "ok")
+                await api.approve_pull_request(
+                    _OWNER, _REPO, _NUMBER, "ok", commit_id="abc123"
+                )
         api.post.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -478,7 +482,9 @@ class TestApprovalPastTheFirstPage:
             api.get_authenticated_user_login = lookup  # type: ignore[method-assign]
             api.post = AsyncMock(side_effect=[error, {}])  # type: ignore[method-assign]
             with pytest.raises(ReviewsUnreadableError):
-                await api.approve_pull_request(_OWNER, _REPO, _NUMBER, "ok")
+                await api.approve_pull_request(
+                    _OWNER, _REPO, _NUMBER, "ok", commit_id="abc123"
+                )
         api.post.assert_awaited_once()
 
     @pytest.mark.asyncio

@@ -49,6 +49,7 @@ from typing import Any
 
 from ..merge_signals import DraftPullRequestError
 from ._base import _MergeManagerBase
+from ._head_pin import check_payload_head
 from ._single_pr_context import _MergeFlow
 from ._types import MergeResult, MergeStatus
 
@@ -239,9 +240,16 @@ class _SinglePrWaitMixin(_MergeManagerBase):
             DraftPullRequestError: When the open PR is now a draft, as the
                 wait's own refresh does.  Step 6 could otherwise defer it
                 to auto-merge as pending without reading it again.
+            ConfirmedHeadSignal: When a confirmed PR's head is no longer
+                the confirmed commit, closed or not, or a closed reading
+                carries no head.
         """
         pr_info = flow.pr_info
         result = flow.result
+        updated_head = (late_updated.get("head") or {}).get("sha")
+        if updated_head:
+            pr_info.head_sha = updated_head
+        check_payload_head(self, pr_info, late_updated)
         if late_updated.get("state") == "closed":
             pr_info.state = "closed"
             if late_updated.get("merged", False):
@@ -275,7 +283,4 @@ class _SinglePrWaitMixin(_MergeManagerBase):
         late_state = late_updated.get("mergeable_state")
         if late_state not in (None, "", "unknown"):
             pr_info.mergeable_state = late_state
-        updated_head = (late_updated.get("head") or {}).get("sha")
-        if updated_head:
-            pr_info.head_sha = updated_head
         return None

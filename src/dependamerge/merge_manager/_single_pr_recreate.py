@@ -27,6 +27,12 @@ from ..bot_identity import is_dependabot
 from ..merge_signals import DraftPullRequestError, PullRequestStopSignal
 from ..models import PullRequestInfo
 from ._failure_summary import _FailureSummaryFromExceptionMixin
+from ._head_pin import (
+    HEAD_CHANGED_DURING_MERGE,
+    merge_head,
+    refresh_head,
+    says_head_moved,
+)
 from ._single_pr_context import _MergeFlow
 from ._types import MergeStatus, RecreateCause, RecreateResult
 from ._write_guards import is_draft_now
@@ -108,9 +114,9 @@ class _SinglePrRecreateMixin(_FailureSummaryFromExceptionMixin):
         result.pr_info = recreated_pr
         # We have a fresh PR — approve and merge it
         new_owner, new_repo = recreated_pr.repository_full_name.split("/", 1)
-        await self._approve_pr(new_owner, new_repo, recreated_pr.number)
+        await self._approve_pr(new_owner, new_repo, recreated_pr)
 
-        new_merged, refused = await self._dispatch_recreated_merge(
+        new_merged, refused, head_moved = await self._dispatch_recreated_merge(
             new_owner, new_repo, recreated_pr
         )
 
@@ -141,12 +147,15 @@ class _SinglePrRecreateMixin(_FailureSummaryFromExceptionMixin):
         # and then hide it, which is the more damaging direction.
         result.merge_refused = refused
         result.error = (
-            f"Dependabot recreated PR #{recreated_pr.number} but merge still failed"
+            HEAD_CHANGED_DURING_MERGE
+            if head_moved
+            else f"Dependabot recreated PR #{recreated_pr.number} but merge still failed"
         )
         await self._confirm_failure(recreated_pr, result)
 
-        if result.status is not MergeStatus.FAILED:
-            # Confirmation corrected it (merged, or closed unmerged).
+        if result.status is not MergeStatus.FAILED or head_moved:
+            # Confirmation corrected it (merged, or closed unmerged), or
+            # the head kept moving, which a re-run settles: not BLOCKED.
             return
 
         # Genuinely unmerged: BLOCKED, as for any replacement that will
@@ -166,10 +175,13 @@ class _SinglePrRecreateMixin(_FailureSummaryFromExceptionMixin):
 
     async def _dispatch_recreated_merge(
         self, new_owner: str, new_repo: str, recreated_pr: PullRequestInfo
-    ) -> tuple[bool, bool]:
+    ) -> tuple[bool, bool, bool]:
         """Merge the recreated PR under the per-repo dispatch lock.
 
-        Returns ``(merged, refused)``.  ``refused`` says GitHub declined
+        Returns ``(merged, refused, head_moved)``.  ``head_moved`` says
+        GitHub refused every attempt for naming a head that had moved;
+        each such refusal refreshes the head from one live read and
+        tries again at it, within the merge retry bound.  ``refused`` says GitHub declined
         the merge on the replacement's *state*, which is the only kind
         of failure a later clean reading may withdraw.  A bare boolean
         could not: it reported an uninitialised client, a missing token
@@ -196,38 +208,58 @@ class _SinglePrRecreateMixin(_FailureSummaryFromExceptionMixin):
             DraftPullRequestError: When the replacement is a draft once
                 the lock is held; no merge is sent.
         """
+        attempt = 0
+        while True:
+            try:
+                merged, refused = await self._dispatch_recreated_merge_once(
+                    new_owner, new_repo, recreated_pr
+                )
+                return merged, refused, False
+            except PullRequestStopSignal:
+                raise
+            except Exception as merge_err:
+                if says_head_moved(str(merge_err)) and attempt < self.max_retries:
+                    tried = recreated_pr.head_sha
+                    live = await refresh_head(self, recreated_pr, new_owner, new_repo)
+                    if live and live != tried:
+                        attempt += 1
+                        continue
+                self.log.error(
+                    "Failed to merge recreated PR %s#%s: %s",
+                    recreated_pr.repository_full_name,
+                    recreated_pr.number,
+                    merge_err,
+                )
+                pr_key = f"{recreated_pr.repository_full_name}#{recreated_pr.number}"
+                refused = self._exception_is_a_refusal(pr_key, merge_err, recreated_pr)
+                return False, refused, says_head_moved(str(merge_err))
+
+    async def _dispatch_recreated_merge_once(
+        self, new_owner: str, new_repo: str, recreated_pr: PullRequestInfo
+    ) -> tuple[bool, bool]:
+        """One merge of the recreated PR, raising what the API raised."""
         new_merge_method = self._pr_merge_methods.get(
             f"{new_owner}/{new_repo}", self.default_merge_method
         )
-        try:
-            if self._github_client is None:
-                raise RuntimeError("GitHub client not initialized")
-            # Same per-repo dispatch serialisation as the main merge
-            # path — see ``_get_merge_dispatch_lock``.
-            new_dispatch_lock = await self._get_merge_dispatch_lock(new_owner, new_repo)
-            async with new_dispatch_lock:
-                # Read live, as the main dispatch does: a replacement
-                # marked draft while queued here is skipped, not merged.
-                # The result already names it (``_merge_recreated_pr``).
-                if await is_draft_now(self, recreated_pr, new_owner, new_repo):
-                    raise DraftPullRequestError(
-                        f"{new_owner}/{new_repo}#{recreated_pr.number}"
-                    )
-                new_merged = await self._github_client.merge_pull_request(
-                    new_owner,
-                    new_repo,
-                    recreated_pr.number,
-                    new_merge_method,
+        if self._github_client is None:
+            raise RuntimeError("GitHub client not initialized")
+        # Same per-repo dispatch serialisation as the main merge
+        # path — see ``_get_merge_dispatch_lock``.
+        new_dispatch_lock = await self._get_merge_dispatch_lock(new_owner, new_repo)
+        async with new_dispatch_lock:
+            # Read live, as the main dispatch does: a replacement
+            # marked draft while queued here is skipped, not merged.
+            # The result already names it (``_merge_recreated_pr``).
+            if await is_draft_now(self, recreated_pr, new_owner, new_repo):
+                raise DraftPullRequestError(
+                    f"{new_owner}/{new_repo}#{recreated_pr.number}"
                 )
-        except PullRequestStopSignal:
-            raise
-        except Exception as merge_err:
-            self.log.error(
-                "Failed to merge recreated PR %s#%s: %s",
-                recreated_pr.repository_full_name,
+            sha = await merge_head(self, recreated_pr, new_owner, new_repo)
+            new_merged = await self._github_client.merge_pull_request(
+                new_owner,
+                new_repo,
                 recreated_pr.number,
-                merge_err,
+                new_merge_method,
+                sha=sha,
             )
-            pr_key = f"{recreated_pr.repository_full_name}#{recreated_pr.number}"
-            return False, self._exception_is_a_refusal(pr_key, merge_err, recreated_pr)
         return new_merged, not new_merged

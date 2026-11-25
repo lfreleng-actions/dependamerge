@@ -33,6 +33,7 @@ from __future__ import annotations
 
 from .. import rebase
 from ._base import _MergeManagerBase
+from ._head_pin import stop_after_head_move
 from ._single_pr_context import _MergeFlow
 from ._types import MergeResult, MergeStatus
 
@@ -61,7 +62,17 @@ class _SinglePrRebaseMixin(_MergeManagerBase):
         return False
 
     async def _run_step5_rebase(self, flow: _MergeFlow) -> MergeResult | None:
-        """Rebase the PR, returning a terminal result on failure."""
+        """Rebase the PR, returning a terminal result on failure.
+
+        Raises:
+            ConfirmedHeadSignal: When the rebase moves the head of a PR
+                confirmed at its current commit; it is counted first.
+        """
+
+        def record_rebase() -> None:
+            self._record_rebase()
+            stop_after_head_move(self, flow.pr_info, "rebase")
+
         rebase_ctx = rebase.RebaseContext(
             github_client=self._github_client,
             token=self.token,
@@ -75,7 +86,7 @@ class _SinglePrRebaseMixin(_MergeManagerBase):
             rebased_prs=self._rebased_prs,
             enable_auto_merge=self._enable_auto_merge_with_approval,
             track_pr_state=self._track_pr_state,
-            record_rebase=self._record_rebase,
+            record_rebase=record_rebase,
             request_dependabot_rebase=self._request_dependabot_rebase,
             suppressed_rebases=self._rebase_suppressed,
         )

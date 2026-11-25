@@ -163,7 +163,7 @@ class TestInvalidationOnStateChange:
         assert await c.analyze_block_reason("o", "r", 1, "sha") == (
             "Blocked by branch protection"
         )
-        await c.approve_pull_request("o", "r", 1, "lgtm")
+        await c.approve_pull_request("o", "r", 1, "lgtm", commit_id="abc123")
 
         assert await c.analyze_block_reason("o", "r", 1, "sha") == (
             "Blocked by failing check: X"
@@ -196,7 +196,7 @@ class TestInvalidationOnStateChange:
         assert await c.analyze_block_reason("o", "r", 1, "sha") == (
             "Blocked by branch protection"
         )
-        await c.approve_pull_request("o", "r", 1, "lgtm")
+        await c.approve_pull_request("o", "r", 1, "lgtm", commit_id="abc123")
 
         assert await c.analyze_block_reason("o", "r", 1, "sha") == (
             "Blocked by failing check: X"
@@ -212,7 +212,7 @@ class TestInvalidationOnStateChange:
         c.put = AsyncMock(return_value={"merged": True})  # type: ignore[method-assign]
 
         assert await c.analyze_block_reason("o", "r", 1, "sha") == "Blocked by A"
-        await c.merge_pull_request("o", "r", 1)
+        await c.merge_pull_request("o", "r", 1, sha="abc123")
 
         assert await c.analyze_block_reason("o", "r", 1, "sha") == "Blocked by B"
         await c.aclose()

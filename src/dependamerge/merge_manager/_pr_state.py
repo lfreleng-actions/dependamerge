@@ -17,6 +17,7 @@ from typing import Any
 from ..merge_signals import DraftPullRequestError, PullRequestStopSignal
 from ..models import PullRequestInfo
 from ._base import _MergeManagerBase
+from ._head_pin import check_payload_head, record_live_head
 from ._types import _merged_from_payload
 
 
@@ -34,6 +35,9 @@ class _PullRequestStateMixin(_MergeManagerBase):
         Raises:
             DraftPullRequestError: When the open PR is now a draft; another
                 dispatch would only be refused.
+            ConfirmedHeadSignal: When a confirmed PR's head is no longer
+                the confirmed commit, or a closed reading shows no head,
+                checked before a merged reading can count as success.
         """
         if self._github_client is None:
             raise RuntimeError("GitHub client not initialized")
@@ -42,6 +46,7 @@ class _PullRequestStateMixin(_MergeManagerBase):
                 f"/repos/{owner}/{repo}/pulls/{pr_info.number}"
             )
             if isinstance(current_pr_data, dict):
+                check_payload_head(self, pr_info, current_pr_data)
                 current_state = current_pr_data.get("state")
                 # Shared derivation: prefer the explicit ``merged`` bool,
                 # fall back to ``merged_at``, ``None`` when neither is
@@ -112,6 +117,8 @@ class _PullRequestStateMixin(_MergeManagerBase):
             if self._github_client:
                 refreshed = await self._fetch_pr_state(owner, repo, pr_info.number)
                 if isinstance(refreshed, dict):
+                    check_payload_head(self, pr_info, refreshed)
+                    record_live_head(pr_info, refreshed)
                     pr_info.mergeable = refreshed.get("mergeable")
                     pr_info.mergeable_state = refreshed.get("mergeable_state")
                     if isinstance(refreshed.get("draft"), bool):
@@ -142,6 +149,11 @@ class _PullRequestStateMixin(_MergeManagerBase):
         (including when it closes unmerged, which the caller reports).
 
         The wait is parked, so it holds no concurrency slot.
+
+        Raises:
+            ConfirmedHeadSignal: When a poll shows a confirmed PR at
+                another head, or closed with no head, before a merged
+                reading can count as this run's merge.
         """
         # Resolved through the package at call time rather than bound at
         # import time, so that a test rebinding the constant on
@@ -190,6 +202,7 @@ class _PullRequestStateMixin(_MergeManagerBase):
                         )
                         refreshed = None
                     if isinstance(refreshed, dict):
+                        check_payload_head(self, pr_info, refreshed)
                         merged = _merged_from_payload(refreshed)
                         if merged:
                             self.log.info("Merge completed for %s", pr_key)
@@ -249,6 +262,8 @@ class _PullRequestStateMixin(_MergeManagerBase):
                         f"Refreshed {pr_key}: mergeable={new_mergeable}, "
                         f"mergeable_state={new_state}"
                     )
+                    check_payload_head(self, pr_info, refreshed)
+                    record_live_head(pr_info, refreshed)
                     pr_info.mergeable = new_mergeable
                     pr_info.mergeable_state = new_state
                     if refreshed.get("state") != "closed" and (
@@ -365,12 +380,17 @@ class _PullRequestStateMixin(_MergeManagerBase):
         turns out to be a fresh conflict.
 
         Mutates ``pr_info`` (``mergeable``, ``mergeable_state``,
-        ``head_sha``) only when it confirms a concrete ``dirty``, so the
-        conflict handler and failure summary report accurate state.  The
+        ``head_sha``) when it confirms a concrete ``dirty``, so the
+        conflict handler and failure summary report accurate state, and
+        when the head has moved, so the merge names the live head.  The
         snapshot is otherwise left untouched — in particular a transient
-        ``unknown`` never overwrites a concrete ``clean``, preserving the
-        transient-405-on-``clean`` retry path in
-        :meth:`_merge_pr_with_retry`.
+        ``unknown`` on the same head never overwrites a concrete
+        ``clean``, preserving the transient-405-on-``clean`` retry path
+        in :meth:`_merge_pr_with_retry`.
+
+        Raises:
+            ConfirmedHeadSignal: When an open confirmed PR's live head is
+                no longer the confirmed commit, dirty or not.
         """
         if not self._github_client:
             return False
@@ -397,6 +417,13 @@ class _PullRequestStateMixin(_MergeManagerBase):
         # a conflict.
         if data.get("state") == "closed":
             return False
+        # A confirmed PR at another head stops here, before a conflict
+        # at that head can fail the run or ask for its rebase.
+        check_payload_head(self, pr_info, data)
+        # The merge dispatched next names the head, so a head that moved
+        # since the snapshot is recorded, with the mergeable fields read
+        # beside it; the snapshot's describe the old commit.
+        record_live_head(pr_info, data)
         if data.get("mergeable_state") != "dirty":
             return False
         # Concrete conflict: record it so ``_handle_merge_conflict`` and

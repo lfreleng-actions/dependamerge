@@ -750,7 +750,7 @@ class TestMergeApiBodyCapture:
         )
 
         with pytest.raises(Exception) as excinfo:
-            await api.merge_pull_request("o", "r", 1, "merge")
+            await api.merge_pull_request("o", "r", 1, "merge", sha="abc123")
 
         msg = str(excinfo.value)
         assert "GitHub:" in msg
@@ -769,10 +769,13 @@ class TestMergeApiBodyCapture:
 
         api = GitHubAsync(token="t")
         api.put = AsyncMock(side_effect=_make_405_with_body("transient"))
-        # Re-fetch shows the PR actually merged despite the exception.
-        api.get = AsyncMock(return_value={"state": "closed", "merged": True})
+        # Re-fetch shows the PR actually merged, at the commit named,
+        # despite the exception.
+        api.get = AsyncMock(
+            return_value={"state": "closed", "merged": True, "head": {"sha": "abc123"}}
+        )
 
-        result = await api.merge_pull_request("o", "r", 1, "merge")
+        result = await api.merge_pull_request("o", "r", 1, "merge", sha="abc123")
 
         assert result is True
 
@@ -791,7 +794,7 @@ class TestMergeApiBodyCapture:
         api.get = AsyncMock(side_effect=RuntimeError("re-fetch failed"))
 
         with pytest.raises(Exception) as excinfo:
-            await api.merge_pull_request("o", "r", 1, "merge")
+            await api.merge_pull_request("o", "r", 1, "merge", sha="abc123")
 
         msg = str(excinfo.value)
         assert "GitHub:" in msg
@@ -1000,7 +1003,9 @@ class TestWaitForRequiredWorkflowsAndRetry:
             result = await mgr._wait_for_required_workflows_and_retry(pr, "org", "repo")
 
         assert result is True
-        client.merge_pull_request.assert_awaited_once_with("org", "repo", 39, "merge")
+        client.merge_pull_request.assert_awaited_once_with(
+            "org", "repo", 39, "merge", sha="abc123def456"
+        )
 
     @pytest.mark.asyncio
     async def test_different_rejection_reason_stops_recovery(self):

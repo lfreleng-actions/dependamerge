@@ -6,10 +6,16 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, NamedTuple
 
-from ..check_runs import failing_check_names
+from ..check_runs import (
+    FAILING_CONCLUSIONS,
+    FAILING_STATUS_STATES,
+    failing_check_names,
+    failing_status_names,
+)
 from ..github_graphql.pull_requests import (
+    SCAN_CHECKS_PAGE_SIZE,
     SCAN_COMMENTS_PAGE_SIZE,
     SCAN_FILES_PAGE_SIZE,
     SCAN_REVIEWS_PAGE_SIZE,
@@ -94,17 +100,68 @@ def scan_reviews_complete(pr: dict[str, Any]) -> bool:
     return scan_reviews(pr)[1]
 
 
-def scan_check_contexts(pr: dict[str, Any]) -> list[dict[str, Any]]:
-    """The check runs and status contexts on a PR node's latest commit page.
+class CheckPage(NamedTuple):
+    """The check rollup page of a PR node's latest commit.
 
-    An empty list when the commit carries no rollup.
+    ``failing`` counts the check runs and status contexts in a failing
+    state across the whole rollup, from its per-state counts; ``None``
+    when they are unreadable.  ``complete`` says the page holds every
+    entry, and ``oid`` names the commit.
+    """
+
+    contexts: list[dict[str, Any]]
+    failing: int | None
+    complete: bool
+    oid: str | None
+
+
+def _failing_count(connection: dict[str, Any]) -> int | None:
+    """Rollup entries in a failing state, from the connection's counts."""
+    failing = 0
+    for key, states in (
+        ("checkRunCountsByState", FAILING_CONCLUSIONS),
+        ("statusContextCountsByState", FAILING_STATUS_STATES),
+    ):
+        entries = connection.get(key)
+        if not isinstance(entries, list):
+            return None
+        for entry in entries:
+            state = entry.get("state") if isinstance(entry, dict) else None
+            count = _int_or_none(entry.get("count")) if state else None
+            if not isinstance(state, str) or count is None:
+                return None
+            if state.lower() in states:
+                failing += count
+    return failing
+
+
+def scan_check_page(pr: dict[str, Any]) -> CheckPage:
+    """A PR node's check rollup page, and what its counts say of the rest.
+
+    A commit with no rollup has no checks, and no failing one.
     """
     commits = (_selected(pr, "commits") or {}).get("nodes") or []
-    if not commits:
-        return []
-    commit = (commits[0] or {}).get("commit") or {}
-    rollup = commit.get("statusCheckRollup") or {}
-    return (rollup.get("contexts") or {}).get("nodes") or []
+    commit = ((commits[0] or {}).get("commit") or {}) if commits else {}
+    oid = commit.get("oid") if isinstance(commit.get("oid"), str) else None
+    rollup = commit.get("statusCheckRollup")
+    if not isinstance(rollup, dict):
+        return CheckPage([], 0, True, oid)
+    connection = rollup.get("contexts") or {}
+    nodes = [node for node in connection.get("nodes") or [] if isinstance(node, dict)]
+    runs = _int_or_none(connection.get("checkRunCount"))
+    statuses = _int_or_none(connection.get("statusContextCount"))
+    total = None if runs is None or statuses is None else runs + statuses
+    complete = _page_complete(len(nodes), total, SCAN_CHECKS_PAGE_SIZE)
+    return CheckPage(nodes, _failing_count(connection), complete, oid)
+
+
+def split_check_contexts(
+    contexts: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """A rollup page's check runs and its status contexts, apart."""
+    runs = [ctx for ctx in contexts if ctx.get("__typename") == "CheckRun"]
+    statuses = [ctx for ctx in contexts if ctx.get("__typename") == "StatusContext"]
+    return runs, statuses
 
 
 class _PullRequestExtractMixin(_GitHubServiceBase):
@@ -222,23 +279,5 @@ class _PullRequestExtractMixin(_GitHubServiceBase):
         superseded run.  Only the latest run per name decides the outcome,
         matching GitHub's own merge protection; see ``check_runs``.
         """
-        failing: list[str] = []
-        contexts = scan_check_contexts(pr)
-
-        check_runs: list[dict[str, Any]] = []
-
-        for ctx in contexts:
-            typ = ctx.get("__typename")
-            if typ == "CheckRun":
-                # Collected for deduplication rather than judged here.
-                check_runs.append(ctx)
-            elif typ == "StatusContext":
-                # Commit statuses are already latest-per-context: GitHub
-                # collapses repeated posts to the same context itself.
-                state = (ctx.get("state") or "").upper()
-                if state in ("FAILURE", "ERROR"):
-                    name = ctx.get("context") or ""
-                    if name:
-                        failing.append(name)
-
-        return failing_check_names(check_runs) + failing
+        runs, statuses = split_check_contexts(scan_check_page(pr).contexts)
+        return failing_check_names(runs) + failing_status_names(statuses)

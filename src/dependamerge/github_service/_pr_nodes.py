@@ -16,6 +16,7 @@ from ..models import (
     UnmergeableReason,
 )
 from ._base import _GitHubServiceBase
+from ._failing_checks import read_failing_checks
 from ._helpers import (
     _bool_or_none,
     _clone_url_with_git_suffix,
@@ -90,13 +91,21 @@ class _PullRequestNodeMixin(_GitHubServiceBase):
             )
 
         # Status check rollup
-        failing_checks = self._extract_failing_checks(pr)
-        if failing_checks:
+        failing_checks = await read_failing_checks(self._api, repo_full_name, pr)
+        if failing_checks.names or not failing_checks.complete:
+            details = f"Failing checks: {', '.join(sorted(set(failing_checks.names)))}"
+            description = "Required status checks are failing"
+            if not failing_checks.complete:
+                # The table shows only the description, so the note goes
+                # there as well as in the details.
+                note = " (the check list could not be read in full)"
+                details += note
+                description += note
             reasons.append(
                 UnmergeableReason(
                     type="failing_checks",
-                    description="Required status checks are failing",
-                    details=f"Failing checks: {', '.join(sorted(set(failing_checks)))}",
+                    description=description,
+                    details=details,
                 )
             )
 

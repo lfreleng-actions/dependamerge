@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import Any, NamedTuple
 
+from ..bot_identity import is_copilot
 from ..check_runs import (
     FAILING_CONCLUSIONS,
     FAILING_STATUS_STATES,
@@ -83,6 +84,14 @@ def _scan_list(
 def scan_files(pr: dict[str, Any]) -> tuple[list[dict[str, Any]], bool]:
     """A PR node's changed files, and whether they are all of them."""
     return _scan_list(pr, "files", SCAN_FILES_PAGE_SIZE)
+
+
+def scan_files_total(pr: dict[str, Any]) -> int | None:
+    """How many files a PR node's ``files`` connection says it changes."""
+    connection = _selected(pr, "files")
+    if not isinstance(connection, dict):
+        return None
+    return _int_or_none(connection.get("totalCount"))
 
 
 def scan_comments(pr: dict[str, Any]) -> tuple[list[dict[str, Any]], bool]:
@@ -162,6 +171,23 @@ def split_check_contexts(
     runs = [ctx for ctx in contexts if ctx.get("__typename") == "CheckRun"]
     statuses = [ctx for ctx in contexts if ctx.get("__typename") == "StatusContext"]
     return runs, statuses
+
+
+def find_copilot_comments(comments: list[dict[str, Any]]) -> list[CopilotComment]:
+    """The Copilot comments among page-shaped comment nodes."""
+    result: list[CopilotComment] = []
+    for c in comments:
+        if is_copilot((c.get("author") or {}).get("login")):
+            comment_id = _int_or_none(c.get("id", c.get("databaseId")))
+            result.append(
+                CopilotComment(
+                    id=comment_id or 0,
+                    body=c.get("body") or "",
+                    created_at=c.get("createdAt") or "",
+                    state="open",
+                )
+            )
+    return result
 
 
 class _PullRequestExtractMixin(_GitHubServiceBase):
@@ -255,19 +281,7 @@ class _PullRequestExtractMixin(_GitHubServiceBase):
 
     def _extract_copilot_comments(self, pr: dict[str, Any]) -> list[CopilotComment]:
         comments, _ = scan_comments(pr)
-        result: list[CopilotComment] = []
-        for c in comments:
-            author = ((c.get("author") or {}).get("login") or "").lower()
-            if author in ("github-copilot[bot]", "copilot"):
-                result.append(
-                    CopilotComment(
-                        id=0,  # GraphQL doesn't provide numeric IDs in this selection; not critical for reporting
-                        body=c.get("body") or "",
-                        created_at=c.get("createdAt") or "",
-                        state="open",
-                    )
-                )
-        return result
+        return find_copilot_comments(comments)
 
     @staticmethod
     def _extract_failing_checks(pr: dict[str, Any]) -> list[str]:

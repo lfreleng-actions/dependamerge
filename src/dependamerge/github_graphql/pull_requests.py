@@ -86,6 +86,7 @@ query($owner: String!, $name: String!, $prsCursor: String, $prsPageSize: Int!, $
         comments(first: <comments>, orderBy: { field: UPDATED_AT, direction: DESC }) @include(if: $withComments) {
           totalCount
           nodes {
+            databaseId
             author { login }
             body
             createdAt

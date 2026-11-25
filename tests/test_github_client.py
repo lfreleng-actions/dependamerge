@@ -170,7 +170,7 @@ class TestGitHubClient:
             "owner", "repo", 22
         )
         mock_async.get_paginated.assert_called_once_with(
-            "/repos/owner/repo/pulls/22/files", per_page=100
+            "/repos/owner/repo/pulls/22/files", per_page=100, yield_malformed=True
         )
 
     def test_is_automation_author(self):

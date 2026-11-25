@@ -69,6 +69,8 @@ class PullRequestInfo(BaseModel):
     # reads only the first page sets it False when more exist; a decision
     # that rests on the files reads the full list first.
     files_complete: bool = True
+    # How many files the pull request changes, when the source says.
+    files_total: int | None = None
     repository_full_name: str
     html_url: str
     reviews: list[ReviewInfo] = []  # PR reviews

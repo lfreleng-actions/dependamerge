@@ -22,7 +22,13 @@ from ._helpers import (
     _clone_url_with_git_suffix,
     _str_or_none,
 )
-from ._pr_extract import scan_files, scan_reviews_complete
+from ._list_completion import complete_scan_comments
+from ._pr_extract import (
+    find_copilot_comments,
+    scan_files,
+    scan_files_total,
+    scan_reviews_complete,
+)
 
 
 class _PullRequestNodeMixin(_GitHubServiceBase):
@@ -123,7 +129,9 @@ class _PullRequestNodeMixin(_GitHubServiceBase):
             if not reasons:
                 return None
 
-        copilot_comments = self._extract_copilot_comments(pr)
+        copilot_comments = find_copilot_comments(
+            await complete_scan_comments(self._api, repo_full_name, pr)
+        )
         # File change extraction not required for UnmergeablePR summary here
 
         return UnmergeablePR(
@@ -178,6 +186,7 @@ class _PullRequestNodeMixin(_GitHubServiceBase):
             behind_by=None,  # Not included in GraphQL; could be computed if needed
             files_changed=files,
             files_complete=scan_files(pr)[1],
+            files_total=scan_files_total(pr),
             repository_full_name=repo_full_name,
             html_url=pr.get("url") or "",
             reviews=reviews,

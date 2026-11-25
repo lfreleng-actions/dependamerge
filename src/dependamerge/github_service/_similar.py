@@ -21,6 +21,7 @@ from ..bot_policy import BotPolicy
 from ..models import ComparisonResult, PullRequestInfo
 from ._base import _GitHubServiceBase
 from ._comparison_debug import print_comparison_debug
+from ._list_completion import complete_pr_files
 from ._repositories import _listed_without_open_prs
 from ._scan_lists import MERGE_SCAN_LISTS
 
@@ -136,6 +137,9 @@ class _SimilarPullRequestsMixin(_GitHubServiceBase):
         # search would, since one refused read stops every later one.
         # ``window`` caps the repositories listed but not yet judged, so a
         # slow early one cannot leave the whole owner's PRs in ``fetched``.
+        # The source's files are scored against every candidate, so a
+        # short list is read in full once, before the search starts.
+        source_pr = await complete_pr_files(self._api, source_pr)
         worker_count = max(1, self._max_repo_tasks)
         queue: asyncio.Queue[tuple[int, str] | None] = asyncio.Queue()
         window = asyncio.Semaphore(worker_count * 2)
@@ -294,6 +298,7 @@ class _SimilarPullRequestsMixin(_GitHubServiceBase):
             if self._progress:
                 self._progress.analyze_pr(target_pr.number, repo_full_name)
 
+            target_pr = await complete_pr_files(self._api, target_pr)
             comparison: ComparisonResult = comparator.compare_pull_requests(
                 source_pr, target_pr, only_automation
             )

@@ -15,7 +15,8 @@ from ..bot_identity import (
     rest_author_login,
 )
 from ._base import _GitHubServiceBase
-from ._pr_extract import ListNotSelectedError, scan_files
+from ._list_completion import complete_scan_files
+from ._pr_extract import ListNotSelectedError
 from ._scan_lists import STATUS_SCAN_LISTS
 
 # Bounds the cost of the merged-since read: 10 pages of 100.
@@ -89,7 +90,7 @@ class _StatusStatsMixin(_GitHubServiceBase):
                     stats["open_prs_human"] += 1
 
                 # Check if PR affects actions or workflows
-                files, _ = scan_files(pr)
+                files = await complete_scan_files(self._api, owner, name, pr)
                 affects_action = self._affects_action_files(files)
                 affects_workflow = self._affects_workflow_files(files)
 

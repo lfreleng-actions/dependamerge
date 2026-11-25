@@ -53,7 +53,8 @@ class _Owner:
     which is what every scan read before the count was listed.  ``count``
     replaces the listed count of chosen repositories, ``delay`` how long
     a repository's page takes, and ``fail`` names repositories whose
-    page raises.
+    page raises.  ``stall`` holds the second listing page until set, and
+    ``hold`` the first repository's page.
     ``variables`` answers a repository's ``DEPENDAMERGE_BOTS`` read with
     an HTTP status or a value, 404 for any other; ``variable_reads``
     records the repositories read.
@@ -67,6 +68,8 @@ class _Owner:
         count: dict[int, Any] | None = None,
         delay: Any = None,
         fail: frozenset[int] = frozenset(),
+        stall: asyncio.Event | None = None,
+        hold: asyncio.Event | None = None,
         variables: dict[int, int | str] | None = None,
     ) -> None:
         self.root = root
@@ -74,6 +77,8 @@ class _Owner:
         self.count = count or {}
         self.delay = delay
         self.fail = fail
+        self.stall = stall
+        self.hold = hold
         self.variables = variables or {}
         self.variable_reads: list[str] = []
         self.listings = 0
@@ -154,6 +159,8 @@ class _Owner:
                 ORG_REPOS_ONLY if self.root == "organization" else USER_REPOS_ONLY
             )
             assert query == expected
+            if self.stall is not None and variables.get("reposCursor"):
+                await self.stall.wait()
             return self._listing(variables.get("reposCursor"))
         assert query == REPO_OPEN_PRS_PAGE
         name = variables["name"]
@@ -161,6 +168,8 @@ class _Owner:
         self.in_flight += 1
         self.most_in_flight = max(self.most_in_flight, self.in_flight)
         try:
+            if self.hold is not None and name == _name(0):
+                await self.hold.wait()
             await asyncio.sleep(self.delay(name) if self.delay else 0.001)
             return self._page(name, bool(variables.get("withPolicy")))
         finally:
@@ -296,7 +305,6 @@ def _found(found: Any) -> list[tuple[str, int, list[str]]]:
 
 
 class TestRequests:
-    @pytest.mark.xfail(strict=True, reason="empty repositories are read")
     @pytest.mark.asyncio
     @pytest.mark.parametrize("root", ["organization", "user"])
     async def test_similar_scan_reads_only_repositories_with_open_prs(
@@ -308,7 +316,6 @@ class TestRequests:
         assert sorted(owner.pages) == ACTIVE_NAMES
         assert len(found) == len(ACTIVE)
 
-    @pytest.mark.xfail(strict=True, reason="empty repositories are read")
     @pytest.mark.asyncio
     @pytest.mark.parametrize("root", ["organization", "user"])
     async def test_owner_wide_scan_reads_only_repositories_with_open_prs(
@@ -321,7 +328,6 @@ class TestRequests:
         assert len(prs) == 2 * len(ACTIVE)
         assert errors == []
 
-    @pytest.mark.xfail(strict=True, reason="empty repositories are read")
     @pytest.mark.asyncio
     @pytest.mark.parametrize("root", ["organization", "user"])
     async def test_blocked_scan_reads_only_repositories_with_open_prs(
@@ -335,7 +341,6 @@ class TestRequests:
         assert result.scanned_repositories == REPOSITORIES
         assert len(result.unmergeable_prs) == len(ACTIVE)
 
-    @pytest.mark.xfail(strict=True, reason="empty repositories are read")
     @pytest.mark.asyncio
     async def test_status_reads_open_prs_only_where_there_are_some(
         self, mocker
@@ -357,7 +362,6 @@ class TestRequests:
 
 
 class TestSimilarScanConcurrency:
-    @pytest.mark.xfail(strict=True, reason="the similar scan is serial")
     @pytest.mark.asyncio
     async def test_repositories_are_read_concurrently_within_the_pool(self) -> None:
         owner = _Owner(counted=False, delay=lambda _: 0.005)
@@ -374,9 +378,34 @@ class TestSimilarScanConcurrency:
         assert [pr.repository_full_name for pr in svc.seen_app_prs] == listed
 
     @pytest.mark.asyncio
+    async def test_a_stalled_repository_bounds_the_fetches_awaiting_judgment(
+        self,
+    ) -> None:
+        # While the first repository is held, the others are fetched only
+        # as far as the window allows, not to the end of the owner.
+        hold = asyncio.Event()
+        owner = _Owner(counted=False, hold=hold)
+        scan = asyncio.create_task(_similar(owner))
+        await asyncio.sleep(0.2)
+        assert not scan.done()
+        assert len(owner.pages) <= 2 * POOL
+        hold.set()
+        found, _ = await asyncio.wait_for(scan, timeout=5)
+        assert len(owner.pages) == REPOSITORIES
+        assert len(found) == len(ACTIVE)
+
+    @pytest.mark.asyncio
     async def test_an_unreadable_repository_fails_the_similar_scan(self) -> None:
         with pytest.raises(RuntimeError, match="repo-012 cannot be read"):
             await _similar(_Owner(fail=frozenset({12})))
+
+    @pytest.mark.asyncio
+    async def test_a_failure_ends_the_scan_before_the_listing_does(self) -> None:
+        # The second listing page never arrives: the failure must not
+        # wait for it.
+        owner = _Owner(fail=frozenset({12}), stall=asyncio.Event())
+        with pytest.raises(RuntimeError, match="repo-012 cannot be read"):
+            await asyncio.wait_for(_similar(owner), timeout=5)
 
     @pytest.mark.asyncio
     async def test_a_later_refusal_does_not_skip_an_earlier_variable(self) -> None:
@@ -403,7 +432,6 @@ class TestSimilarScanConcurrency:
 
 
 class TestUnchanged:
-    @pytest.mark.xfail(strict=True, reason="empty repositories are read")
     @pytest.mark.asyncio
     async def test_results_match_a_scan_that_reads_every_repository(
         self, mocker

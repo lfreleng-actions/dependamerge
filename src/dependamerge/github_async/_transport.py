@@ -315,7 +315,11 @@ class _TransportMixin(_GitHubAsyncBase):
                         )
                         raise _GraphQLRetry("Transient GraphQL error")
                     # Non-transient; raise detailed error
-                    raise GraphQLError(json.dumps(data["errors"]))
+                    errors = data["errors"]
+                    raise GraphQLError(
+                        json.dumps(errors),
+                        errors if isinstance(errors, list) else None,
+                    )
                 if "data" not in data:
                     # Unexpected shape; treat as transient.  This is a
                     # GraphQL-level fault, so it must raise the type the

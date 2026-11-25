@@ -15,6 +15,7 @@ from ..models import (
     RepositoryStatus,
 )
 from ._base import _GitHubServiceBase
+from ._repositories import _listed_without_open_prs
 
 # Pages of 100 releases read looking past drafts and pre-releases.
 _LATEST_RELEASE_PER_PAGE = 100
@@ -66,7 +67,10 @@ class _StatusMixin(_GitHubServiceBase):
                     )
 
                     pr_stats = await self._gather_pr_statistics(
-                        owner, name, tag_date or release_date
+                        owner,
+                        name,
+                        tag_date or release_date,
+                        read_open_prs=not _listed_without_open_prs(repo_node),
                     )
 
                     repo_status = RepositoryStatus(

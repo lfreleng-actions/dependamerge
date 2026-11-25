@@ -15,6 +15,7 @@ from ..models import (
     UnmergeablePR,
 )
 from ._base import _GitHubServiceBase
+from ._repositories import _listed_without_open_prs
 
 
 class _ScanMixin(_GitHubServiceBase):
@@ -26,6 +27,10 @@ class _ScanMixin(_GitHubServiceBase):
         """
         Scan an organization for unmergeable PRs using GraphQL in a batched,
         parallel fashion with bounded concurrency.
+
+        A repository the listing counts no open PR in is not read; it
+        still counts as scanned.  The scan is a snapshot: a PR opened
+        after the listing, in a repository listed with none, is not seen.
 
         Args:
             org: The organization name to scan.
@@ -106,9 +111,15 @@ class _ScanMixin(_GitHubServiceBase):
 
         tasks: list[asyncio.Task[Any]] = []
         async for repo in self._iter_org_repositories_with_open_prs(org):
+            if _listed_without_open_prs(repo):
+                # Nothing to read: scanned, with no PR and no error.
+                scanned_repositories += 1
+                if self._progress:
+                    self._progress.complete_repository(0)
+                continue
             tasks.append(asyncio.create_task(process_repo(repo)))
 
-        total_repositories = len(tasks)
+        total_repositories = scanned_repositories + len(tasks)
 
         if tasks:
             results = await asyncio.gather(*tasks)

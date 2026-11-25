@@ -39,10 +39,42 @@ dependamerge merge --no-confirm \
 ### Two Modes, Chosen by URL Shape
 
 A **change URL** (`/c/<project>/+/<number>`) anchors on that change. The
-tool finds similar open changes, scoped to the change's topic or to
-`--topic`, scores them with the comparator against `--threshold`, and
-submits the source change with the matches. This mirrors how a single
-GitHub Dependabot pull request URL finds its siblings.
+tool reads the open changes in one scope, scores them with the
+comparator against `--threshold`, and submits the source change with
+the matches. This mirrors how a single GitHub Dependabot pull request
+URL finds its siblings. `cli/_gerrit_setup.py` chooses the scope:
+
+1. **Topic.** With `--topic`, else the source change's own topic: every
+   open change with that topic, up to `QUERY_BATCH_CEILING` (500).
+2. **Owner.** With no topic, when no change by a different account can
+   match: every open change owned by the source change's account,
+   queried as `owner:<account id>`. No other account can match when
+   `--include-human-prs` brings a person's change into scope, since its
+   matches must share its owner, or when `--threshold` is above what a
+   change scores with its owner score at 0.
+   `GerritChangeComparator.other_owners_can_match()` holds that rule
+   beside the scoring: the comparator averages four scores, so the
+   other three reach 0.75 at most.
+3. **Whole server.** Otherwise (an automation change with a threshold
+   at or below that bound, or a source change whose owner carries no
+   account id): every open change on the server.
+
+The owner and whole-server scopes accept up to `SIMILAR_SCAN_CEILING`
+(5,000) changes: the comparator filters them before anything gets
+acted on, so the bound can sit above the batch ceiling. Every scope
+reads through `get_open_changes_for_query()`, below, so it returns
+every change in scope or refuses. Above the ceiling, on a change that
+does not parse, or on a result that keeps changing while read, the run
+stops before any vote and names the scope, `--topic` and query URLs as
+ways to narrow it. Otherwise it prints the scope and the count of
+changes it read (`🔍 Compared against 191 open changes owned by
+onap.gh2gerrit`).
+
+The owner scope narrows one case on purpose. Similarity scoring strips
+a bot suffix from owner names, so two different accounts such as `foo`
+and `foo-bot` score as the same owner, but the owner scope reads the
+source change's own account alone and so no longer finds the other. A
+topic or a query URL covers anyone who needs both.
 
 A **query URL** (`/q/...`) has no anchor. Its batch is every open change
 the query returns, and nothing else:

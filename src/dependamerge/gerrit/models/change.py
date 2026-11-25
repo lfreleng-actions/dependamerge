@@ -39,6 +39,9 @@ class GerritChangeInfo(BaseModel):
     # Author/owner
     owner: str = Field(..., description="Change owner username")
     owner_email: str | None = Field(default=None, description="Change owner email")
+    owner_account_id: int | None = Field(
+        default=None, description="Change owner's Gerrit account id (if reported)"
+    )
 
     # Branch info
     branch: str = Field(..., description="Target branch")
@@ -116,49 +119,12 @@ class GerritChangeInfo(BaseModel):
             A GerritChangeInfo instance.
         """
         number = data.get("_number", 0)
-        change_id = data.get("change_id", "")
         project = data.get("project", "")
-        subject = data.get("subject", "")
-        branch = data.get("branch", "")
-        status = data.get("status", "NEW")
-        topic = data.get("topic")
-
-        owner_data = data.get("owner", {})
-        owner = owner_data.get("username") or owner_data.get("name", "unknown")
-        owner_email = owner_data.get("email")
-
+        owner, owner_email, owner_account_id = _owner_fields(data.get("owner", {}))
         current_revision = data.get("current_revision", "")
-
-        message = None
-        if current_revision and "revisions" in data:
-            revision_data = data["revisions"].get(current_revision, {})
-            commit_data = revision_data.get("commit", {})
-            message = commit_data.get("message")
-
-        files_changed: list[GerritFileChange] = []
-        if current_revision and "revisions" in data:
-            revision_data = data["revisions"].get(current_revision, {})
-            files_data = revision_data.get("files", {})
-            for filename, file_info in files_data.items():
-                # Skip the special /COMMIT_MSG file
-                if filename == "/COMMIT_MSG":
-                    continue
-                files_changed.append(
-                    GerritFileChange.from_api_response(filename, file_info)
-                )
-
-        labels: list[GerritLabelInfo] = []
-        labels_data = data.get("labels", {})
-        for label_name, label_info in labels_data.items():
-            labels.append(GerritLabelInfo.from_api_response(label_name, label_info))
-
-        # Submittable and mergeable
-        submittable = data.get("submittable", False)
-        mergeable = data.get("mergeable")
-        work_in_progress = data.get("work_in_progress", False)
-
-        # Extract permitted labels (what the current user can vote on)
-        permitted_labels: dict[str, list[str]] = data.get("permitted_labels", {})
+        message, files_changed, revision_actions = _revision_fields(
+            data, current_revision
+        )
 
         # Gerrit splits caller actions across two locations: change-level
         # actions (populated by the CHANGE_ACTIONS query option) and
@@ -167,63 +133,40 @@ class GerritChangeInfo(BaseModel):
         # revisions[<rev>].actions). Merge both so permission checks see
         # the complete picture regardless of which options were requested.
         actions: dict[str, dict[str, Any]] = dict(data.get("actions") or {})
-        if current_revision and "revisions" in data:
-            revision_data = data["revisions"].get(current_revision, {})
-            actions.update(revision_data.get("actions") or {})
+        actions.update(revision_actions)
 
-        # Check submit requirements (Gerrit 3.x+)
-        submit_requirements_met = True
-        submit_records = data.get("submit_records", [])
-        for record in submit_records:
-            if record.get("status") != "OK":
-                submit_requirements_met = False
-                break
-
-        submit_requirement_status: dict[str, str] = {}
-        for requirement in data.get("submit_requirements") or []:
-            if isinstance(requirement, dict) and requirement.get("name"):
-                submit_requirement_status[str(requirement["name"])] = str(
-                    requirement.get("status", "")
-                )
-
-        # Construct URL via the centralised builder to ensure base_path
-        # is handled consistently (see GerritUrlBuilder).
-        url = ""
-        if host:
-            from dependamerge.gerrit.urls import GerritUrlBuilder
-
-            builder = GerritUrlBuilder(
-                host=host, base_path=base_path, auto_discover=False
-            )
-            url = builder.change_url(project, number)
-
-        # Timestamps
-        created = data.get("created", "")
-        updated = data.get("updated", "")
+        submit_requirements_met, submit_requirement_status = _submit_requirement_fields(
+            data
+        )
 
         return cls(
             number=number,
-            change_id=change_id,
+            change_id=data.get("change_id", ""),
             project=project,
-            subject=subject,
+            subject=data.get("subject", ""),
             message=message,
-            topic=topic,
+            topic=data.get("topic"),
             owner=owner,
             owner_email=owner_email,
-            branch=branch,
+            owner_account_id=owner_account_id,
+            branch=data.get("branch", ""),
             current_revision=current_revision,
-            status=status,
-            submittable=submittable,
-            mergeable=mergeable,
-            work_in_progress=work_in_progress,
+            status=data.get("status", "NEW"),
+            submittable=data.get("submittable", False),
+            mergeable=data.get("mergeable"),
+            work_in_progress=data.get("work_in_progress", False),
             files_changed=files_changed,
-            labels=labels,
-            url=url,
-            created=created,
-            updated=updated,
+            labels=[
+                GerritLabelInfo.from_api_response(name, info)
+                for name, info in data.get("labels", {}).items()
+            ],
+            url=_change_url(host, base_path, project, number),
+            created=data.get("created", ""),
+            updated=data.get("updated", ""),
             submit_requirements_met=submit_requirements_met,
             submit_requirement_status=submit_requirement_status,
-            permitted_labels=permitted_labels,
+            # What the current user can vote on
+            permitted_labels=data.get("permitted_labels", {}),
             actions=actions,
         )
 
@@ -368,3 +311,65 @@ class GerritChangeInfo(BaseModel):
             return False
 
         return not self.submittable or self.can_submit_action()
+
+
+def _owner_fields(
+    owner_data: dict[str, Any],
+) -> tuple[str, str | None, int | None]:
+    """The owner's name, email and account id from a change's ``owner``."""
+    owner = owner_data.get("username") or owner_data.get("name", "unknown")
+    account_id = owner_data.get("_account_id")
+    # bool is an int subclass; a positive integer alone names an account.
+    if (
+        not isinstance(account_id, int)
+        or isinstance(account_id, bool)
+        or account_id <= 0
+    ):
+        account_id = None
+    return owner, owner_data.get("email"), account_id
+
+
+def _revision_fields(
+    data: dict[str, Any], current_revision: str
+) -> tuple[str | None, list[GerritFileChange], dict[str, dict[str, Any]]]:
+    """The commit message, files and actions of the current revision."""
+    if not current_revision or "revisions" not in data:
+        return None, [], {}
+
+    revision_data = data["revisions"].get(current_revision, {})
+    commit = revision_data.get("commit", {})
+    message = commit.get("message")
+    files_changed = [
+        GerritFileChange.from_api_response(filename, file_info)
+        for filename, file_info in revision_data.get("files", {}).items()
+        # Skip the special /COMMIT_MSG file
+        if filename != "/COMMIT_MSG"
+    ]
+    return message, files_changed, revision_data.get("actions") or {}
+
+
+def _submit_requirement_fields(data: dict[str, Any]) -> tuple[bool, dict[str, str]]:
+    """Whether every submit record is OK, and each requirement's status.
+
+    Submit requirements are reported by Gerrit 3.x and later.
+    """
+    met = all(record.get("status") == "OK" for record in data.get("submit_records", []))
+    status: dict[str, str] = {}
+    for requirement in data.get("submit_requirements") or []:
+        if isinstance(requirement, dict) and requirement.get("name"):
+            status[str(requirement["name"])] = str(requirement.get("status", ""))
+    return met, status
+
+
+def _change_url(host: str, base_path: str | None, project: str, number: int) -> str:
+    """The change's web URL, or empty without a host.
+
+    Built via the centralised builder to ensure base_path is handled
+    consistently (see GerritUrlBuilder).
+    """
+    if not host:
+        return ""
+    from dependamerge.gerrit.urls import GerritUrlBuilder
+
+    builder = GerritUrlBuilder(host=host, base_path=base_path, auto_discover=False)
+    return builder.change_url(project, number)

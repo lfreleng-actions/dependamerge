@@ -48,9 +48,11 @@ from dependamerge.gerrit.service import (
     DEFAULT_CHANGE_OPTIONS,
     DEFAULT_LIST_OPTIONS,
     QUERY_BATCH_CEILING,
+    SIMILAR_SCAN_CEILING,
     GerritService,
     GerritServiceError,
     create_gerrit_service,
+    topic_query_term,
 )
 from dependamerge.gerrit.submit_manager import (
     GerritSubmitManager,
@@ -92,9 +94,11 @@ __all__ = [
     "DEFAULT_CHANGE_OPTIONS",
     "DEFAULT_LIST_OPTIONS",
     "QUERY_BATCH_CEILING",
+    "SIMILAR_SCAN_CEILING",
     "GerritService",
     "GerritServiceError",
     "create_gerrit_service",
+    "topic_query_term",
     # URLs
     "GerritUrlBuilder",
     "create_url_builder",

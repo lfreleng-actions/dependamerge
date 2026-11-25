@@ -4,10 +4,9 @@
 The Gerrit change queries behind ``GerritService``.
 
 :class:`_GerritQueryMixin` carries the read-only REST calls that
-*search* for changes: listing open changes (optionally scoped by
-project, branch, owner or topic), resolving a Change-Id to the change
-it names, listing projects, and the paginated query loop that backs
-them.  The default option sets those queries send to Gerrit live here
+*search* for changes: sampling open changes, resolving a Change-Id to
+the change it names, listing projects, and the paginated query loop
+that backs them.  The default option sets those queries send to Gerrit live here
 too.
 
 Reads that address a single change by number live in
@@ -84,97 +83,28 @@ class _GerritQueryMixin:
     host: str
     base_path: str | None
 
-    def get_open_changes(
-        self,
-        project: str | None = None,
-        branch: str | None = None,
-        owner: str | None = None,
-        limit: int = 500,
-        offset: int = 0,
-        options: list[str] | None = None,
-    ) -> list[GerritChangeInfo]:
-        """
-        Get open changes, optionally filtered by project/branch/owner.
-
-        Args:
-            project: Optional project name to filter by.
-            branch: Optional branch name to filter by.
-            owner: Optional owner username to filter by.
-            limit: Maximum number of changes to return.
-            offset: Starting offset for pagination.
-            options: Optional list of query options.
-
-        Returns:
-            List of GerritChangeInfo for matching open changes.  An
-            empty list means nothing matched; a query that failed
-            raises instead.
-
-        Raises:
-            GerritRestError: If the query cannot be run --- including
-                ``GerritAuthError`` when the credentials are rejected.
-            GerritServiceError: If Gerrit's response cannot be parsed.
-        """
-        if options is None:
-            options = DEFAULT_LIST_OPTIONS
-
-        query_parts = ["status:open"]
-        if project:
-            query_parts.append(f"project:{project}")
-        if branch:
-            query_parts.append(f"branch:{branch}")
-        if owner:
-            query_parts.append(f"owner:{owner}")
-
-        query = " ".join(query_parts)
-        return self._query_changes(query, limit, offset, options)
-
     def get_all_open_changes(
         self,
         limit: int = 1000,
         options: list[str] | None = None,
     ) -> list[GerritChangeInfo]:
         """
-        Get all open changes across the entire Gerrit server.
+        Get up to ``limit`` open changes from across the Gerrit server.
 
-        This method handles pagination automatically to fetch up to
-        the specified limit of changes.
+        The result is capped and skips a change that does not parse, so
+        it suits a probe that needs a few open changes, never a choice
+        of which changes to act on: that reads through
+        ``get_open_changes_for_query``, which returns every match or
+        refuses.
 
         Args:
             limit: Maximum number of changes to return.
-            options: Optional list of query options.
+            options: Optional list of query options.  Defaults to
+                DEFAULT_LIST_OPTIONS.
 
         Returns:
-            List of GerritChangeInfo for all open changes.  An empty
-            list means nothing matched; a query that failed raises
-            instead.
-
-        Raises:
-            GerritRestError: If the query cannot be run --- including
-                ``GerritAuthError`` when the credentials are rejected.
-            GerritServiceError: If Gerrit's response cannot be parsed.
-        """
-        return self.get_open_changes(limit=limit, options=options)
-
-    def get_changes_by_topic(
-        self,
-        topic: str,
-        include_merged: bool = False,
-        limit: int = 100,
-        options: list[str] | None = None,
-    ) -> list[GerritChangeInfo]:
-        """
-        Get changes with a specific topic.
-
-        Args:
-            topic: The topic name to search for.
-            include_merged: Whether to include merged changes.
-            limit: Maximum number of changes to return.
-            options: Optional list of query options.
-
-        Returns:
-            List of GerritChangeInfo for matching changes.  An empty
-            list means nothing matched; a query that failed raises
-            instead.
+            Up to ``limit`` open changes.  An empty list means nothing
+            matched; a query that failed raises instead.
 
         Raises:
             GerritRestError: If the query cannot be run --- including
@@ -183,22 +113,7 @@ class _GerritQueryMixin:
         """
         if options is None:
             options = DEFAULT_LIST_OPTIONS
-
-        # Topics containing whitespace (or quotes) must be quoted in
-        # Gerrit query syntax, otherwise the bare value splits into
-        # separate query terms and the search silently matches nothing
-        # useful.  Plain topics stay unquoted.
-        topic_term = f"topic:{topic}"
-        if '"' in topic or any(ch.isspace() for ch in topic):
-            escaped = topic.replace("\\", "\\\\").replace('"', '\\"')
-            topic_term = f'topic:"{escaped}"'
-
-        if include_merged:
-            query = f"{topic_term} (status:open OR status:merged)"
-        else:
-            query = f"{topic_term} status:open"
-
-        return self._query_changes(query, limit, 0, options)
+        return self._query_changes("status:open", limit, 0, options)
 
     def find_open_change_by_change_id(
         self,

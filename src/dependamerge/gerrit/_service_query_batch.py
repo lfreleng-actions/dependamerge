@@ -36,6 +36,12 @@ log = logging.getLogger("dependamerge.gerrit.service")
 # user previewed in the Gerrit UI is the failure this guards against.
 QUERY_BATCH_CEILING = 500
 
+# The most open changes a change URL compares its source change against,
+# when the candidates are every open change of one owner or of the whole
+# server.  Above QUERY_BATCH_CEILING because the comparator filters these
+# before anything is acted on; a larger set is refused, not truncated.
+SIMILAR_SCAN_CEILING = 5000
+
 # Page size for a query batch, and the options it requests.  Wider than
 # DEFAULT_LIST_OPTIONS where the preview needs it: DETAILED_LABELS
 # carries each change's permitted votes and every reviewer's vote with
@@ -233,6 +239,18 @@ class _GerritQueryBatchMixin:
                 f"for query {query!r} that could not be parsed: {exc}; "
                 "refusing to act on part of the result set"
             ) from exc
+
+
+def topic_query_term(topic: str) -> str:
+    """The Gerrit query term selecting *topic*, quoted where it must be.
+
+    A topic holding whitespace or a quote would otherwise split into
+    separate query terms and match something else.
+    """
+    if '"' in topic or any(ch.isspace() for ch in topic):
+        escaped = topic.replace("\\", "\\\\").replace('"', '\\"')
+        return f'topic:"{escaped}"'
+    return f"topic:{topic}"
 
 
 def _is_number(value: object) -> bool:

@@ -119,7 +119,7 @@ class ParsedGerritTopicUrl:
         """The query to run: the parsed expression, else the topic alone.
 
         A topic holding whitespace or a quote is quoted, as
-        ``GerritService.get_changes_by_topic`` quotes it, so it stays
+        ``dependamerge.gerrit.topic_query_term`` quotes it, so it stays
         one term.
         """
         if self.query:

@@ -46,6 +46,7 @@ from ._gerrit_query import (
     _prepare_gerrit_query_batch,
 )
 from ._gerrit_setup import (
+    _gerrit_candidate_scope,
     _maybe_rebase_gerrit_change,
     _print_gerrit_final_summary,
     _resolve_gerrit_candidates,
@@ -60,7 +61,7 @@ def _find_and_print_similar_changes(
     service: GerritService,
     comparator: GerritChangeComparator,
     source_change: GerritChangeInfo,
-    candidates: list[GerritChangeInfo] | None,
+    candidates: list[GerritChangeInfo],
     only_automation: bool,
     console: Console,
 ) -> list[tuple[GerritChangeInfo, GerritComparisonResult]]:
@@ -271,9 +272,10 @@ def _merge_gerrit_change(
         service, source_change, credentials, console, dry_run=run.dry_run
     )
 
-    candidates = _resolve_gerrit_candidates(
-        service, source_change, parsed_url, run.topic, console
+    candidate_scope = _gerrit_candidate_scope(
+        source_change, run.topic, comparator, only_automation, parsed_url.host
     )
+    candidates = _resolve_gerrit_candidates(service, candidate_scope, console)
     similar_changes = _find_and_print_similar_changes(
         service, comparator, source_change, candidates, only_automation, console
     )

@@ -3,9 +3,6 @@
 
 """
 Handling of pull requests that cannot be merged as they stand.
-
-Also the preview (dry-run) simulation, which answers the same
-question without touching the repository.
 """
 
 from __future__ import annotations
@@ -384,56 +381,3 @@ class _NotMergeableMixin(_LiveBlockerMixin):
             result.error = detailed_status
 
         return result
-
-    def _simulate_preview_merge(
-        self, pr_info: PullRequestInfo, result: MergeResult
-    ) -> None:
-        """Simulate the Step 6 merge outcome for preview mode.
-
-        Mutates ``result`` in place.  No console output: preview
-        progress is conveyed by the Rich tracker counters (with
-        preview-accurate labels such as "Mergeable") and the per-PR
-        outcomes/reasons are reported in the end-of-run summary, so
-        per-PR lines here go to the log only.
-        """
-        if pr_info.mergeable_state == "behind" and not self.fix_out_of_date:
-            result.status = MergeStatus.SKIPPED
-            result.error = "PR is behind base branch and --no-fix option is set"
-            self._pr_status(
-                f"\u23ed\ufe0f Skipped: {pr_info.html_url} [behind, rebase disabled]",
-                level="debug",
-            )
-        elif pr_info.mergeable_state == "behind" and self.fix_out_of_date:
-            # Behind PRs merge directly unless branch protection
-            # requires up-to-date heads, in which case the real run
-            # refreshes the branch first — either way the PR counts
-            # as mergeable.
-            result.status = MergeStatus.MERGED
-            # Use ``warning`` (not ``error``) so the MERGED result
-            # does not carry a contradictory error message.
-            result.warning = "behind base branch"
-            self._pr_status(
-                f"\u2611\ufe0f Approve/merge: {pr_info.html_url} [behind base branch]",
-                level="debug",
-            )
-        elif pr_info.mergeable_state == "dirty":
-            result.status = MergeStatus.BLOCKED
-            result.error = "PR has merge conflicts"
-            self._pr_status(
-                f"\U0001f6d1 Blocked: {pr_info.html_url} [merge conflicts]",
-                level="debug",
-            )
-        elif pr_info.mergeable is False and pr_info.mergeable_state == "blocked":
-            result.status = MergeStatus.BLOCKED
-            result.error = "PR blocked by failing checks"
-            self._pr_status(
-                f"\U0001f6d1 Blocked: {pr_info.html_url} [blocked by failing checks]",
-                level="debug",
-            )
-        else:
-            # Simulate successful merge in preview mode
-            result.status = MergeStatus.MERGED
-            self._pr_status(
-                f"\u2611\ufe0f Approve/merge: {pr_info.html_url}",
-                level="debug",
-            )

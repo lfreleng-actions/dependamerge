@@ -96,6 +96,7 @@ from ._outcomes import _OutcomeTrackingMixin
 from ._pr_state import _PullRequestStateMixin
 from ._precommit_ci import _PrecommitCiMixin
 from ._prediction import _PredictionMixin
+from ._preview import _PreviewSimulationMixin
 from ._recreated_pr import _RecreatedPullRequestMixin
 from ._recreated_pr_poll import _RecreatedPollMixin
 from ._required_workflows import _RequiredWorkflowWaitMixin
@@ -127,6 +128,7 @@ class AsyncMergeManager(
     _GerritSubmitMixin,
     _SinglePullRequestMixin,
     _NotMergeableMixin,
+    _PreviewSimulationMixin,
     _MergeabilityMixin,
     _AutoMergeEnableMixin,
     _ApprovalMixin,

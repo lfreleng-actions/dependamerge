@@ -25,10 +25,18 @@ class _StatusStatsMixin(_GitHubServiceBase):
     """PR statistics for ``GitHubService``."""
 
     async def _gather_pr_statistics(
-        self, owner: str, name: str, since_date: str | None
+        self,
+        owner: str,
+        name: str,
+        since_date: str | None,
+        *,
+        read_open_prs: bool = True,
     ) -> dict[str, int]:
         """
         Gather PR statistics for a repository.
+
+        ``read_open_prs`` false skips the open-PR pages, for a repository
+        the listing counts none in; the merged-PR read is unchanged.
 
         Returns dict with counts for:
         - open_prs_human, open_prs_automation
@@ -48,8 +56,13 @@ class _StatusStatsMixin(_GitHubServiceBase):
         }
 
         try:
-            first_nodes, page_info = await self._fetch_repo_prs_first_page(owner, name)
-            open_prs = list(first_nodes)
+            open_prs: list[dict[str, Any]] = []
+            page_info: dict[str, Any] = {}
+            if read_open_prs:
+                first_nodes, page_info = await self._fetch_repo_prs_first_page(
+                    owner, name
+                )
+                open_prs.extend(first_nodes)
 
             # Get additional pages if needed
             if page_info.get("hasNextPage"):

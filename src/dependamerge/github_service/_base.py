@@ -155,7 +155,12 @@ class _GitHubServiceBase:
         ) -> str: ...
 
         async def _gather_pr_statistics(
-            self, owner: str, name: str, since_date: str | None
+            self,
+            owner: str,
+            name: str,
+            since_date: str | None,
+            *,
+            read_open_prs: bool = True,
         ) -> dict[str, int]: ...
 
         async def _get_merged_prs_since(

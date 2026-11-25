@@ -6,9 +6,10 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from typing import Any
 
+from ..github_async import GraphQLError
 from ..github_graphql import REPO_OPEN_PRS_PAGE
 from ._base import _GitHubServiceBase
 from ._constants import (
@@ -17,6 +18,41 @@ from ._constants import (
     DEFAULT_FILES_PAGE_SIZE,
     DEFAULT_PRS_PAGE_SIZE,
 )
+
+
+def _listed_without_open_prs(repo: Mapping[str, Any]) -> bool:
+    """Whether the listing says ``repo`` has no open pull request.
+
+    Only a readable count of zero says so: a node without the count, or
+    with one that is not an integer, is read as before.  The count is a
+    snapshot taken with the listing, so a pull request opened between
+    the listing and the scan of its repository is not seen.
+    """
+    connection = repo.get("pullRequests")
+    if not isinstance(connection, Mapping):
+        return False
+    count = connection.get("totalCount")
+    return type(count) is int and count == 0
+
+
+def _only_count_errors(error: GraphQLError, root_key: str) -> bool:
+    """Whether every error in ``error`` sits in a node's open PR count.
+
+    Such an error nulls only the nodes it names, so the page is worth
+    asking for again without counts.  Any other error, rate limits
+    included, is not.
+    """
+    prefix = [root_key, "repositories", "nodes"]
+    return bool(error.errors) and all(
+        isinstance(item, dict)
+        and item.get("type") != "RATE_LIMITED"
+        and isinstance(path := item.get("path"), list)
+        and len(path) >= 5
+        and path[:3] == prefix
+        and type(path[3]) is int
+        and path[4] == "pullRequests"
+        for item in error.errors
+    )
 
 
 class _RepositoriesMixin(_GitHubServiceBase):
@@ -100,13 +136,24 @@ class _RepositoriesMixin(_GitHubServiceBase):
         (when filtered) fork repos this iterator skips — so the
         denominator is approximate and the percentage can finish below
         100%.  It is close enough for a progress bar.
+
+        A page GitHub cannot count open pull requests in, whose every
+        error sits in a node's count, is asked for again without counts,
+        so its repositories are read rather than lost with the listing.
         """
         root_key, query = await self._resolve_owner_root(owner)
         cursor: str | None = None
         total_set = False
         while True:
-            variables = {"org": owner, "reposCursor": cursor}
-            data = await self._api.graphql(query, variables)
+            variables: dict[str, Any] = {"org": owner, "reposCursor": cursor}
+            try:
+                data = await self._api.graphql(query, variables)
+            except GraphQLError as error:
+                if not _only_count_errors(error, root_key):
+                    raise
+                # Read every repository on this page, as before the count.
+                variables["withCounts"] = False
+                data = await self._api.graphql(query, variables)
             root = (data or {}).get(root_key) or {}
             repos = root.get("repositories") or {}
 

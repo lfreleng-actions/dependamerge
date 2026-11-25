@@ -12,12 +12,27 @@ helpers so each stays reviewable.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Iterable
+from typing import NamedTuple
 
 from ..bot_identity import is_automation_author
 from ..bot_policy import BotPolicy
 from ..models import ComparisonResult, PullRequestInfo
 from ._base import _GitHubServiceBase
+from ._repositories import _listed_without_open_prs
+
+
+class _Fetched(NamedTuple):
+    """One repository's open PRs, as a worker fetched them.
+
+    ``prs`` is ``None`` when the repository's own policy file is invalid;
+    ``seen`` holds the App PRs read either way.
+    """
+
+    name: str
+    prs: list[PullRequestInfo] | None
+    seen: list[PullRequestInfo]
 
 
 def _is_source(source_pr: PullRequestInfo, pr: PullRequestInfo) -> bool:
@@ -31,6 +46,11 @@ def _is_source(source_pr: PullRequestInfo, pr: PullRequestInfo) -> bool:
 def _other_app_pr(source_pr: PullRequestInfo, pr: PullRequestInfo) -> bool:
     """Whether ``pr`` is an App's, other than ``source_pr`` itself."""
     return is_automation_author(pr.author) and not _is_source(source_pr, pr)
+
+
+def _app_prs(prs: Iterable[PullRequestInfo]) -> list[PullRequestInfo]:
+    """The App PRs among ``prs``."""
+    return [pr for pr in prs if is_automation_author(pr.author)]
 
 
 def _variable_matters(
@@ -86,6 +106,15 @@ class _SimilarPullRequestsMixin(_GitHubServiceBase):
         - Increments PR analysis count per PR
         - Tracks similar PRs found
 
+        Repositories are read concurrently, at most ``max_repo_tasks`` at
+        once; their variables are read, and their PRs judged, in listing
+        order, so the results come back in that order and a variable the
+        token is refused stops the same reads a serial search would.  A
+        repository that cannot be read fails the whole search.  A repository the
+        listing counts no open PR in is not read; it still counts as
+        processed.  The search is a snapshot: a PR opened after the
+        listing, in a repository listed with none, is not seen.
+
         Args:
             org: Organization login.
             source_pr: The PR to compare against.
@@ -97,67 +126,161 @@ class _SimilarPullRequestsMixin(_GitHubServiceBase):
         Returns:
             List of (PullRequestInfo, ComparisonResult) tuples for similar PRs.
         """
+        # A bounded pipeline, as in the owner-wide scan: a fixed pool of
+        # workers drains a queue the listing feeds, and a failure in any
+        # repository, or in the listing, tears the search down at once.
+        # The workers only fetch; one judge then reads each repository's
+        # variable and decides on its PRs in listing order, as a serial
+        # search would, since one refused read stops every later one.
+        # ``window`` caps the repositories listed but not yet judged, so a
+        # slow early one cannot leave the whole owner's PRs in ``fetched``.
+        worker_count = max(1, self._max_repo_tasks)
+        queue: asyncio.Queue[tuple[int, str] | None] = asyncio.Queue()
+        window = asyncio.Semaphore(worker_count * 2)
+        # Fetched repositories by listing position; ``None`` past the last.
+        fetched: dict[int, asyncio.Future[_Fetched | None]] = {}
+        loop = asyncio.get_running_loop()
+
+        def slot(position: int) -> asyncio.Future[_Fetched | None]:
+            if position not in fetched:
+                fetched[position] = loop.create_future()
+            return fetched[position]
+
         results: list[tuple[PullRequestInfo, ComparisonResult]] = []
+        seen: list[PullRequestInfo] = []
 
-        # Repo total is set automatically by _iter_org_repositories
-        # on the first GraphQL page via totalCount.
-        async for repo in self._iter_org_repositories_with_open_prs(org):
-            repo_full_name = repo.get("nameWithOwner") or ""
-            if not repo_full_name or "/" not in repo_full_name:
-                if self._progress:
-                    self._progress.add_error()
-                continue
+        async def producer() -> None:
+            position = 0
+            # Repo total is set automatically by _iter_org_repositories
+            # on the first GraphQL page via totalCount.
+            async for repo in self._iter_org_repositories_with_open_prs(org):
+                repo_full_name = repo.get("nameWithOwner") or ""
+                if not repo_full_name or "/" not in repo_full_name:
+                    if self._progress:
+                        self._progress.add_error()
+                    continue
+                if _listed_without_open_prs(repo):
+                    if self._progress:
+                        self._progress.complete_repository(0)
+                    continue
+                await window.acquire()
+                await queue.put((position, repo_full_name))
+                position += 1
+            slot(position).set_result(None)
+            for _ in range(worker_count):
+                await queue.put(None)
 
+        async def worker() -> None:
+            while True:
+                item = await queue.get()
+                if item is None:
+                    return
+                position, repo_full_name = item
+                slot(position).set_result(
+                    await self._fetch_listed_repo(
+                        repo_full_name, bot_policy=bot_policy or BotPolicy()
+                    )
+                )
+
+        async def judge() -> None:
+            position = 0
+            while (repo := await slot(position)) is not None:
+                del fetched[position]
+                results.extend(
+                    await self._find_similar_prs_in_repo(
+                        repo,
+                        source_pr,
+                        comparator,
+                        only_automation=only_automation,
+                        bot_policy=bot_policy or BotPolicy(),
+                    )
+                )
+                seen.extend(repo.seen)
+                window.release()
+                position += 1
+
+        pipeline = [
+            asyncio.create_task(producer()),
+            asyncio.create_task(judge()),
+            *(asyncio.create_task(worker()) for _ in range(worker_count)),
+        ]
+        try:
+            # No return_exceptions: one repository that cannot be read
+            # fails the search, which must not act on a smaller batch.
+            await asyncio.gather(*pipeline)
+        except BaseException:
+            for task in pipeline:
+                task.cancel()
+            await asyncio.gather(*pipeline, return_exceptions=True)
+            raise
+
+        self._seen_app_prs.extend(seen)
+        return results
+
+    async def _fetch_listed_repo(
+        self, repo_full_name: str, *, bot_policy: BotPolicy
+    ) -> _Fetched:
+        """A repository's open PRs, before its variable is read.
+
+        Runs in the repository pool, so at most ``max_repo_tasks``
+        repositories are read at once.  The policy file its first page
+        carries is checked here, as it concerns that repository alone;
+        when it is invalid, the later pages are not read and the
+        fetched PRs are ``None``, after the first page's App PRs join
+        ``seen``: none is in scope, but whether a variable the token
+        cannot read is worth a warning still counts them.
+        """
+        async with self._repo_semaphore:
             if self._progress:
                 self._progress.start_repository(repo_full_name)
                 self._progress.update_operation(
                     f"Getting open PRs from {repo_full_name}"
                 )
-
-            matching_prs_in_repo = await self._find_similar_prs_in_repo(
-                repo_full_name,
-                source_pr,
-                comparator,
-                only_automation=only_automation,
-                bot_policy=bot_policy,
+            owner_n, name_n = repo_full_name.split("/", 1)
+            first_nodes, page_info = await self._fetch_repo_prs_first_page(
+                owner_n, name_n
             )
-
-            results.extend(matching_prs_in_repo)
-
-            if self._progress:
-                self._progress.complete_repository(len(matching_prs_in_repo))
-
-        return results
+            if self._valid_repository_policy(bot_policy, repo_full_name) is None:
+                return _Fetched(
+                    repo_full_name,
+                    None,
+                    _app_prs(
+                        self.to_pull_request_info(repo_full_name, node)
+                        for node in first_nodes
+                    ),
+                )
+            nodes = list(first_nodes)
+            if page_info.get("hasNextPage"):
+                end_cursor = page_info.get("endCursor") or None
+                async for pr_node in self._iter_repo_open_prs_pages(
+                    owner_n, name_n, end_cursor
+                ):
+                    nodes.append(pr_node)
+            prs = [self.to_pull_request_info(repo_full_name, node) for node in nodes]
+            return _Fetched(repo_full_name, prs, _app_prs(prs))
 
     async def _find_similar_prs_in_repo(
         self,
-        repo_full_name: str,
+        repo: _Fetched,
         source_pr: PullRequestInfo,
         comparator,
         *,
         only_automation: bool,
-        bot_policy: BotPolicy | None = None,
+        bot_policy: BotPolicy,
     ) -> list[tuple[PullRequestInfo, ComparisonResult]]:
-        """Compare every open PR of one repository against *source_pr*.
+        """Compare every open PR of one fetched repository against *source_pr*.
 
         Candidates are judged with the repository's own bot policy (see
-        :meth:`_judged_open_prs`); when that is invalid, nothing there
-        is a candidate.  The App PRs it lists join
-        :attr:`seen_app_prs`, candidates or not.
+        :meth:`_repository_policy_for`); when that is invalid, nothing
+        there is a candidate.
         """
-        judged = await self._judged_open_prs(
-            repo_full_name,
-            source_pr,
-            only_automation=only_automation,
-            bot_policy=bot_policy or BotPolicy(),
+        repo_full_name = repo.name
+        policy = await self._repository_policy_for(
+            repo, source_pr, only_automation=only_automation, bot_policy=bot_policy
         )
-        if judged is None:
-            return []
-        prs, policy = judged
-
         matching_prs_in_repo: list[tuple[PullRequestInfo, ComparisonResult]] = []
 
-        for target_pr in prs:
+        for target_pr in repo.prs if policy is not None and repo.prs else []:
             if not self._is_similar_pr_candidate(
                 source_pr,
                 target_pr,
@@ -191,50 +314,31 @@ class _SimilarPullRequestsMixin(_GitHubServiceBase):
                         # cosmetic only.
                         pass
 
+        if self._progress:
+            self._progress.complete_repository(len(matching_prs_in_repo))
         return matching_prs_in_repo
 
-    async def _judged_open_prs(
+    async def _repository_policy_for(
         self,
-        repo_full_name: str,
+        repo: _Fetched,
         source_pr: PullRequestInfo,
         *,
         only_automation: bool,
         bot_policy: BotPolicy,
-    ) -> tuple[list[PullRequestInfo], BotPolicy] | None:
-        """A repository's open PRs, and the policy that judges them.
+    ) -> BotPolicy | None:
+        """The policy that judges a fetched repository's PRs.
 
-        The policy also consults the repository's own file, which its
-        first page carries, and its ``DEPENDAMERGE_BOTS`` variable, read
-        where it bears on the search (see :func:`_variable_matters`).
-        ``None`` when that policy is invalid, after the first page's App
-        PRs join :attr:`seen_app_prs`: none is in scope, but whether a
-        variable the token cannot read is worth a warning still counts them.
+        It also consults the repository's own file, which its first page
+        carried, and its ``DEPENDAMERGE_BOTS`` variable, read where it
+        bears on the search (see :func:`_variable_matters`).  ``None``
+        when that policy is invalid.
         """
-        owner_n, name_n = repo_full_name.split("/", 1)
-        first_nodes, page_info = await self._fetch_repo_prs_first_page(owner_n, name_n)
-        policy = self._valid_repository_policy(bot_policy, repo_full_name)
-        if policy is None:
-            self._record_app_prs(
-                self.to_pull_request_info(repo_full_name, node) for node in first_nodes
-            )
+        if repo.prs is None:
             return None
-        nodes = list(first_nodes)
-        if page_info.get("hasNextPage"):
-            end_cursor = page_info.get("endCursor") or None
-            async for pr_node in self._iter_repo_open_prs_pages(
-                owner_n, name_n, end_cursor
-            ):
-                nodes.append(pr_node)
-        prs = [self.to_pull_request_info(repo_full_name, node) for node in nodes]
-        self._record_app_prs(prs)
-        if _variable_matters(source_pr, prs, only_automation=only_automation):
-            await self._read_repository_variable(repo_full_name)
-            policy = self._valid_repository_policy(bot_policy, repo_full_name)
-        return None if policy is None else (prs, policy)
-
-    def _record_app_prs(self, prs: Iterable[PullRequestInfo]) -> None:
-        """Add the App PRs among ``prs`` to :attr:`seen_app_prs`."""
-        self._seen_app_prs.extend(pr for pr in prs if is_automation_author(pr.author))
+        if not _variable_matters(source_pr, repo.prs, only_automation=only_automation):
+            return self._with_repository_policy(bot_policy, repo.name)
+        await self._read_repository_variable(repo.name)
+        return self._valid_repository_policy(bot_policy, repo.name)
 
     def _valid_repository_policy(
         self, bot_policy: BotPolicy, repository: str

@@ -5,7 +5,8 @@
 Repository listing queries.
 
 These are the lightweight "just the repositories" queries: no pull
-request nodes, so a single page reveals the owner-wide repository total
+request nodes, only each repository's open pull request count, so a
+single page reveals the owner-wide repository total
 and the archived/fork flags needed to decide what to scan.  The
 ``Organization`` and ``User`` variants are similar, but the user query
 pins ``ownerAffiliations: OWNER`` so GitHub does not include repositories
@@ -27,8 +28,14 @@ from __future__ import annotations
 # ``isFork`` is included so owner-wide bulk operations can exclude fork
 # repositories without a second round-trip; existing consumers that only
 # read ``nameWithOwner`` / ``isArchived`` simply ignore the extra field.
+#
+# ``pullRequests(states: OPEN) { totalCount }`` lets the scans skip a
+# repository with no open pull request instead of asking for its first
+# page: one point per listing page instead of two per repository.
+# ``$withCounts: false`` leaves the count out, for a page GitHub cannot
+# count in: the field is non-null, so an error there nulls the node.
 ORG_REPOS_ONLY = """
-query($org: String!, $reposCursor: String) {
+query($org: String!, $reposCursor: String, $withCounts: Boolean = true) {
   organization(login: $org) {
     repositories(first: 100, after: $reposCursor, orderBy: { field: NAME, direction: ASC }) {
       totalCount
@@ -40,6 +47,9 @@ query($org: String!, $reposCursor: String) {
         nameWithOwner
         isArchived
         isFork
+        pullRequests(states: OPEN) @include(if: $withCounts) {
+          totalCount
+        }
       }
     }
   }
@@ -54,7 +64,7 @@ query($org: String!, $reposCursor: String) {
 # with the user's own repositories.  The ``$org`` variable name is retained
 # for call-site uniformity even though it carries a user login here.
 USER_REPOS_ONLY = """
-query($org: String!, $reposCursor: String) {
+query($org: String!, $reposCursor: String, $withCounts: Boolean = true) {
   user(login: $org) {
     repositories(first: 100, after: $reposCursor, ownerAffiliations: OWNER, orderBy: { field: NAME, direction: ASC }) {
       totalCount
@@ -66,6 +76,9 @@ query($org: String!, $reposCursor: String) {
         nameWithOwner
         isArchived
         isFork
+        pullRequests(states: OPEN) @include(if: $withCounts) {
+          totalCount
+        }
       }
     }
   }

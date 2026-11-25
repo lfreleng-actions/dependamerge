@@ -28,7 +28,15 @@ class SecondaryRateLimitError(Exception):
 
 
 class GraphQLError(Exception):
-    """Raised for GraphQL errors returned by GitHub."""
+    """Raised for GraphQL errors returned by GitHub.
+
+    ``errors`` holds the response's ``errors`` array when there was one,
+    so a caller can tell where in the query each error arose.
+    """
+
+    def __init__(self, message: str, errors: list[Any] | None = None) -> None:
+        super().__init__(message)
+        self.errors: list[Any] = errors or []
 
 
 class PermissionError(Exception):

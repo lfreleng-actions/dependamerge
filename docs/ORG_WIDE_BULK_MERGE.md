@@ -155,7 +155,11 @@ Per repository, in-scope filtering:
   returns `nameWithOwner` and `isArchived` alone. The README documents
   this. A future `--include-forks` flag could relax it.
 - Repositories with no open automation PRs naturally drop out — the
-  scheduler acts on the repos that yield PRs.
+  scheduler acts on the repos that yield PRs. The listing carries each
+  repository's open PR count (`pullRequests(states: OPEN) { totalCount
+  }`), so the scan does not ask a repository listed with none for its
+  PRs; it still counts as processed. A missing or unreadable count reads
+  the repository as before.
 - `--include-repos` narrows the run to the repositories it names, and
   `--exclude-repos` removes the ones it names; the two are mutually
   exclusive. Selection happens in the enumeration producer, so an

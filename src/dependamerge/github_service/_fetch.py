@@ -15,6 +15,7 @@ from ..github_async import (
 )
 from ..models import PullRequestInfo
 from ._base import _GitHubServiceBase
+from ._repositories import _listed_without_open_prs
 
 if TYPE_CHECKING:
     from ..repo_selection import RepoSelection
@@ -122,6 +123,10 @@ class _FetchMixin(_GitHubServiceBase):
         their open PRs with bounded per-repository concurrency, reusing
         the same per-repo body as :meth:`fetch_repo_open_prs`.
 
+        A repository the listing counts no open PR in is not read; it
+        still counts as processed.  The scan is a snapshot: a PR opened
+        after the listing, in a repository listed with none, is not seen.
+
         Per-repository failures are isolated: a transient error scanning
         one repository is recorded and enumeration continues, so a single
         bad repository never aborts an owner-wide run.  Global
@@ -199,6 +204,10 @@ class _FetchMixin(_GitHubServiceBase):
                 ):
                     continue
                 admitted += 1
+                if _listed_without_open_prs(repo):
+                    if self._progress:
+                        self._progress.complete_repository(0)
+                    continue
                 await queue.put(repo)
             if selection is not None and self._progress:
                 # The enumerator publishes the owner's whole repository

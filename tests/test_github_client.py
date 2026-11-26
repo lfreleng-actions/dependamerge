@@ -268,58 +268,6 @@ class TestGitHubClient:
         assert commits == []
 
     @patch("dependamerge.github_async.GitHubAsync")
-    def test_get_organization_repositories(self, mock_async_class):
-        """Test getting organization repositories using async client."""
-        # Setup async mocks properly
-        mock_async = AsyncMock()
-        mock_async_class.return_value.__aenter__ = AsyncMock(return_value=mock_async)
-        mock_async_class.return_value.__aexit__ = AsyncMock(return_value=None)
-
-        # Mock repository data
-        repo_data = [
-            {"full_name": "test-org/repo1"},
-            {"full_name": "test-org/repo2"},
-            {"full_name": "test-org/repo3"},
-        ]
-
-        # Create proper async iterator mock
-        class MockAsyncIterator:
-            def __init__(self, data):
-                self.data = data
-                self.called_with = None
-
-            def __call__(self, *args, **kwargs):
-                self.called_with = (args, kwargs)
-                return self
-
-            def __aiter__(self):
-                return self
-
-            async def __anext__(self):
-                if self.data:
-                    result = self.data.pop(0)
-                    return result
-                raise StopAsyncIteration
-
-            def assert_called_once_with(self, *args, **kwargs):
-                assert self.called_with == (args, kwargs)
-
-        mock_async.get_paginated = MockAsyncIterator([repo_data])
-
-        client = GitHubClient(token="test_token")
-        repos = client.get_organization_repositories("test-org")
-
-        assert len(repos) == 3
-        assert "test-org/repo1" in repos
-        assert "test-org/repo2" in repos
-        assert "test-org/repo3" in repos
-
-        # Verify async method was called properly
-        mock_async.get_paginated.assert_called_once_with(
-            "/orgs/test-org/repos", per_page=100
-        )
-
-    @patch("dependamerge.github_async.GitHubAsync")
     def test_fix_out_of_date_pr(self, mock_async_class):
         """Test fixing out of date PR using async client."""
         # Setup async mocks properly

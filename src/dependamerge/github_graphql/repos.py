@@ -6,8 +6,10 @@ Repository listing queries.
 
 These are the lightweight "just the repositories" queries: no pull
 request nodes, only each repository's open pull request count, so a
-single page reveals the owner-wide repository total
-and the archived/fork flags needed to decide what to scan.  The
+single page reveals the owner-wide total of non-archived repositories
+and the fork flag needed to decide what to scan.  Both variants pass
+``isArchived: false`` so GitHub leaves archived repositories out of the
+nodes and the total alike.  The
 ``Organization`` and ``User`` variants are similar, but the user query
 pins ``ownerAffiliations: OWNER`` so GitHub does not include repositories
 from other owners where the user is a direct collaborator.  See
@@ -25,6 +27,12 @@ from __future__ import annotations
 # objects, so the first page immediately reveals the org-wide repo total
 # without requiring a separate counting pass.
 #
+# ``isArchived: false`` makes GitHub leave archived repositories out of
+# both the nodes and ``totalCount``: nothing is scanned there, so the
+# total is the count of repositories a scan can act on.  ``isArchived``
+# stays in the selection so the client can still refuse a node that
+# reports itself archived.
+#
 # ``isFork`` is included so owner-wide bulk operations can exclude fork
 # repositories without a second round-trip; existing consumers that only
 # read ``nameWithOwner`` / ``isArchived`` simply ignore the extra field.
@@ -37,7 +45,7 @@ from __future__ import annotations
 ORG_REPOS_ONLY = """
 query($org: String!, $reposCursor: String, $withCounts: Boolean = true) {
   organization(login: $org) {
-    repositories(first: 100, after: $reposCursor, orderBy: { field: NAME, direction: ASC }) {
+    repositories(first: 100, after: $reposCursor, isArchived: false, orderBy: { field: NAME, direction: ASC }) {
       totalCount
       pageInfo {
         hasNextPage
@@ -66,7 +74,7 @@ query($org: String!, $reposCursor: String, $withCounts: Boolean = true) {
 USER_REPOS_ONLY = """
 query($org: String!, $reposCursor: String, $withCounts: Boolean = true) {
   user(login: $org) {
-    repositories(first: 100, after: $reposCursor, ownerAffiliations: OWNER, orderBy: { field: NAME, direction: ASC }) {
+    repositories(first: 100, after: $reposCursor, isArchived: false, ownerAffiliations: OWNER, orderBy: { field: NAME, direction: ASC }) {
       totalCount
       pageInfo {
         hasNextPage

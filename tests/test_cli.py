@@ -76,11 +76,6 @@ class TestCLI:
         mock_client.parse_pr_url.return_value = ("owner", "repo", 22)
         mock_client.is_automation_author.return_value = True
 
-        # Mock a repository with a similar PR
-        mock_repo = Mock()
-        mock_repo.full_name = "owner/other-repo"
-        mock_client.get_organization_repositories.return_value = [mock_repo]
-
         # Mock a similar PR
         mock_open_pr = Mock()
         mock_open_pr.number = 5
@@ -290,13 +285,6 @@ class TestCLI:
         mock_client.parse_pr_url.return_value = ("owner", "repo", 22)
         mock_client.is_automation_author.return_value = True
 
-        # Mock repository with no similar PRs
-        mock_repo = Mock()
-        mock_repo.full_name = "owner/other-repo"
-        mock_repo.owner.login = "owner"
-        mock_repo.name = "other-repo"
-        mock_client.get_organization_repositories.return_value = [mock_repo]
-
         # Mock no open PRs (or none that are similar)
         mock_client.get_open_pull_requests.return_value = []
 
@@ -463,11 +451,6 @@ class TestCLI:
         # The point of the test: a human author, not automation.
         mock_client.is_automation_author.return_value = False
 
-        mock_repo = Mock()
-        mock_repo.full_name = "owner/other-repo"
-        mock_repo.owner.login = "owner"
-        mock_repo.name = "other-repo"
-        mock_client.get_organization_repositories.return_value = [mock_repo]
         mock_client.get_open_pull_requests.return_value = []
 
         mock_pr = PullRequestInfo(
@@ -630,7 +613,6 @@ class TestCLI:
         mock_client.get_pull_request_commits.return_value = [
             "Fix bug in authentication\n\nDetailed description"
         ]
-        mock_client.get_organization_repositories.return_value = []
         mock_client.get_pr_status_details.return_value = "Ready to merge"
         mock_client.approve_pull_request.return_value = True
         mock_client.merge_pull_request.return_value = True
@@ -1436,10 +1418,6 @@ class TestCLI:
         mock_client.parse_pr_url.return_value = ("owner", "repo", 22)
         mock_client.is_automation_author.return_value = True
 
-        # Mock a repository with no similar PRs to test direct merge
-        mock_repo = Mock()
-        mock_repo.full_name = "owner/other-repo"
-        mock_client.get_organization_repositories.return_value = [mock_repo]
         mock_client.get_open_pull_requests.return_value = []
 
         mock_pr = PullRequestInfo(

@@ -340,3 +340,111 @@ class TestFindSimilarUserAccount:
             assert result == []
         finally:
             await service.close()
+
+
+def _make_archive_aware_org_graphql(
+    live_nodes: list[dict[str, Any]], archived_nodes: list[dict[str, Any]]
+):
+    """An organization whose listing holds archived repositories unless
+    the query asks GitHub to leave them out."""
+
+    async def _graphql(
+        query: str, variables: dict[str, Any] | None = None, **kwargs: Any
+    ):
+        if "repositoryOwner(login:" in query:
+            return {
+                "repositoryOwner": {"__typename": "Organization", "dotgithub": None}
+            }
+        if "organization(login:" in query:
+            nodes = list(live_nodes)
+            if "isArchived: false" not in query:
+                nodes.extend(archived_nodes)
+            return {"organization": {"repositories": _repos_connection(nodes)}}
+        return {}
+
+    return _graphql
+
+
+class TestArchivedRepositories:
+    """Archived repositories are neither listed, counted nor scanned."""
+
+    @pytest.mark.asyncio
+    async def test_scan_of_an_owner_without_forks_ends_at_full_progress(self, mocker):
+        class _Progress:
+            total_repositories = 0
+            completed_repositories = 0
+
+            def update_total_repositories(self, total: int) -> None:
+                self.total_repositories = total
+
+            def complete_repository(self, unmergeable_count: int = 0) -> None:
+                self.completed_repositories += 1
+
+        service = GitHubService(token="test_token")
+        try:
+            progress = _Progress()
+            service._progress = progress  # type: ignore[assignment]
+            live = [
+                {
+                    "nameWithOwner": f"acme/repo-{i}",
+                    "isArchived": False,
+                    "isFork": False,
+                    "pullRequests": {"totalCount": 0},
+                }
+                for i in range(3)
+            ]
+            archived = [
+                {
+                    "nameWithOwner": "acme/old",
+                    "isArchived": True,
+                    "isFork": False,
+                    "pullRequests": {"totalCount": 0},
+                }
+            ]
+            mocker.patch.object(
+                service._api,
+                "graphql",
+                side_effect=_make_archive_aware_org_graphql(live, archived),
+            )
+
+            prs, errors = await service.fetch_owner_open_prs("acme")
+
+            assert (prs, errors) == ([], [])
+            assert progress.total_repositories == 3
+            assert progress.completed_repositories == 3
+        finally:
+            await service.close()
+
+    @pytest.mark.asyncio
+    async def test_an_archived_node_in_the_listing_is_never_scanned(self, mocker):
+        from dependamerge.repo_selection import parse_repo_selection
+
+        service = GitHubService(token="test_token")
+        try:
+            nodes = [
+                {"nameWithOwner": "acme/live", "isArchived": False, "isFork": False},
+                {"nameWithOwner": "acme/old", "isArchived": True, "isFork": False},
+            ]
+            # The listing returns the archived node whatever the query asks.
+            mocker.patch.object(
+                service._api,
+                "graphql",
+                side_effect=_make_archive_aware_org_graphql(nodes, []),
+            )
+            scanned: list[str] = []
+
+            async def fake_collect(owner, repo, *, only_automation):
+                scanned.append(repo)
+                return []
+
+            service._collect_repo_open_prs = fake_collect  # type: ignore[assignment]
+            selection = parse_repo_selection("acme", ["live", "old"], None)
+            assert selection is not None
+
+            await service.fetch_owner_open_prs("acme", selection=selection)
+
+            assert scanned == ["live"]
+            # Refused afterwards as naming no in-scope repository.
+            assert selection.unmatched() == ["old"]
+        finally:
+            await service.close()

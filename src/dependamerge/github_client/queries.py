@@ -192,32 +192,6 @@ class _GitHubQueryMixin:
 
         return asyncio.run(_run())
 
-    def get_organization_repositories(self, org_name: str) -> list[str]:
-        """Get all repositories in an organization using REST API. Returns list of full_name strings."""
-
-        async def _run() -> list[str]:
-            repos: list[str] = []
-            async with self._new_async() as api:
-                try:
-                    async for page in api.get_paginated(
-                        f"/orgs/{org_name}/repos", per_page=100
-                    ):
-                        for r in page:
-                            repo_data = r
-                            assert isinstance(repo_data, dict)
-                            full = repo_data.get("full_name")
-                            if full:
-                                repos.append(full)
-                except Exception as exc:
-                    # Fall back to empty list on pagination issues
-                    api.log.debug(
-                        f"Repo pagination failed for org {org_name}: {exc}",
-                        exc_info=True,
-                    )
-            return repos
-
-        return asyncio.run(_run())
-
     def get_open_pull_requests(self, repository) -> list[Any]:
         """Legacy method not supported in async-only client. Use async service for PR enumeration."""
         return []

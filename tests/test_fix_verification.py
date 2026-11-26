@@ -45,13 +45,6 @@ def test_final_verification():
         mock_client.parse_pr_url.return_value = ("owner", "repo", 22)
         mock_client.is_automation_author.return_value = True
 
-        # Mock repository with no similar PRs
-        mock_repo = Mock()
-        mock_repo.full_name = "owner/other-repo"
-        mock_repo.owner.login = "owner"
-        mock_repo.name = "other-repo"
-        mock_client.get_organization_repositories.return_value = [mock_repo]
-
         # Mock no open PRs (no similar PRs found)
         mock_client.get_open_pull_requests.return_value = []
 

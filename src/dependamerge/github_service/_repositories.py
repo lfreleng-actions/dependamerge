@@ -71,10 +71,8 @@ class _RepositoriesMixin(_GitHubServiceBase):
         complete picture of every repository the owner has, whereas the
         bulk-merge path deliberately excludes forks.  The progress total
         is published from the first page's ``totalCount``, which counts
-        *all* of the owner's repositories — including the archived repos
-        this iterator filters out — so the denominator is approximate and
-        the percentage can finish below 100%.  It is close enough for a
-        progress bar.
+        the owner's non-archived repositories, forks included: exactly
+        the repositories this iterator yields.
         """
         async for repo in self._iter_owner_repositories(org, skip_forks=False):
             yield repo
@@ -122,16 +120,18 @@ class _RepositoriesMixin(_GitHubServiceBase):
         ``OWNER`` so collaborator repositories owned by someone else are
         not swept into owner-wide operations.
 
-        Archived repositories are always skipped.  Fork repositories are
+        Archived repositories are never yielded: the listing query asks
+        GitHub to leave them out, and a node that still reports itself
+        archived is skipped here as well.  Fork repositories are
         skipped by default (``skip_forks=True``): owner-wide bulk merges
         target the owner's own automation PRs, not PRs on mirrored
         forks.  Read-only reporting paths pass ``skip_forks=False`` to
         include forks for a complete picture.  The progress total is
         published from the first page's ``totalCount``, which counts
-        *all* of the owner's repositories — including the archived and
-        (when filtered) fork repos this iterator skips — so the
-        denominator is approximate and the percentage can finish below
-        100%.  It is close enough for a progress bar.
+        every non-archived repository of the owner, forks included.
+        With ``skip_forks=True`` it therefore still counts the forks
+        this iterator skips, so the percentage can finish below 100%
+        for an owner that has forks.
 
         A page GitHub cannot count open pull requests in, whose every
         error sits in a node's count, is asked for again without counts,
@@ -161,6 +161,8 @@ class _RepositoriesMixin(_GitHubServiceBase):
 
             nodes: list[dict[str, Any]] = repos.get("nodes", []) or []
             for repo in nodes:
+                # The query leaves archived repositories out; never scan
+                # one that is listed regardless.
                 if repo.get("isArchived"):
                     continue
                 if skip_forks and repo.get("isFork"):

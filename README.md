@@ -233,7 +233,8 @@ or user account in one command.
   other Apps as out of scope
 - **Organisation or User**: Detects the account type (org vs user)
   automatically at runtime; the same URL works for both
-- **Archived and Fork Exclusion**: Skips archived repositories, and
+- **Archived and Fork Exclusion**: Leaves archived repositories out
+  of the listing and the progress total, and
   **excludes fork repositories by default** (owner-wide merges target
   the owner's own repositories, not mirrored forks)
 - **Repository Scoping**: `--include-repos` limits a run to the named

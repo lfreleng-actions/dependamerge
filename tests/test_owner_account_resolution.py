@@ -368,7 +368,6 @@ def _make_archive_aware_org_graphql(
 class TestArchivedRepositories:
     """Archived repositories are neither listed, counted nor scanned."""
 
-    @pytest.mark.xfail(strict=True, reason="archived repositories still counted")
     @pytest.mark.asyncio
     async def test_scan_of_an_owner_without_forks_ends_at_full_progress(self, mocker):
         class _Progress:

@@ -28,7 +28,6 @@ def test_org_repos_query_does_not_set_owner_affiliations() -> None:
     assert "ownerAffiliations" not in ORG_REPOS_ONLY
 
 
-@pytest.mark.xfail(strict=True, reason="archived repositories still listed")
 @pytest.mark.parametrize("query", [ORG_REPOS_ONLY, USER_REPOS_ONLY])
 def test_repository_listings_leave_archived_repositories_out(query: str) -> None:
     listing = query[query.index("repositories(") :]

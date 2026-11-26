@@ -148,8 +148,11 @@ yields repository nodes, mirroring the existing
 
 Per repository, in-scope filtering:
 
-- The enumerator skips **archived** repositories (already the
-  established behaviour of `_iter_org_repositories`).
+- **Archived** repositories never reach the enumerator: both listing
+  queries pass `isArchived: false`, so GitHub leaves them out of the
+  nodes and of the `totalCount` the progress display uses as its
+  total. The enumerator still skips a node that reports itself
+  archived.
 - The enumerator skips **forks** by default. The new owner-repos query
   must add `isFork` to its node selection, because `ORG_REPOS_ONLY`
   returns `nameWithOwner` and `isArchived` alone. The README documents

@@ -18,18 +18,19 @@ from typing import (
     Any,
 )
 
-# ``_APPROVE_RETRY_BASE_DELAY`` and ``_is_transient_server_error`` stay
+# The retry waits and ``_is_transient_server_error`` stay
 # attributes of the package rather than names bound here: they were
 # module-level attributes of ``dependamerge.github_async`` before the
 # split, and callers substitute them there.
 import dependamerge.github_async as _pkg
 
 from ..merge_signals import ReviewsUnreadableError
+from ..slot_lease import parked_off_dispatch
 from ._base import _GitHubAsyncBase
 from ._errors import (
-    _APPROVE_MAX_ATTEMPTS,
     _APPROVE_THROTTLE_MAX_ATTEMPTS,
     ApprovalError,
+    _approval_out_of_time,
     _http_status,
     _is_throttled_detail,
     _retry_after_seconds,
@@ -76,7 +77,15 @@ class _ReviewsMixin(_GitHubAsyncBase):
         )
 
     async def approve_pull_request(
-        self, owner: str, repo: str, number: int, body: str, *, commit_id: str
+        self,
+        owner: str,
+        repo: str,
+        number: int,
+        body: str,
+        *,
+        commit_id: str,
+        deadline: float | None = None,
+        short_waits: bool = False,
     ) -> None:
         """
         Approve a pull request at a named commit.
@@ -88,11 +97,17 @@ class _ReviewsMixin(_GitHubAsyncBase):
         the head is when GitHub records it.
 
         This endpoint returns a transient ``500`` with some regularity.
-        ``500`` is deliberately absent from ``_is_retryable_status`` --- a
-        blanket retry of every failed POST is unsafe --- so the retry is
-        handled here, where the operation's semantics are known.
+        The transport does not retry a ``500`` on a write --- a blanket
+        retry of every failed POST is unsafe --- so a server error (see
+        :func:`server_failure`) is retried here, where the operation's
+        semantics are known: four attempts, waiting as
+        ``_SERVER_ERROR_RETRY_WAITS`` says between them.  ``deadline``,
+        the run's ceiling on the event loop's clock, cuts a wait short
+        and stops the retries once it has passed, the review lookup
+        included.  ``short_waits``, for a run that may not wait
+        (``--max-wait 0``), keeps ``_APPROVE_SHORT_RETRY_WAITS``.
 
-        Crucially, a ``500`` does **not** imply the review was not
+        Crucially, a server error does **not** imply the review was not
         created: in the run analysed in
         ``docs/BULK_RUN_PERFORMANCE_AUDIT.md``, 4 of the 6 PRs whose
         approval "failed" this way went on to merge, which requires the
@@ -145,6 +160,8 @@ class _ReviewsMixin(_GitHubAsyncBase):
                 # the POST itself returned cleanly.
                 self.invalidate_block_reason(owner, repo, number)
                 return
+            if last_exc is not None and _approval_out_of_time(last_exc, deadline):
+                raise last_exc  # the lookup above found no approval
             try:
                 await self.post(
                     f"/repos/{owner}/{repo}/pulls/{number}/reviews",
@@ -194,17 +211,10 @@ class _ReviewsMixin(_GitHubAsyncBase):
                     raise
                 last_exc = e
                 server_failures += 1
-                if server_failures >= _APPROVE_MAX_ATTEMPTS:
+                if not await self._wait_after_approval_server_error(
+                    target, server_failures, e, deadline, short_waits
+                ):
                     break
-                delay = _pkg._APPROVE_RETRY_BASE_DELAY * (2 ** (server_failures - 1))
-                self.log.warning(
-                    "Transient error approving %s (attempt %d/%d); retrying in %.1fs",
-                    target,
-                    server_failures,
-                    _APPROVE_MAX_ATTEMPTS,
-                    delay,
-                )
-                await asyncio.sleep(delay)
 
         # Attempts exhausted.  One last look: the final POST may have
         # created the review despite reporting failure.
@@ -217,6 +227,43 @@ class _ReviewsMixin(_GitHubAsyncBase):
             return
         assert last_exc is not None
         raise last_exc
+
+    async def _wait_after_approval_server_error(
+        self,
+        target: str,
+        failures: int,
+        error: Exception,
+        deadline: float | None,
+        short_waits: bool,
+    ) -> bool:
+        """Wait out a server error before another approval; ``False`` to stop."""
+        waits = (
+            _pkg._APPROVE_SHORT_RETRY_WAITS
+            if short_waits
+            else _pkg._SERVER_ERROR_RETRY_WAITS
+        )
+        if failures > len(waits):
+            return False
+        delay = waits[failures - 1]
+        if deadline is not None:
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                return False
+            delay = min(delay, remaining)
+        self.log.warning(
+            "Server error approving %s (attempt %d/%d); retrying in %.1fs",
+            target,
+            failures,
+            len(waits) + 1,
+            delay,
+        )
+        self.log.debug("Approval error for %s: %s", target, error)
+        # Waiting on GitHub, so the worker's slot is free meanwhile, and
+        # the dispatch lock when a merge retry reached this approval.
+        async with parked_off_dispatch():
+            await asyncio.sleep(delay)
+        # The wait, or taking the slot and lock back, may spend the budget.
+        return deadline is None or asyncio.get_running_loop().time() < deadline
 
     async def _has_own_approval(
         self, owner: str, repo: str, number: int, *, commit_id: str

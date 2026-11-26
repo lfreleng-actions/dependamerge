@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 
+from ..github_async import GitHubServerError
 from ..github_async import PermissionError as GitHubPermissionError
 from ..merge_signals import PullRequestStopSignal
 from ..models import PullRequestInfo
@@ -278,10 +279,12 @@ class _AutoMergeEnableMixin(_MergeManagerBase):
         auto-merge on a PR whose current version we have not approved, we
         approve it as part of arming auto-merge.
 
-        Approval failures other than typed permission errors are logged
-        and swallowed so a transient approval hiccup does not prevent us
-        from at least arming auto-merge; the permission error is
-        propagated so the caller's dedicated handler can report it.
+        Approval failures other than typed permission and server errors
+        are logged and swallowed so a transient approval hiccup does not
+        prevent us from at least arming auto-merge.  Those two propagate
+        so the caller's dedicated handler reports them: a server error
+        has already exhausted the approval's own retries, and arming
+        auto-merge without the approval would only wait on it.
 
         Used at the Step 5.5 auto-merge enable point and as the rebase
         module's auto-merge callback (which fires *after* the rebase, so
@@ -301,9 +304,9 @@ class _AutoMergeEnableMixin(_MergeManagerBase):
                 await self._ensure_pr_approved(
                     pr_info, owner, repo, propagation_delay=False
                 )
-            except GitHubPermissionError:
-                # Surface token permission problems to the caller's
-                # dedicated handler rather than masking them here.
+            except (GitHubPermissionError, GitHubServerError):
+                # Surface token permission problems and server errors to
+                # the caller's dedicated handler rather than masking them.
                 raise
             except PullRequestStopSignal:
                 # A draft, or draft state unknown: never arm auto-merge.

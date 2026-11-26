@@ -10,9 +10,10 @@ from __future__ import annotations
 import asyncio
 
 from ..github_async import PermissionError as GitHubPermissionError
+from ..github_async import server_failure
 from ..merge_signals import DraftPullRequestError, PullRequestStopSignal
 from ..models import PullRequestInfo
-from ._base import _MergeManagerBase
+from ..slot_lease import holding_dispatch_lock
 from ._head_pin import (
     check_payload_head,
     confirmed_head,
@@ -21,10 +22,11 @@ from ._head_pin import (
     says_head_moved,
     stop_after_refused_head,
 )
+from ._server_error_wait import _ServerErrorWaitMixin
 from ._write_guards import is_draft_now
 
 
-class _RequiredWorkflowWaitMixin(_MergeManagerBase):
+class _RequiredWorkflowWaitMixin(_ServerErrorWaitMixin):
     """Waiting for required workflows before retrying a merge."""
 
     async def _wait_for_required_workflows_and_retry(
@@ -156,11 +158,15 @@ class _RequiredWorkflowWaitMixin(_MergeManagerBase):
 
         ``judged_head`` is the head the undispatched-workflow question
         has already been put for, or ``None`` when it has not been.
-        Returns True once a retry merged the PR or it merged during a
-        wait; False otherwise.
+        A merge GitHub failed to answer is backed off as the main
+        merge's is, within *deadline*, and the PR re-read before the
+        next attempt.  Returns True once a retry merged the PR or it
+        merged during a wait; False otherwise.
         """
         pr_key = f"{owner}/{repo}#{pr_info.number}"
         loop = asyncio.get_running_loop()
+        server_failures = 0
+        after_server_error = False
         self._track_pr_state(pr_info, "waiting")
         try:
             while True:
@@ -174,6 +180,10 @@ class _RequiredWorkflowWaitMixin(_MergeManagerBase):
                 )
                 if closed:
                     return merged_during
+                # After a server error the retry must not outlast the
+                # deadline, which the poll above and the lock can spend.
+                retry_deadline = deadline if after_server_error else None
+                after_server_error = False
                 try:
                     # Under the per-repo dispatch lock, like every other
                     # merge call.  Held around the dispatch alone and
@@ -182,7 +192,7 @@ class _RequiredWorkflowWaitMixin(_MergeManagerBase):
                     # repository batch behind this one PR, which is the
                     # head-of-line blocking the lock design avoids.
                     dispatched = await self._dispatch_after_required_workflows(
-                        pr_info, owner, repo, pr_key, merge_method
+                        pr_info, owner, repo, pr_key, merge_method, retry_deadline
                     )
                     if dispatched is None:
                         return False
@@ -200,6 +210,15 @@ class _RequiredWorkflowWaitMixin(_MergeManagerBase):
                     # a stale ``True`` here would have the diagnosis
                     # discard the freshest rejection it has.
                     self._last_merge_was_answered[pr_key] = False
+                    if server_failure(exc) is not None:
+                        server_failures += 1
+                        recheck = await self._recheck_after_server_error(
+                            pr_info, owner, repo, server_failures, deadline
+                        )
+                        if recheck is not None:
+                            return recheck
+                        after_server_error = True
+                        continue
                     if not self._merge_error_indicates_pending_workflows(str(exc)):
                         # The rejection reason changed (e.g. a workflow
                         # finished and *failed*) — terminal; let the
@@ -227,6 +246,31 @@ class _RequiredWorkflowWaitMixin(_MergeManagerBase):
         finally:
             self._track_pr_state(pr_info, None)
 
+    async def _recheck_after_server_error(
+        self,
+        pr_info: PullRequestInfo,
+        owner: str,
+        repo: str,
+        failures: int,
+        deadline: float,
+    ) -> bool | None:
+        """Wait out a server error merging, then re-read the PR.
+
+        The main merge's backoff, held to this recovery's *deadline*.
+        ``None`` to send the merge again, ``True`` when the re-read
+        finds it merged, and ``False`` when the retries or the deadline
+        are spent, the re-read included, leaving the server error stored
+        for the report, or the PR was closed unmerged.
+        """
+        if not await self._wait_after_server_error(
+            pr_info, owner, repo, failures, failures - 1, deadline=deadline
+        ):
+            return False
+        recheck = await self._recheck_pr_before_retry(owner, repo, pr_info, failures)
+        if recheck is None and not self._server_error_budget_left(deadline):
+            return False
+        return recheck
+
     async def _refresh_after_head_moved(
         self, pr_info: PullRequestInfo, owner: str, repo: str
     ) -> None:
@@ -251,6 +295,7 @@ class _RequiredWorkflowWaitMixin(_MergeManagerBase):
         repo: str,
         pr_key: str,
         merge_method: str,
+        retry_deadline: float | None = None,
     ) -> bool | None:
         """One merge call under the dispatch lock; ``None`` to stop waiting.
 
@@ -264,6 +309,12 @@ class _RequiredWorkflowWaitMixin(_MergeManagerBase):
         A merge refused because the head moved is not a workflow
         rejection: it returns ``False`` to wait again at the new head.
 
+        *retry_deadline* is set when this call retries a merge GitHub
+        failed to answer.  It is checked once the live state has been
+        read, just before the merge is sent: when it has passed, nothing
+        is sent and ``None`` is returned, leaving the stored server error
+        as the report's reason.
+
         Raises:
             DraftPullRequestError: When the PR has become a draft.
             ConfirmedHeadSignal: When GitHub refuses a confirmed PR's
@@ -272,7 +323,7 @@ class _RequiredWorkflowWaitMixin(_MergeManagerBase):
         if self._github_client is None:
             return None
         dispatch_lock = await self._get_merge_dispatch_lock(owner, repo)
-        async with dispatch_lock:
+        async with holding_dispatch_lock(dispatch_lock):
             dirty = self._repo_scoped and await self._is_pr_dirty_now(
                 pr_info, owner, repo
             )
@@ -283,6 +334,10 @@ class _RequiredWorkflowWaitMixin(_MergeManagerBase):
             if dirty:
                 return None
             sha = await merge_head(self, pr_info, owner, repo)
+            if retry_deadline is not None and not self._server_error_budget_left(
+                retry_deadline
+            ):
+                return None
             try:
                 merged = await self._github_client.merge_pull_request(
                     owner, repo, pr_info.number, merge_method, sha=sha

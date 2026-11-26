@@ -24,8 +24,10 @@ considered:
 from __future__ import annotations
 
 from ..bot_identity import is_dependabot
+from ..github_async import GitHubServerError, server_failure
 from ..merge_signals import DraftPullRequestError, PullRequestStopSignal
 from ..models import PullRequestInfo
+from ..slot_lease import holding_dispatch_lock
 from ._failure_summary import _FailureSummaryFromExceptionMixin
 from ._head_pin import (
     HEAD_CHANGED_DURING_MERGE,
@@ -33,12 +35,14 @@ from ._head_pin import (
     refresh_head,
     says_head_moved,
 )
+from ._retry import _RetryDecision
+from ._server_error_wait import _ServerErrorWaitMixin
 from ._single_pr_context import _MergeFlow
 from ._types import MergeStatus, RecreateCause, RecreateResult
 from ._write_guards import is_draft_now
 
 
-class _SinglePrRecreateMixin(_FailureSummaryFromExceptionMixin):
+class _SinglePrRecreateMixin(_FailureSummaryFromExceptionMixin, _ServerErrorWaitMixin):
     """The dependabot recreate trigger and the merge of the new PR."""
 
     async def _maybe_recreate_dependabot_pr(
@@ -204,26 +208,55 @@ class _SinglePrRecreateMixin(_FailureSummaryFromExceptionMixin):
         would be write-only bookkeeping --- and a third writer of an
         invariant nothing reads is how the invariant gets broken.
 
+        A server error is backed off as the main merge's is
+        (:meth:`_wait_after_server_error`), and the replacement re-read
+        before each further attempt, so one that merged meanwhile is
+        not merged again.
+
         Raises:
             DraftPullRequestError: When the replacement is a draft once
                 the lock is held; no merge is sent.
+            GitHubServerError: When GitHub failed to answer the merge
+                and the retries are spent, or the run's deadline passed
+                before a retry was sent, which says nothing about the
+                replacement.
         """
         attempt = 0
+        server_failures = 0
+        # The server error a retry answers, raised if its deadline passes.
+        pending: GitHubServerError | None = None
         while True:
             try:
                 merged, refused = await self._dispatch_recreated_merge_once(
-                    new_owner, new_repo, recreated_pr
+                    new_owner, new_repo, recreated_pr, pending
                 )
                 return merged, refused, False
-            except PullRequestStopSignal:
+            except (PullRequestStopSignal, GitHubServerError):
                 raise
             except Exception as merge_err:
+                pending = None
                 if says_head_moved(str(merge_err)) and attempt < self.max_retries:
                     tried = recreated_pr.head_sha
                     live = await refresh_head(self, recreated_pr, new_owner, new_repo)
                     if live and live != tried:
                         attempt += 1
                         continue
+                failure = server_failure(merge_err)
+                if failure is not None:
+                    server_failures += 1
+                    decision = await self._retry_recreated_after_server_error(
+                        recreated_pr, new_owner, new_repo, server_failures, attempt
+                    )
+                    if decision is _RetryDecision.MERGED:
+                        return True, False, False
+                    if decision is _RetryDecision.RETRY:
+                        pending = GitHubServerError(failure, "merging")
+                        pending.__cause__ = merge_err
+                        attempt += 1
+                        continue
+                    # Raised to the PR's own handler, which marks it for
+                    # the confirmation step: never ``BLOCKED``.
+                    raise GitHubServerError(failure, "merging") from merge_err
                 self.log.error(
                     "Failed to merge recreated PR %s#%s: %s",
                     recreated_pr.repository_full_name,
@@ -234,10 +267,49 @@ class _SinglePrRecreateMixin(_FailureSummaryFromExceptionMixin):
                 refused = self._exception_is_a_refusal(pr_key, merge_err, recreated_pr)
                 return False, refused, says_head_moved(str(merge_err))
 
+    async def _retry_recreated_after_server_error(
+        self,
+        recreated_pr: PullRequestInfo,
+        new_owner: str,
+        new_repo: str,
+        failures: int,
+        attempt: int,
+    ) -> _RetryDecision:
+        """Wait out a server error merging the replacement, then re-read it.
+
+        ``RETRY`` to send the merge again, ``MERGED`` when the re-read
+        finds it merged, and ``STOP`` when the retries or the run's
+        deadline, the re-read included, are spent or the replacement was
+        closed unmerged.
+        """
+        if not await self._wait_after_server_error(
+            recreated_pr, new_owner, new_repo, failures, attempt
+        ):
+            return _RetryDecision.STOP
+        recheck = await self._recheck_pr_before_retry(
+            new_owner, new_repo, recreated_pr, attempt + 1
+        )
+        if recheck is True:
+            return _RetryDecision.MERGED
+        if recheck is False or not self._server_error_budget_left():
+            return _RetryDecision.STOP
+        return _RetryDecision.RETRY
+
     async def _dispatch_recreated_merge_once(
-        self, new_owner: str, new_repo: str, recreated_pr: PullRequestInfo
+        self,
+        new_owner: str,
+        new_repo: str,
+        recreated_pr: PullRequestInfo,
+        server_error: GitHubServerError | None = None,
     ) -> tuple[bool, bool]:
-        """One merge of the recreated PR, raising what the API raised."""
+        """One merge of the recreated PR, raising what the API raised.
+
+        *server_error* is set when this call retries a merge GitHub
+        failed to answer.  The run's deadline is checked once the
+        replacement has been read under the lock, just before the merge
+        is sent: when it has passed, nothing is sent and *server_error*
+        is raised.
+        """
         new_merge_method = self._pr_merge_methods.get(
             f"{new_owner}/{new_repo}", self.default_merge_method
         )
@@ -246,7 +318,7 @@ class _SinglePrRecreateMixin(_FailureSummaryFromExceptionMixin):
         # Same per-repo dispatch serialisation as the main merge
         # path — see ``_get_merge_dispatch_lock``.
         new_dispatch_lock = await self._get_merge_dispatch_lock(new_owner, new_repo)
-        async with new_dispatch_lock:
+        async with holding_dispatch_lock(new_dispatch_lock):
             # Read live, as the main dispatch does: a replacement
             # marked draft while queued here is skipped, not merged.
             # The result already names it (``_merge_recreated_pr``).
@@ -255,6 +327,8 @@ class _SinglePrRecreateMixin(_FailureSummaryFromExceptionMixin):
                     f"{new_owner}/{new_repo}#{recreated_pr.number}"
                 )
             sha = await merge_head(self, recreated_pr, new_owner, new_repo)
+            if server_error is not None and not self._server_error_budget_left():
+                raise server_error
             new_merged = await self._github_client.merge_pull_request(
                 new_owner,
                 new_repo,

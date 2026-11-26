@@ -11,12 +11,21 @@ permission and merge code can share them without a cycle.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import re
 import time
 from collections.abc import Collection
+from dataclasses import dataclass
 from typing import (
+    TYPE_CHECKING,
     Any,
 )
+
+import httpx
+
+if TYPE_CHECKING:
+    from ..models import PullRequestInfo
 
 
 class RateLimitError(Exception):
@@ -81,8 +90,29 @@ class ApprovalError(Exception):
         super().__init__(f"GitHub refused to approve {target} ({status}): {reason}")
 
 
+def _approval_out_of_time(error: Exception, deadline: float | None) -> bool:
+    """Whether an approval retried after a server error spent *deadline*.
+
+    Asked after the review lookup before a retry, which can spend what
+    the wait left.  A throttled approval, stored as an
+    :class:`ApprovalError`, keeps its own waits and is never out of time.
+    """
+    if isinstance(error, ApprovalError) or deadline is None:
+        return False
+    return asyncio.get_running_loop().time() >= deadline
+
+
 class RetryableError(Exception):
-    """Internal exception to signal tenacity that a retry should occur."""
+    """Internal exception to signal tenacity that a retry should occur.
+
+    ``status_code`` is the HTTP status that asked for the retry, when
+    one did.  It reaches callers once the retries are exhausted, so they
+    can tell a server error from, say, a rate limit that never cleared.
+    """
+
+    def __init__(self, message: str, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
 
 
 # Ceiling of tenacity's ``wait_random_exponential`` on ``_request``.  Named
@@ -241,46 +271,119 @@ def _only_allowed_not_found(errors: Any, allowed: Collection[tuple[str, ...]]) -
     )
 
 
-# Approve-specific retry policy.  ``POST .../reviews`` returns transient
-# 500 often enough to matter in bulk runs, but a blanket retry of every
-# POST is unsafe, so this is applied only where duplicate-suppression is
-# possible (see ``approve_pull_request``).
-_APPROVE_MAX_ATTEMPTS = 3
-_APPROVE_RETRY_BASE_DELAY = 2.0
-
 # A throttled approval (a 422 saying the review was "submitted too
 # quickly") waits as GitHub advises for secondary limits: at least a
 # minute, doubling per attempt, unless ``Retry-After`` says otherwise.
 _APPROVE_THROTTLE_MAX_ATTEMPTS = 4
 _APPROVE_THROTTLE_BASE_DELAY = 60.0
 
-# Server-side statuses worth retrying for an operation that can verify
-# its own effect afterwards.  Note 500 is intentionally *not* in
-# ``_is_retryable_status``: generic retries must not replay arbitrary
-# non-idempotent writes.
-# Statuses the outer approve retry handles.  Deliberately **only** 500:
-# ``_request`` already retries 429/502/503/504 (``_is_retryable_status``)
-# plus transport and rate-limit errors via tenacity, six attempts each.
-# Including those here too would nest the loops --- up to 18 requests and
-# two sets of backoff sleeps for one approval --- which is precisely the
-# API-budget waste this work is trying to remove.  500 is the one status
-# ``_request`` does not retry, because a blanket replay of failed POSTs
-# is unsafe; it is safe *here* only because this call can verify its own
-# effect first (see ``approve_pull_request``).
-_TRANSIENT_SERVER_STATUSES = frozenset({500})
+#: Waits before each further attempt of a merge or an approval that
+#: failed on a server error: four attempts over about 26 seconds, so a
+#: short GitHub outage is outlasted rather than retried inside.
+_SERVER_ERROR_RETRY_WAITS: tuple[float, ...] = (2.0, 6.0, 18.0)
+
+#: The approval's waits under ``--max-wait 0``, which allows no long
+#: wait: three attempts, as before the longer schedule above.
+_APPROVE_SHORT_RETRY_WAITS: tuple[float, ...] = (2.0, 4.0)
+
+#: The HTTP status in an httpx error message, e.g. ``Client error '405
+#: Method Not Allowed' for url '…'``.  The one place a status is read
+#: out of message text, for errors that arrive without their response.
+_HTTP_STATUS_RE = re.compile(r"'(\d{3}) [^']*' for url")
+
+#: Transport failures in which GitHub never answered.
+_NO_RESPONSE_ERRORS = (
+    httpx.TimeoutException,
+    httpx.NetworkError,
+    httpx.RemoteProtocolError,
+)
+
+
+def status_from_message(text: str) -> int | None:
+    """The HTTP status an httpx error message names, or ``None``."""
+    match = _HTTP_STATUS_RE.search(text)
+    return int(match.group(1)) if match else None
+
+
+@dataclass(frozen=True)
+class ServerFailure:
+    """GitHub failing to answer, as opposed to judging the request.
+
+    ``status`` is the 5xx GitHub sent, or ``None`` when no response
+    arrived at all (a timeout or a connection failure).
+    """
+
+    status: int | None
+
+    def reason(self, operation: str) -> str:
+        """The reason reported for *operation* (``merging``, ``approving``)."""
+        label = str(self.status) if self.status is not None else "no response"
+        return f"GitHub returned a server error ({label}) while {operation}"
+
+
+class GitHubServerError(Exception):
+    """An operation failed because GitHub did not answer it.
+
+    The message is the reason reported for the pull request: the
+    status and the operation, with no URL or client text.
+    """
+
+    #: The pull request the error concerns when it is not the one the
+    #: merge began with: dependabot's replacement for it.  Set by the code
+    #: acting on the replacement, so the outcome names that pull request.
+    pull_request: PullRequestInfo | None = None
+
+    def __init__(self, failure: ServerFailure, operation: str) -> None:
+        self.failure = failure
+        super().__init__(failure.reason(operation))
+
+
+def _error_chain(error: BaseException) -> list[BaseException]:
+    chain: list[BaseException] = []
+    current: BaseException | None = error
+    while current is not None and current not in chain:
+        chain.append(current)
+        current = current.__cause__ or current.__context__
+    return chain
+
+
+def server_failure(error: BaseException) -> ServerFailure | None:
+    """The server error *error* records, or ``None`` when it is not one.
+
+    A server error is any 5xx status, the transport's exhausted retries
+    of one, and a timeout or connection failure.  The chain of causes
+    is followed, because the merge layer wraps the client's error in
+    one of its own; the first status found decides, so a refusal
+    wrapped around a failed follow-up read is still a refusal.  Message
+    text is read only when no exception in the chain carries a status.
+    """
+    chain = _error_chain(error)
+    for link in chain:
+        status = _http_status(link)
+        if status is None and isinstance(link, RetryableError):
+            status = link.status_code
+        if status is not None:
+            return ServerFailure(status) if status >= 500 else None
+        if isinstance(link, _NO_RESPONSE_ERRORS):
+            return ServerFailure(None)
+    status = status_from_message(str(error))
+    if status is not None and status >= 500:
+        return ServerFailure(status)
+    return None
 
 
 def _is_transient_server_error(exc: Exception) -> bool:
-    """Whether ``exc`` is a server-side failure the outer retry should own.
+    """Whether an approval that raised ``exc`` should be tried again."""
+    return server_failure(exc) is not None
 
-    Anything already covered by ``_request``'s tenacity policy returns
-    ``False`` here: by the time such an exception surfaces it has been
-    retried six times, and trying again adds cost without adding hope.
+
+def _is_retryable_status(status: int, method: str | None = None) -> bool:
+    """Whether the transport retries a response of ``status``.
+
+    A 500 is retried only for a ``GET``: repeating a write that may
+    have landed is unsafe, so writes leave a 500 to the operations
+    that can check their own effect (the merge and the approval).
     """
-    status = getattr(getattr(exc, "response", None), "status_code", None)
-    return status in _TRANSIENT_SERVER_STATUSES
-
-
-def _is_retryable_status(status: int) -> bool:
-    # Treat common transient statuses as retryable.
+    if status == 500:
+        return method is not None and method.upper() == "GET"
     return status in (429, 502, 503, 504)

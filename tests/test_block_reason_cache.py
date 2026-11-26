@@ -182,7 +182,7 @@ class TestInvalidationOnStateChange:
         import dependamerge.github_async as mod
 
         monkeypatch.setattr(mod, "_is_transient_server_error", lambda _e: True)
-        monkeypatch.setattr(mod, "_APPROVE_RETRY_BASE_DELAY", 0.0)
+        monkeypatch.setattr(mod, "_SERVER_ERROR_RETRY_WAITS", (0.0, 0.0, 0.0))
         c = _client()
         c._analyze_block_reason_uncached = AsyncMock(  # type: ignore[method-assign]
             side_effect=["Blocked by branch protection", "Blocked by failing check: X"]

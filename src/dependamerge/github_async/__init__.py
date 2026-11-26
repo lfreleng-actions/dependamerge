@@ -21,18 +21,19 @@ from ._client import (
     GitHubAsync,
 )
 from ._errors import (
-    _APPROVE_MAX_ATTEMPTS,
-    _APPROVE_RETRY_BASE_DELAY,
+    _APPROVE_SHORT_RETRY_WAITS,
     _APPROVE_THROTTLE_BASE_DELAY,
     _APPROVE_THROTTLE_MAX_ATTEMPTS,
+    _SERVER_ERROR_RETRY_WAITS,
     _TENACITY_MAX_BACKOFF,
-    _TRANSIENT_SERVER_STATUSES,
     ApprovalError,
+    GitHubServerError,
     GraphQLError,
     PermissionError,
     RateLimitError,
     RetryableError,
     SecondaryRateLimitError,
+    ServerFailure,
     _is_primary_rate_limited,
     _is_retryable_status,
     _is_secondary_rate_limited,
@@ -40,6 +41,8 @@ from ._errors import (
     _is_transient_server_error,
     _now,
     github_error_detail,
+    server_failure,
+    status_from_message,
 )
 from ._permissions import (
     OPERATION_PERMISSIONS,
@@ -59,6 +62,10 @@ __all__ = [
     "GraphQLError",
     "PermissionError",
     "ApprovalError",
+    "GitHubServerError",
+    "ServerFailure",
+    "server_failure",
+    "status_from_message",
     "IssueComments",
     "ReviewReading",
 ]

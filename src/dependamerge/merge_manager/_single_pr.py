@@ -35,14 +35,15 @@ import time
 
 from ..bot_identity import is_automation_author
 from ..bot_policy import BotPolicy
-from ..github_async import PermissionError as GitHubPermissionError
 from ..github_async import (
+    GitHubServerError,
     RateLimitError,
     SecondaryRateLimitError,
     _is_primary_rate_limited,
     _is_secondary_rate_limited,
     github_error_detail,
 )
+from ..github_async import PermissionError as GitHubPermissionError
 from ..merge_signals import (
     ConfirmedHeadSignal,
     DraftPullRequestError,
@@ -188,6 +189,19 @@ class _SinglePullRequestMixin(
             )
         except GitHubPermissionError as e:
             self._report_permission_error(flow, e)
+        except GitHubServerError as e:
+            # GitHub did not answer; a re-run may well merge it, which
+            # the confirmation step's re-read can tell.  A replacement's
+            # approval names the replacement, as a stop signal does.
+            if e.pull_request is not None:
+                result.pr_info = e.pull_request
+            result.status = MergeStatus.FAILED
+            result.error = str(e)
+            result.server_error = str(e)
+            self._pr_status(
+                f"❌ Failed: {result.pr_info.html_url} [{result.error}]",
+                level="error",
+            )
         except Exception as e:
             self._report_processing_error(flow, e)
         finally:

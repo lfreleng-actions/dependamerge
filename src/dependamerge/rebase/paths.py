@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 
+from ..github_async import GitHubServerError
 from ..merge_signals import PullRequestStopSignal
 from ..models import PullRequestInfo
 from ..slot_lease import parked
@@ -85,7 +86,9 @@ async def _run_local_path(
     # below).
     try:
         auto_merge_ok = await ctx.enable_auto_merge(pr_info, owner, repo)
-    except PullRequestStopSignal:
+    except (PullRequestStopSignal, GitHubServerError):
+        # A server error has exhausted the approval's retries; the
+        # merge manager reports it, so retrying here would only repeat it.
         raise
     except Exception as exc:
         ctx.log.debug(
@@ -188,7 +191,9 @@ async def _run_dependabot_macro_path(
 
     try:
         auto_merge_ok = await ctx.enable_auto_merge(pr_info, owner, repo)
-    except PullRequestStopSignal:
+    except (PullRequestStopSignal, GitHubServerError):
+        # A server error has exhausted the approval's retries; the
+        # merge manager reports it, so retrying here would only repeat it.
         raise
     except Exception as exc:
         ctx.log.debug(
@@ -307,9 +312,10 @@ async def _run_rest_path(
         polling._log_post_rebase_status(ctx=ctx, pr_info=pr_info)
         return Step5Outcome()
 
-    except PullRequestStopSignal:
-        # A draft, or draft state unknown: the merge manager decides the
-        # outcome; reporting a failed rebase would bury it.
+    except (PullRequestStopSignal, GitHubServerError):
+        # A draft, draft state unknown, or an approval GitHub never
+        # answered: the merge manager decides the outcome; reporting a
+        # failed rebase would bury it.
         raise
     except Exception as exc:
         ctx.log.warning("Rebase failed for %s: %s", pr_info.html_url, exc)

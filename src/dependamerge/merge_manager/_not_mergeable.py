@@ -180,8 +180,13 @@ class _NotMergeableMixin(_LiveBlockerMixin):
         PR happens to read ``clean`` would bury the actionable error in a
         note the summary never prints, and advise a re-run that would
         fail identically.
+
+        A failure on a server error is eligible too: GitHub failing to
+        answer says nothing lasting about the pull request.  It keeps
+        its reason unless the PR now reads mergeable, and then the
+        reason still names the server error, since that is the cause.
         """
-        if not result.merge_refused:
+        if not (result.merge_refused or result.server_error):
             return result
         if refreshed.get("state") == "closed":
             return result
@@ -189,6 +194,8 @@ class _NotMergeableMixin(_LiveBlockerMixin):
         if not isinstance(state, str):
             return result
         if state not in self._MERGEABLE_NOW_STATES:
+            if not result.merge_refused:
+                return result
             return await self._name_the_live_blocker(pr_info, result, state, refreshed)
         if refreshed.get("mergeable") is not True:
             # Only affirmative mergeability withdraws a failure.  A
@@ -209,6 +216,11 @@ class _NotMergeableMixin(_LiveBlockerMixin):
             level="debug",
         )
         result.status = MergeStatus.UNSETTLED
+        if result.server_error:
+            result.error = (
+                f"{result.server_error}; now {state} and expected to merge on a re-run"
+            )
+            return result
         if result.error and result.warning is None:
             # Kept as a note, the way a stale reason is kept on a PR that
             # turned out to have merged: it describes a state that no

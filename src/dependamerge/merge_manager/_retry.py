@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 from enum import Enum
 
+from ..github_async import GitHubServerError, server_failure
 from ..github_async import PermissionError as GitHubPermissionError
 from ..merge_signals import PullRequestStopSignal
 from ..models import PullRequestInfo
@@ -20,6 +21,7 @@ from ._head_pin import (
     says_head_moved,
     stop_after_refused_head,
 )
+from ._server_error_wait import _SHORT_RETRY_WAIT, _ServerErrorWaitMixin
 from ._stale_head import _says_head_is_stale, _StaleHeadRecoveryMixin
 from ._types import _merge_already_in_progress
 
@@ -38,7 +40,7 @@ class _RetryDecision(Enum):
     BACKOFF = "backoff"
 
 
-class _MergeRetryMixin(_StaleHeadRecoveryMixin):
+class _MergeRetryMixin(_ServerErrorWaitMixin, _StaleHeadRecoveryMixin):
     """Retrying a merge through its transient failure modes."""
 
     async def _merge_pr_with_retry(
@@ -58,7 +60,11 @@ class _MergeRetryMixin(_StaleHeadRecoveryMixin):
         if not self._github_client:
             raise RuntimeError("GitHub client not initialized")
 
-        for attempt in range(self.max_retries + 1):
+        attempt = 0
+        server_failures = 0
+        after_server_error = False
+        while True:
+            retry = False
             try:
                 # Check if PR has already been closed/merged before attempting
                 if attempt > 0:
@@ -67,6 +73,11 @@ class _MergeRetryMixin(_StaleHeadRecoveryMixin):
                     )
                     if recheck is not None:
                         return recheck
+                    if after_server_error and not self._server_error_budget_left():
+                        # The re-read spent the budget; the stored server
+                        # error is what the report names.
+                        break
+                after_server_error = False
 
                 if await self._dispatch_merge(pr_info, owner, repo):
                     return True
@@ -87,9 +98,7 @@ class _MergeRetryMixin(_StaleHeadRecoveryMixin):
                     decision = await self._retry_after_false_merge(
                         pr_info, owner, repo, attempt
                     )
-                    if decision is _RetryDecision.STOP:
-                        break
-                    continue
+                    retry = decision is not _RetryDecision.STOP
 
             except GitHubPermissionError:
                 # Token cannot merge on this repo — propagate to the
@@ -104,14 +113,30 @@ class _MergeRetryMixin(_StaleHeadRecoveryMixin):
                 # A draft, or draft state unknown: the single-PR handler
                 # decides the outcome; retrying would dispatch again.
                 raise
+            except GitHubServerError:
+                # Raised by a recovery's approval, which has spent its
+                # own retries: not this merge's failure to retry.
+                raise
             except Exception as exc:
-                decision = await self._handle_merge_exception(
-                    pr_info, owner, repo, exc, attempt
-                )
-                if decision is _RetryDecision.MERGED:
-                    return True
-                if decision is _RetryDecision.STOP:
-                    break
+                if server_failure(exc) is not None:
+                    self._remember_merge_exception(pr_info, owner, repo, exc)
+                    server_failures += 1
+                    retry = await self._wait_after_server_error(
+                        pr_info, owner, repo, server_failures, attempt
+                    )
+                    after_server_error = True
+                else:
+                    decision = await self._handle_merge_exception(
+                        pr_info, owner, repo, exc, attempt
+                    )
+                    if decision is _RetryDecision.MERGED:
+                        return True
+                    retry = (
+                        decision is _RetryDecision.RETRY and attempt < self.max_retries
+                    )
+            if not retry:
+                break
+            attempt += 1
 
         self.log.debug(
             f"_merge_pr_with_retry returning False for {owner}/{repo}#{pr_info.number} after all retries"
@@ -169,17 +194,7 @@ class _MergeRetryMixin(_StaleHeadRecoveryMixin):
     ) -> _RetryDecision:
         """Classify a merge exception into the loop's next move."""
         error_msg = str(exc)
-
-        # Store exception for better error reporting
-        pr_key = f"{owner}/{repo}#{pr_info.number}"
-        self._last_merge_exception[pr_key] = exc
-        self._last_merge_exception_head[pr_key] = pr_info.head_sha
-        # This attempt ended in an exception, so it is now the last
-        # event --- superseding an answer an earlier attempt received.
-        self._last_merge_was_answered[pr_key] = False
-        self.log.debug(
-            f"Stored exception for {pr_key}: {type(exc).__name__}: {str(exc)[:200]}"
-        )
+        pr_key = self._remember_merge_exception(pr_info, owner, repo, exc)
 
         # "Merge already in progress" is unambiguous on its own,
         # so it is matched *before* the 405 branch rather than
@@ -214,6 +229,21 @@ class _MergeRetryMixin(_StaleHeadRecoveryMixin):
         return await self._backoff_before_retry(
             pr_info, owner, repo, error_msg, attempt
         )
+
+    def _remember_merge_exception(
+        self, pr_info: PullRequestInfo, owner: str, repo: str, exc: Exception
+    ) -> str:
+        """Store ``exc`` for the failure report; return the PR's key."""
+        pr_key = f"{owner}/{repo}#{pr_info.number}"
+        self._last_merge_exception[pr_key] = exc
+        self._last_merge_exception_head[pr_key] = pr_info.head_sha
+        # This attempt ended in an exception, so it is now the last
+        # event --- superseding an answer an earlier attempt received.
+        self._last_merge_was_answered[pr_key] = False
+        self.log.debug(
+            f"Stored exception for {pr_key}: {type(exc).__name__}: {str(exc)[:200]}"
+        )
+        return pr_key
 
     async def _retry_after_head_moved(
         self, pr_info: PullRequestInfo, owner: str, repo: str, attempt: int
@@ -396,5 +426,5 @@ class _MergeRetryMixin(_StaleHeadRecoveryMixin):
             return _RetryDecision.STOP
 
         # Wait a bit before retrying
-        await asyncio.sleep(1.0)
+        await asyncio.sleep(_SHORT_RETRY_WAIT)
         return _RetryDecision.RETRY

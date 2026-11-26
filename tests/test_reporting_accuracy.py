@@ -572,22 +572,34 @@ class TestApproveRetry:
         assert c.post.await_count == 1
         await c.aclose()
 
-    @pytest.mark.parametrize("status", [429, 502, 503, 504])
     @pytest.mark.asyncio
-    async def test_does_not_double_retry_inner_statuses(self, status: int) -> None:
-        """Statuses ``_request`` already retries must not be retried again.
+    async def test_does_not_double_retry_rate_limits(self) -> None:
+        """``_request`` already retries a 429; retrying it here would nest."""
+        c = GitHubAsync(token="t")
+        c.post = AsyncMock(side_effect=_http_error(429))  # type: ignore[method-assign]
+        c._has_own_approval = AsyncMock(return_value=False)  # type: ignore[method-assign]
 
-        ``_request`` gives 429/502/503/504 six tenacity attempts. Retrying
-        them out here as well would nest the loops --- up to 18 requests
-        and two sets of backoff sleeps for one approval.
-        """
+        with pytest.raises(httpx.HTTPStatusError):
+            await c.approve_pull_request("o", "r", 1, "lgtm", commit_id="abc123")
+        assert c.post.await_count == 1
+        await c.aclose()
+
+    @pytest.mark.parametrize("status", [502, 503, 504])
+    @pytest.mark.asyncio
+    async def test_backs_off_on_every_server_error(
+        self, status: int, monkeypatch
+    ) -> None:
+        """A 502/503/504 that outlasts the transport gets the same schedule."""
+        sleep = AsyncMock()
+        monkeypatch.setattr(asyncio, "sleep", sleep)
         c = GitHubAsync(token="t")
         c.post = AsyncMock(side_effect=_http_error(status))  # type: ignore[method-assign]
         c._has_own_approval = AsyncMock(return_value=False)  # type: ignore[method-assign]
 
         with pytest.raises(httpx.HTTPStatusError):
             await c.approve_pull_request("o", "r", 1, "lgtm", commit_id="abc123")
-        assert c.post.await_count == 1
+        assert c.post.await_count == 4
+        assert [call.args[0] for call in sleep.await_args_list] == [2.0, 6.0, 18.0]
         await c.aclose()
 
     @pytest.mark.asyncio

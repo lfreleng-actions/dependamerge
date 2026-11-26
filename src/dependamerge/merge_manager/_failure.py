@@ -50,21 +50,23 @@ class _FailureReportingMixin(_FailureSummaryFromExceptionMixin):
         re-judge it later: such a reason is a snapshot of one instant and
         may have expired by the time the summary prints.  A stuck check
         is also a state, so that branch qualifies too.  A missing token
-        scope, a 403 or a 502 does not, and passing them through here
-        unmarked keeps the message that explains what to fix.
+        scope or a 403 does not, and passing them through here unmarked
+        keeps the message that explains what to fix.  A server error, marked
+        ``server_error``, outranks a stuck check; a later reading may settle it.
         """
         stuck_reported = False
         pr_key = f"{pr_info.repository_full_name}#{pr_info.number}"
         # A rebase the cooldown held back says why the PR stayed behind.
         if failure_reason and pr_key in self._rebase_suppressed:
             failure_reason = f"{failure_reason}; {self._rebase_suppressed[pr_key]}"
-        # A manual-rebase refusal is the whole story: a stuck check on a
-        # PR nobody may rebase here is not the cause to report.
+        # A manual-rebase refusal or a server error is the whole story.
         policy_refusal = pr_key in self._local_rebase_refused
+        server_error = self._merge_server_error(pr_key, policy_refusal)
         if (
             not is_dependabot(pr_info.author)
             and not self.preview_mode
             and not policy_refusal
+            and server_error is None
         ):
             try:
                 detection = await self._detect_stuck_required_check(pr_info)
@@ -102,6 +104,7 @@ class _FailureReportingMixin(_FailureSummaryFromExceptionMixin):
             # error too, so the end-of-run summary surfaces the real
             # cause rather than a generic "all retry attempts" line.
             result.error = failure_reason or "Failed to merge after all retry attempts"
+            result.server_error = server_error
         # Keep the live output terse: the full (often long) reason is
         # shown in the end-of-run summary via ``result.error``, so
         # repeating it inline only duplicates it.  The ``⚠️ Stuck
@@ -184,9 +187,7 @@ class _FailureReportingMixin(_FailureSummaryFromExceptionMixin):
             # state: it must not be withdrawn or replaced by a later
             # reading, so it is not marked as a refusal.
             return rebase.LOCAL_REBASE_UNAVAILABLE, False
-        last_exception = self._last_merge_exception.get(pr_key)
-        if last_exception is not None and self._last_merge_was_answered.get(pr_key):
-            last_exception = None
+        last_exception = self._live_merge_exception(pr_key)
         self.log.debug(
             f"_get_failure_summary called for {pr_key}, mergeable_state={pr_info.mergeable_state}, mergeable={pr_info.mergeable}, has_exception={last_exception is not None}"
         )

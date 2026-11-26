@@ -11,16 +11,11 @@ from the PR's state, so it is consulted first.
 
 from __future__ import annotations
 
-import re
-
+from ..github_async import server_failure, status_from_message
 from ..models import PullRequestInfo
 from ._base import _MergeManagerBase
 from ._head_pin import HEAD_CHANGED_DURING_MERGE, says_head_moved
 from ._types import _github_error_detail
-
-#: The HTTP status in an httpx error message, e.g. ``Client error '405
-#: Method Not Allowed' for url '…'``.
-_HTTP_STATUS_RE = re.compile(r"'(\d{3}) [^']*' for url")
 
 #: Statuses on which GitHub reached a verdict about *the pull request*.
 #: The merge endpoint returns 405 for "not mergeable" --- which is how a
@@ -40,7 +35,7 @@ _HTTP_STATUS_RE = re.compile(r"'(\d{3}) [^']*' for url")
 #: --- defaults to being treated as a verdict, and so becomes
 #: withdrawable on a later clean reading.  The safe default is the other
 #: way round: an unrecognised status keeps its message.
-_STATE_VERDICT_STATUSES = frozenset({"405", "409"})
+_STATE_VERDICT_STATUSES = frozenset({405, 409})
 
 
 def _describes_the_attempt(error_msg: str) -> bool:
@@ -58,10 +53,10 @@ def _describes_the_attempt(error_msg: str) -> bool:
     other branches, which is why this returns ``False`` rather than
     guessing.
     """
-    match = _HTTP_STATUS_RE.search(error_msg)
-    if match is None:
+    status = status_from_message(error_msg)
+    if status is None:
         return False
-    return match.group(1) not in _STATE_VERDICT_STATUSES
+    return status not in _STATE_VERDICT_STATUSES
 
 
 def _is_state_verdict(error_msg: str) -> bool:
@@ -73,12 +68,27 @@ def _is_state_verdict(error_msg: str) -> bool:
     request was judged, so a failure explained by it must not be
     withdrawn on a later clean reading.
     """
-    match = _HTTP_STATUS_RE.search(error_msg)
-    return match is not None and match.group(1) in _STATE_VERDICT_STATUSES
+    return status_from_message(error_msg) in _STATE_VERDICT_STATUSES
 
 
 class _FailureSummaryFromExceptionMixin(_MergeManagerBase):
     """Reading a merge failure reason out of the exception that caused it."""
+
+    def _live_merge_exception(self, pr_key: str) -> Exception | None:
+        """The stored merge exception, unless a later answer superseded it."""
+        if self._last_merge_was_answered.get(pr_key):
+            return None
+        return self._last_merge_exception.get(pr_key)
+
+    def _merge_server_error(self, pr_key: str, policy_refusal: bool) -> str | None:
+        """The server-error reason the failed merge ended on, if it did."""
+        if policy_refusal:
+            return None
+        last_exception = self._live_merge_exception(pr_key)
+        if last_exception is None:
+            return None
+        failure = server_failure(last_exception)
+        return failure.reason("merging") if failure is not None else None
 
     def _exception_is_a_refusal(
         self,
@@ -136,6 +146,12 @@ class _FailureSummaryFromExceptionMixin(_MergeManagerBase):
         """
         error_msg = str(last_exception)
         self.log.debug(f"Last exception for {pr_key}: {error_msg[:200]}")
+        # GitHub failing to answer is reported as that, whatever body
+        # came with it: the body of a 5xx explains nothing about the PR,
+        # and the PR's state says nothing about the failure.
+        failure = server_failure(last_exception)
+        if failure is not None:
+            return failure.reason("merging"), False
         # The merge named a commit and GitHub found another at the head,
         # every retry included.
         if says_head_moved(error_msg):
@@ -181,9 +197,9 @@ class _FailureSummaryFromExceptionMixin(_MergeManagerBase):
             ), False
         elif "403" in error_msg and "forbidden" in error_lower:
             return "insufficient permissions", False
-        # Surface transient HTTP errors (502, 405 etc.) accurately instead
-        # of falling through to infer a reason from mergeable_state, which
-        # may be stale or misleading (e.g. "clean" → "branch protection").
+        # Surface a transient 405 accurately instead of falling through
+        # to infer a reason from mergeable_state, which may be stale or
+        # misleading (e.g. "clean" → "branch protection").
         elif "405" in error_msg and "Method Not Allowed" in error_msg:
             if pr_info.mergeable_state in ("clean", "unstable"):
                 return (
@@ -192,11 +208,5 @@ class _FailureSummaryFromExceptionMixin(_MergeManagerBase):
                     "see https://www.githubstatus.com)"
                 ), False
             # For non-clean states, fall through to state-based analysis below
-        elif "502" in error_msg:
-            return (
-                "GitHub API returned 502 Bad Gateway "
-                "(GitHub may be experiencing issues, "
-                "see https://www.githubstatus.com)"
-            ), False
 
         return None

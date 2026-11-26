@@ -12,8 +12,10 @@ from the conflict handler so that it reads as the sequence it is.
 
 from __future__ import annotations
 
+from ..github_async import GitHubServerError
 from ..merge_signals import DraftPullRequestError, PullRequestStopSignal
 from ..models import PullRequestInfo
+from ..slot_lease import holding_dispatch_lock
 from ._failure_summary import _FailureSummaryFromExceptionMixin
 from ._head_pin import (
     HEAD_CHANGED_DURING_MERGE,
@@ -77,6 +79,8 @@ class _MergeConflictWaitMixin(_FailureSummaryFromExceptionMixin):
         Raises:
             ConfirmedHeadSignal: For a confirmed PR once a rebase is
                 under way, requested or not, before any approval.
+            GitHubServerError: When GitHub failed to answer the
+                approval; auto-merge is not armed.
         """
         note: str | None = None
         if already_rebasing:
@@ -90,8 +94,9 @@ class _MergeConflictWaitMixin(_FailureSummaryFromExceptionMixin):
             )
         try:
             await self._approve_pr(owner, repo, pr_info)
-        except PullRequestStopSignal:
-            # A draft, or draft state unknown: never approved here.
+        except (PullRequestStopSignal, GitHubServerError):
+            # A draft, or draft state unknown: never approved here.  An
+            # approval GitHub never answered is reported, not armed past.
             raise
         except Exception as exc:
             self.log.debug(
@@ -258,6 +263,11 @@ class _MergeConflictWaitMixin(_FailureSummaryFromExceptionMixin):
             result.error = HEAD_CHANGED_DURING_MERGE
             self._pr_status(f"❌ Failed: {pr_info.html_url}", level="error")
             return result
+        if isinstance(exc, GitHubServerError):
+            # GitHub failing to answer, which a later reading can settle.
+            result.error = result.server_error = str(exc)
+            self._pr_status(f"❌ Failed: {pr_info.html_url}", level="error")
+            return result
         # Deliberately *not* marked as a refusal.  Approval raised, which
         # is the run failing rather than GitHub judging the pull
         # request, so a later clean reading says nothing about whether
@@ -314,11 +324,13 @@ class _MergeConflictWaitMixin(_FailureSummaryFromExceptionMixin):
         not ``clean``, which is a reading of the pull request and can
         stop being true a moment later, so the confirmation step is
         allowed to withdraw it.  Reaching it *after* an attempt is only
-        sometimes that; see :meth:`_rebased_merge_was_refused`.
+        sometimes that; see :meth:`_rebased_merge_was_refused`.  An
+        attempt that ended on a server error reports it, marked so the
+        confirmation step can settle it as it would on any other PR.
         """
         if pr_info.mergeable_state == "clean":
             dispatch_lock = await self._get_merge_dispatch_lock(owner, repo)
-            async with dispatch_lock:
+            async with holding_dispatch_lock(dispatch_lock):
                 # Read live, as every other dispatch does: a PR marked
                 # draft since the wait's last poll is skipped, not merged.
                 if await is_draft_now(self, pr_info, owner, repo):
@@ -332,12 +344,18 @@ class _MergeConflictWaitMixin(_FailureSummaryFromExceptionMixin):
                 )
                 return result
             refused = self._rebased_merge_was_refused(pr_info)
+            server_error = self._merge_server_error(
+                f"{pr_info.repository_full_name}#{pr_info.number}",
+                policy_refusal=False,
+            )
         else:
             refused = True
+            server_error = None
 
         result.status = MergeStatus.FAILED
         result.merge_refused = refused
-        result.error = (
+        result.server_error = server_error
+        result.error = server_error or (
             "rebase cleared the conflict but the PR could not be merged "
             "(auto-merge unavailable)"
         )

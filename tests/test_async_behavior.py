@@ -315,7 +315,7 @@ class TestGitHubServiceAsync:
                 }
 
                 # Mock the repository processing function
-                async def mock_fetch_repo_prs(owner, name):
+                async def mock_fetch_repo_prs(owner, name, *, lists):
                     await mock_process_repo_delay(f"{owner}/{name}")
                     return [], {"hasNextPage": False, "endCursor": None}
 
@@ -418,7 +418,7 @@ class TestGitHubClientAsyncIntegration:
             "owner", "repo", 42
         )
         mock_async.get_paginated.assert_called_once_with(
-            "/repos/owner/repo/pulls/42/files", per_page=100
+            "/repos/owner/repo/pulls/42/files", per_page=100, yield_malformed=True
         )
 
     @patch("dependamerge.github_async.GitHubAsync")

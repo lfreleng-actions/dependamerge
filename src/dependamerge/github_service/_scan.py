@@ -16,6 +16,7 @@ from ..models import (
 )
 from ._base import _GitHubServiceBase
 from ._repositories import _listed_without_open_prs
+from ._scan_lists import BLOCKED_SCAN_LISTS
 
 
 class _ScanMixin(_GitHubServiceBase):
@@ -60,7 +61,7 @@ class _ScanMixin(_GitHubServiceBase):
                 try:
                     owner, name = self._split_owner_repo(repo_full_name)
                     first_nodes, page_info = await self._fetch_repo_prs_first_page(
-                        owner, name
+                        owner, name, lists=BLOCKED_SCAN_LISTS
                     )
                     prs_nodes: list[dict[str, Any]] = list(first_nodes)
                     has_next = bool(page_info.get("hasNextPage"))
@@ -69,7 +70,7 @@ class _ScanMixin(_GitHubServiceBase):
                     # Include additional pages of PRs if present
                     if has_next:
                         async for pr_node in self._iter_repo_open_prs_pages(
-                            owner, name, end_cursor
+                            owner, name, end_cursor, lists=BLOCKED_SCAN_LISTS
                         ):
                             prs_nodes.append(pr_node)
 

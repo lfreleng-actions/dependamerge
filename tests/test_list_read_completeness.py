@@ -23,6 +23,7 @@ from urllib.parse import parse_qsl
 
 import pytest
 
+from dependamerge.file_reading import read_pr_files
 from dependamerge.github_async import GitHubAsync
 from dependamerge.github_client.queries import _fetch_pr_files
 from dependamerge.github_service import GitHubService
@@ -142,6 +143,23 @@ class TestPullRequestFiles:
         assert [f.filename for f in files] == [f["filename"] for f in first]
         warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
         assert any("acme/widget#7" in r.getMessage() for r in warnings)
+
+    @pytest.mark.parametrize("second_page", [{}, None, [None]])
+    @pytest.mark.asyncio
+    async def test_a_malformed_second_page_is_incomplete(
+        self, second_page: Any
+    ) -> None:
+        first = [{"filename": f"f{n}.py", "additions": 1} for n in range(100)]
+
+        def route(_path: str, page: int) -> tuple[Any, bool]:
+            return (first, True) if page == 1 else (second_page, False)
+
+        async with GitHubAsync(token="t") as gh:
+            _wire(gh, route)
+            reading = await read_pr_files(gh, "acme", "widget", 7)
+
+        assert len(reading.files) == 100
+        assert reading.complete is False
 
 
 class TestLatestRelease:

@@ -29,6 +29,7 @@ from dependamerge.github_graphql import (
 from dependamerge.github_service import GitHubService
 from dependamerge.models import ComparisonResult, PullRequestInfo
 from dependamerge.repo_selection import RepoSelection
+from tests.conftest import with_selected_lists
 
 REPOSITORIES = 150
 ACTIVE = frozenset(range(0, 144, 12))
@@ -83,6 +84,7 @@ class _Owner:
         self.variable_reads: list[str] = []
         self.listings = 0
         self.pages: list[str] = []
+        self.selections: set[frozenset[str]] = set()
         self.in_flight = 0
         self.most_in_flight = 0
 
@@ -165,13 +167,18 @@ class _Owner:
         assert query == REPO_OPEN_PRS_PAGE
         name = variables["name"]
         self.pages.append(name)
+        self.selections.add(
+            frozenset(k for k in _LIST_SWITCHES if variables.get(k) is True)
+        )
         self.in_flight += 1
         self.most_in_flight = max(self.most_in_flight, self.in_flight)
         try:
             if self.hold is not None and name == _name(0):
                 await self.hold.wait()
             await asyncio.sleep(self.delay(name) if self.delay else 0.001)
-            return self._page(name, bool(variables.get("withPolicy")))
+            return with_selected_lists(
+                self._page(name, bool(variables.get("withPolicy"))), variables
+            )
         finally:
             self.in_flight -= 1
 
@@ -302,6 +309,32 @@ async def _status(owner: _Owner, mocker) -> Any:
 
 def _found(found: Any) -> list[tuple[str, int, list[str]]]:
     return [(pr.repository_full_name, pr.number, c.reasons) for pr, c in found]
+
+
+_LIST_SWITCHES = ("withFiles", "withReviews", "withChecks", "withComments")
+
+
+class TestListSelection:
+    """Each scan asks only for the nested lists it reads."""
+
+    @pytest.mark.asyncio
+    async def test_merge_scans_select_files_and_reviews(self) -> None:
+        for scan in (_similar, _owner_wide):
+            owner = _Owner(counted=True)
+            await scan(owner)
+            assert owner.selections == {frozenset({"withFiles", "withReviews"})}
+
+    @pytest.mark.asyncio
+    async def test_blocked_selects_checks_and_comments(self) -> None:
+        owner = _Owner(counted=True)
+        await _blocked(owner)
+        assert owner.selections == {frozenset({"withChecks", "withComments"})}
+
+    @pytest.mark.asyncio
+    async def test_status_selects_files_only(self, mocker) -> None:
+        owner = _Owner(counted=True)
+        await _status(owner, mocker)
+        assert owner.selections == {frozenset({"withFiles"})}
 
 
 class TestRequests:
@@ -539,7 +572,10 @@ class _Transport:
             self.pages.append(variables["name"])
             prs = {"pageInfo": {"hasNextPage": False}, "nodes": []}
             return httpx.Response(
-                200, json={"data": {"repository": {"pullRequests": prs}}}
+                200,
+                json=with_selected_lists(
+                    {"data": {"repository": {"pullRequests": prs}}}, variables
+                ),
             )
         counted = "pullRequests(states: OPEN)" in query and variables.get(
             "withCounts", True

@@ -16,12 +16,19 @@ from ..models import (
     UnmergeableReason,
 )
 from ._base import _GitHubServiceBase
+from ._failing_checks import read_failing_checks
 from ._helpers import (
     _bool_or_none,
     _clone_url_with_git_suffix,
     _str_or_none,
 )
-from ._pr_extract import scan_reviews_complete
+from ._list_completion import complete_scan_comments
+from ._pr_extract import (
+    find_copilot_comments,
+    scan_files,
+    scan_files_total,
+    scan_reviews_complete,
+)
 
 
 class _PullRequestNodeMixin(_GitHubServiceBase):
@@ -90,13 +97,21 @@ class _PullRequestNodeMixin(_GitHubServiceBase):
             )
 
         # Status check rollup
-        failing_checks = self._extract_failing_checks(pr)
-        if failing_checks:
+        failing_checks = await read_failing_checks(self._api, repo_full_name, pr)
+        if failing_checks.names or not failing_checks.complete:
+            details = f"Failing checks: {', '.join(sorted(set(failing_checks.names)))}"
+            description = "Required status checks are failing"
+            if not failing_checks.complete:
+                # The table shows only the description, so the note goes
+                # there as well as in the details.
+                note = " (the check list could not be read in full)"
+                details += note
+                description += note
             reasons.append(
                 UnmergeableReason(
                     type="failing_checks",
-                    description="Required status checks are failing",
-                    details=f"Failing checks: {', '.join(sorted(set(failing_checks)))}",
+                    description=description,
+                    details=details,
                 )
             )
 
@@ -114,7 +129,9 @@ class _PullRequestNodeMixin(_GitHubServiceBase):
             if not reasons:
                 return None
 
-        copilot_comments = self._extract_copilot_comments(pr)
+        copilot_comments = find_copilot_comments(
+            await complete_scan_comments(self._api, repo_full_name, pr)
+        )
         # File change extraction not required for UnmergeablePR summary here
 
         return UnmergeablePR(
@@ -168,6 +185,8 @@ class _PullRequestNodeMixin(_GitHubServiceBase):
             is_draft=pr.get("isDraft") is True,
             behind_by=None,  # Not included in GraphQL; could be computed if needed
             files_changed=files,
+            files_complete=scan_files(pr)[1],
+            files_total=scan_files_total(pr),
             repository_full_name=repo_full_name,
             html_url=pr.get("url") or "",
             reviews=reviews,

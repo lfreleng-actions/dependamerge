@@ -32,6 +32,7 @@ from typing import TYPE_CHECKING, Any
 
 from ..bot_identity import rest_author_login
 from ..bot_policy_files import PolicyFiles
+from ..file_reading import read_pr_files
 from ..models import (
     FileChange,
     OrganizationScanResult,
@@ -49,42 +50,13 @@ async def _fetch_pr_files(
     api: GitHubAsync, owner: str, repo: str, pr_number: int
 ) -> list[FileChange]:
     """Fetch a pull request's changed files, tolerating pagination failure."""
-    files_changed: list[FileChange] = []
-    try:
-        async for page in api.get_paginated(
-            f"/repos/{owner}/{repo}/pulls/{pr_number}/files", per_page=100
-        ):
-            for f in page:
-                file_data = f
-                assert isinstance(file_data, dict)
-                files_changed.append(
-                    FileChange(
-                        filename=file_data.get("filename", ""),
-                        additions=int(file_data.get("additions", 0)),
-                        deletions=int(file_data.get("deletions", 0)),
-                        changes=int(
-                            file_data.get(
-                                "changes",
-                                (file_data.get("additions", 0) or 0)
-                                + (file_data.get("deletions", 0) or 0),
-                            )
-                        ),
-                        status=file_data.get("status", "modified"),
-                    )
-                )
-    except Exception as exc:
-        # The transport has already retried; keep what was read, but say
-        # the list is incomplete.
-        api.log.warning(
-            "File list for %s/%s#%d is incomplete (%d read): %s",
-            owner,
-            repo,
-            pr_number,
-            len(files_changed),
-            exc,
-        )
-        api.log.debug("File pagination failure detail", exc_info=True)
-    return files_changed
+    return (await read_pr_files(api, owner, repo, pr_number)).files
+
+
+def _changed_files(pr: dict[str, Any]) -> int | None:
+    """A REST pull request payload's ``changed_files``, when it is a count."""
+    count = pr.get("changed_files")
+    return count if isinstance(count, int) and not isinstance(count, bool) else None
 
 
 def _build_pull_request_info(
@@ -95,6 +67,7 @@ def _build_pull_request_info(
     files_changed: list[FileChange],
     reviews: list[ReviewInfo],
     reviews_complete: bool = True,
+    files_complete: bool = True,
 ) -> PullRequestInfo:
     """Assemble a ``PullRequestInfo`` from a REST pull request payload."""
     return PullRequestInfo(
@@ -112,6 +85,8 @@ def _build_pull_request_info(
         is_draft=pr.get("draft") is True,
         behind_by=None,
         files_changed=files_changed,
+        files_complete=files_complete,
+        files_total=_changed_files(pr),
         repository_full_name=f"{owner}/{repo}",
         html_url=pr.get("html_url") or "",
         reviews=reviews,
@@ -160,7 +135,9 @@ class _GitHubQueryMixin:
                 pr_response = await api.get(f"/repos/{owner}/{repo}/pulls/{pr_number}")
                 assert isinstance(pr_response, dict), "PR endpoint must return a dict"
                 pr: dict[str, Any] = pr_response
-                files_changed = await _fetch_pr_files(api, owner, repo, pr_number)
+                files = await read_pr_files(
+                    api, owner, repo, pr_number, _changed_files(pr)
+                )
                 reviews, reviews_complete = await read_reviews(
                     api, owner, repo, pr_number
                 )
@@ -169,9 +146,10 @@ class _GitHubQueryMixin:
                     owner,
                     repo,
                     pr_number,
-                    files_changed,
+                    files.files,
                     reviews,
                     reviews_complete,
+                    files_complete=files.complete,
                 )
 
         return asyncio.run(_run())  # type: ignore[no-any-return]

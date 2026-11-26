@@ -28,7 +28,9 @@ from typing import Any
 
 __all__ = [
     "FAILING_CONCLUSIONS",
+    "FAILING_STATUS_STATES",
     "failing_check_names",
+    "failing_status_names",
     "latest_check_run_per_name",
 ]
 
@@ -56,6 +58,12 @@ FAILING_CONCLUSIONS = frozenset(
         "startup_failure",
     }
 )
+
+
+# Commit status states that mark a context as failing.  GitHub collapses
+# repeated posts to one context itself, so no deduplication applies.
+# Both sets are lowercase; GraphQL spells the same states in uppercase.
+FAILING_STATUS_STATES = frozenset({"failure", "error"})
 
 
 def _parse_timestamp(value: Any) -> datetime | None:
@@ -171,3 +179,17 @@ def failing_check_names(runs: Iterable[Mapping[str, Any]]) -> list[str]:
             ordered.append(name)
 
     return [name for name in ordered if _is_failing(latest[name])]
+
+
+def failing_status_names(statuses: Iterable[Mapping[str, Any]]) -> list[str]:
+    """Contexts of the commit *statuses* in a failing state, in order.
+
+    Accepts the REST and GraphQL spellings of the state.
+    """
+    return [
+        name
+        for status in statuses
+        if isinstance(status, Mapping)
+        and (status.get("state") or "").strip().lower() in FAILING_STATUS_STATES
+        and (name := (status.get("context") or "").strip())
+    ]

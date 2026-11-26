@@ -252,6 +252,7 @@ class TestScanCompleteness:
         node = {
             "number": _NUMBER,
             "author": {"__typename": "Bot", "login": "dependabot"},
+            "files": {"totalCount": 0, "nodes": []},
             "reviews": {
                 "totalCount": 25,
                 "nodes": [

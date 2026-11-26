@@ -1053,7 +1053,7 @@ class TestABodyIsNotAlwaysAVerdict:
 
         reason, refused = await mgr._get_failure_summary(pr)
 
-        assert reason == "Server Error"
+        assert reason == "GitHub returned a server error (502) while merging"
         assert refused is False
 
 

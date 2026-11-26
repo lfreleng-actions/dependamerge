@@ -76,6 +76,12 @@ class MergeResult:
     # same way.  Defaults to False so a new failure path is excluded
     # until it opts in, rather than silently inheriting the correction.
     merge_refused: bool = False
+    # The reason, when the failure was GitHub failing to answer --- a
+    # server error, a timeout --- rather than judging the pull request.
+    # Kept apart from ``merge_refused``: it is a different fact, but it
+    # too says nothing lasting about the PR, so a later reading may
+    # settle it.
+    server_error: str | None = None
 
 
 class RecreateCause(Enum):

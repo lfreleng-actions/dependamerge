@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from functools import partial
 from typing import TYPE_CHECKING, Any, NoReturn
 
 from ..github_async import ApprovalError
@@ -360,10 +361,10 @@ async def approve_at_head(
     if client is None:
         raise RuntimeError("GitHub client not initialized")
     body = "🤖 Dependamerge\nApproved this pull request ✅"
+    approve = partial(client.approve_pull_request, owner, repo, pr_info.number, body)
+    deadline, no_wait = manager._run_deadline, manager._no_wait
     try:
-        await client.approve_pull_request(
-            owner, repo, pr_info.number, body, commit_id=commit_id
-        )
+        await approve(commit_id=commit_id, deadline=deadline, short_waits=no_wait)
     except ApprovalError as refusal:
         if not approval_says_head_moved(refusal):
             raise
@@ -385,9 +386,7 @@ async def approve_at_head(
         if draft:
             raise DraftPullRequestError(target) from refusal
         try:
-            await client.approve_pull_request(
-                owner, repo, pr_info.number, body, commit_id=retry_at
-            )
+            await approve(commit_id=retry_at, deadline=deadline, short_waits=no_wait)
         except ApprovalError as again:
             if not approval_says_head_moved(again):
                 raise

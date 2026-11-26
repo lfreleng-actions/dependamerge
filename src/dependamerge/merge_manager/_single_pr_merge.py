@@ -33,6 +33,7 @@ Do NOT skip when:
 from __future__ import annotations
 
 from ..merge_signals import DraftPullRequestError
+from ..slot_lease import holding_dispatch_lock
 from ._single_pr_context import _MergeFlow
 from ._single_pr_outcome import _SinglePrOutcomeMixin
 from ._stale_head import _StaleHeadRecoveryMixin
@@ -63,10 +64,15 @@ class _SinglePrMergeMixin(_SinglePrOutcomeMixin, _StaleHeadRecoveryMixin):
             merged, early = await self._attempt_direct_merge(flow)
             if early is not None:
                 return early
-            if self._refusal_is_final(flow, merged):
+            if self._refusal_is_final(flow, merged) or (
+                not merged and self._server_error_is_live(flow)
+            ):
                 # The refusal is final: neither recovery below may
                 # replace the manual-rebase answer, even when an earlier
                 # attempt left a workflow 405 or a dirty snapshot behind.
+                # Nor may they follow a merge whose retries ended on a
+                # server error: approving and merging again would spend
+                # a fresh budget of writes, past the run's deadline too.
                 return await self._handle_failed_merge(flow)
             merged = await self._retry_after_review_or_workflows(flow, merged)
             if self._refusal_is_final(flow, merged):
@@ -79,8 +85,13 @@ class _SinglePrMergeMixin(_SinglePrOutcomeMixin, _StaleHeadRecoveryMixin):
             # waited for it.  ``_is_pr_dirty_now`` updated the snapshot
             # when it confirmed that, so route on it here --- outside the
             # lock, so the rebase wait never blocks sibling merges, and
-            # without a further request.
-            if merged is False and pr_info.mergeable_state == "dirty":
+            # without a further request.  A merge GitHub failed to answer
+            # keeps its server error as the reason, as below.
+            if (
+                merged is False
+                and pr_info.mergeable_state == "dirty"
+                and not self._server_error_is_live(flow)
+            ):
                 return await self._handle_merge_conflict(
                     pr_info, flow.repo_owner, flow.repo_name, flow.result
                 )
@@ -193,8 +204,11 @@ class _SinglePrMergeMixin(_SinglePrOutcomeMixin, _StaleHeadRecoveryMixin):
         # sibling merged between the pre-dispatch check and the merge
         # call).  The post-failure refresh — off the lock, with its
         # recompute poll — catches that so a freshly-dirty PR is never
-        # reported as a generic merge failure.
-        if not merged and self._repo_scoped:
+        # reported as a generic merge failure.  A merge whose retries
+        # ended on a server error is left for the failure report instead:
+        # routing it to conflict recovery would replace the outage with
+        # ``merge conflicts`` and drop the marker a re-run settles on.
+        if not merged and self._repo_scoped and not self._server_error_is_live(flow):
             await self._refresh_pr_mergeability(
                 pr_info, flow.repo_owner, flow.repo_name
             )
@@ -219,7 +233,7 @@ class _SinglePrMergeMixin(_SinglePrOutcomeMixin, _StaleHeadRecoveryMixin):
             flow.repo_owner, flow.repo_name
         )
         dirty_before_dispatch = False
-        async with dispatch_lock:
+        async with holding_dispatch_lock(dispatch_lock):
             # Re-read live merge state *before* dispatch — a single GET,
             # no recompute poll.  In a repo-scoped batch an earlier
             # sibling merge can turn this PR ``dirty`` between the

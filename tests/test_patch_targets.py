@@ -307,7 +307,7 @@ class TestSubstitutionsReachTheirCallSites:
         expected = {
             "_now",
             "_is_transient_server_error",
-            "_APPROVE_RETRY_BASE_DELAY",
+            "_SERVER_ERROR_RETRY_WAITS",
         }
         assert expected <= found, (
             f"Module-object substitutions missing from the scan: "

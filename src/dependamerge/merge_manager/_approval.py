@@ -16,7 +16,7 @@ from __future__ import annotations
 import asyncio
 
 from ..bot_policy import BotPolicy
-from ..github_async import ApprovalError
+from ..github_async import ApprovalError, GitHubServerError, server_failure
 from ..github_async import PermissionError as GitHubPermissionError
 from ..merge_signals import (
     DraftPullRequestError,
@@ -26,6 +26,7 @@ from ..merge_signals import (
 )
 from ..models import PullRequestInfo
 from ..rule_violations import violation_verb
+from ..slot_lease import holding_dispatch_lock
 from ._approval_check import already_sufficiently_approved
 from ._base import _MergeManagerBase
 from ._head_pin import approval_head, approve_at_head
@@ -227,7 +228,7 @@ class _ApprovalMixin(_MergeManagerBase):
         without a second request.
         """
         dispatch_lock = await self._get_merge_dispatch_lock(owner, repo)
-        async with dispatch_lock:
+        async with holding_dispatch_lock(dispatch_lock):
             # A single GET, not the polling refresh: the dispatch lock
             # is the one point serialised *and* ordered after a sibling
             # merge, so polling GitHub's recompute window here would
@@ -359,6 +360,7 @@ class _ApprovalMixin(_MergeManagerBase):
         Raises:
             ReviewsUnreadableError: If the reviews cannot all be read
             ConfirmedHeadSignal: If a confirmed PR's head has moved
+            GitHubServerError: If GitHub failed to answer
             Exception: If approval fails
         """
         if not self._github_client:
@@ -404,6 +406,16 @@ class _ApprovalMixin(_MergeManagerBase):
             # approved" and report a refused approval as a success.
             raise
         except Exception as e:
+            failure = server_failure(e)
+            if failure is not None:
+                self.log.debug(
+                    "Approval of %s/%s#%s failed on a server error: %s",
+                    owner,
+                    repo,
+                    pr_number,
+                    e,
+                )
+                raise GitHubServerError(failure, "approving") from e
             error_str = str(e)
 
             # Check for 403 Forbidden - missing pull request review permissions

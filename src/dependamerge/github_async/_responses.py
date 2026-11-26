@@ -169,7 +169,9 @@ async def _handle_retryable_status(api: _TransportMixin, r: httpx.Response) -> N
 
     api._track_error("transient_error")
     api.log.debug("Retryable HTTP status %s received", r.status_code)
-    raise RetryableError(f"Transient HTTP status: {r.status_code}")
+    raise RetryableError(
+        f"Transient HTTP status: {r.status_code}", status_code=r.status_code
+    )
 
 
 async def _finish_successful_request(api: _TransportMixin, r: httpx.Response) -> None:

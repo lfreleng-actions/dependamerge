@@ -40,6 +40,14 @@ Nesting ``parked()`` inside ``parked()`` is a no-op for the inner
 block (the slot is already released); ``parked()`` outside any
 ``holding_slot()`` is also a no-op, so helpers using it remain safe to
 call from tests or non-slotted paths.
+
+A task holding a repository's merge dispatch lock must not park with
+:func:`parked` alone: a sibling on the same repository can take the
+released slot and then wait for the lock, while this task waits for a
+slot to come back.  Such a task holds the lock through
+:func:`holding_dispatch_lock`, and its waits use
+:func:`parked_off_dispatch`, which lets go of the lock as well and takes
+the slot back before the lock, the order every other task takes them in.
 """
 
 from __future__ import annotations
@@ -49,7 +57,14 @@ import contextlib
 import contextvars
 from collections.abc import AsyncIterator
 
-__all__ = ["SlotLease", "current_lease", "holding_slot", "parked"]
+__all__ = [
+    "SlotLease",
+    "current_lease",
+    "holding_dispatch_lock",
+    "holding_slot",
+    "parked",
+    "parked_off_dispatch",
+]
 
 
 class SlotLease:
@@ -136,3 +151,78 @@ async def parked() -> AsyncIterator[None]:
         # If *this* acquire is cancelled, the lease stays released and
         # ``holding_slot`` correctly skips its final release.
         await lease.acquire()
+
+
+class _DispatchLease:
+    """A dispatch lock held by one task, which alone may release it."""
+
+    __slots__ = ("lock", "owner", "held")
+
+    def __init__(self, lock: asyncio.Lock) -> None:
+        self.lock = lock
+        self.owner = asyncio.current_task()
+        self.held = False
+
+
+_current_dispatch: contextvars.ContextVar[_DispatchLease | None] = (
+    contextvars.ContextVar("dependamerge_dispatch_lease", default=None)
+)
+
+
+@contextlib.asynccontextmanager
+async def holding_dispatch_lock(lock: asyncio.Lock) -> AsyncIterator[None]:
+    """Hold a merge dispatch lock, so :func:`parked_off_dispatch` finds it."""
+    lease = _DispatchLease(lock)
+    await lock.acquire()
+    lease.held = True
+    token = _current_dispatch.set(lease)
+    try:
+        yield
+    finally:
+        _current_dispatch.reset(token)
+        # Skipped when a park's re-acquire was cancelled: the lock is
+        # then not ours to release.
+        if lease.held:
+            lock.release()
+
+
+@contextlib.asynccontextmanager
+async def parked_off_dispatch() -> AsyncIterator[None]:
+    """:func:`parked`, also letting go of the dispatch lock this task holds.
+
+    The lock is taken back after the slot, never while waiting for one,
+    so no task holds the lock while it waits for a slot, and a task
+    cancelled while parked takes back neither, with or without a lock
+    to let go of.  A task that inherited the lock's lease from its
+    parent's context does not own it and leaves it alone.
+    """
+    lease = _current_dispatch.get()
+    if lease is not None and (
+        not lease.held or lease.owner is not asyncio.current_task()
+    ):
+        lease = None
+    if lease is not None:
+        lease.lock.release()
+        lease.held = False
+    slot = _current_lease.get()
+    if slot is not None and not slot.held:
+        slot = None
+    if slot is not None:
+        slot.release()
+    # A task cancelled in the wait or while taking its slot back unwinds
+    # without the slot and the lock, rather than wait for a sibling's
+    # work to finish; holding_slot() and holding_dispatch_lock() then
+    # skip their releases.
+    cancelled = False
+    try:
+        yield
+    except asyncio.CancelledError:
+        cancelled = True
+        raise
+    finally:
+        if not cancelled:
+            if slot is not None:
+                await slot.acquire()
+            if lease is not None:
+                await lease.lock.acquire()
+                lease.held = True

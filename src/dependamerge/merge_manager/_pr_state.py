@@ -16,6 +16,7 @@ from typing import Any
 
 from ..merge_signals import DraftPullRequestError, PullRequestStopSignal
 from ..models import PullRequestInfo
+from ..slot_lease import parked_off_dispatch
 from ._base import _MergeManagerBase
 from ._head_pin import check_payload_head, record_live_head
 from ._types import _merged_from_payload
@@ -148,7 +149,9 @@ class _PullRequestStateMixin(_MergeManagerBase):
         :data:`MERGE_IN_PROGRESS_TIMEOUT_SECONDS`, ``False`` otherwise
         (including when it closes unmerged, which the caller reports).
 
-        The wait is parked, so it holds no concurrency slot.
+        The wait holds neither a concurrency slot nor the dispatch lock
+        the retry loop holds, so a sibling queued for the lock with the
+        slot cannot leave this task waiting for the slot.
 
         Raises:
             ConfirmedHeadSignal: When a poll shows a confirmed PR at
@@ -180,7 +183,7 @@ class _PullRequestStateMixin(_MergeManagerBase):
         async with self._waiting_lock:
             self._waiting_prs[pr_key] = deadline
         try:
-            async with _mm.parked():
+            async with parked_off_dispatch():
                 first_poll = True
                 while True:
                     interval = (

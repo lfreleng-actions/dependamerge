@@ -158,7 +158,7 @@ class _TransportMixin(_GitHubAsyncBase):
             await _handle_forbidden(self, r)
 
         # Retryable transient statuses
-        if _is_retryable_status(r.status_code):
+        if _is_retryable_status(r.status_code, method):
             await _handle_retryable_status(self, r)
 
         # All other errors -> raise.  This covers 4xx and 5xx, and also

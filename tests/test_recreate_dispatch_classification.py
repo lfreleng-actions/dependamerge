@@ -27,6 +27,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from dependamerge.github_async import GitHubServerError
 from dependamerge.github_async import PermissionError as GitHubPermissionError
 from dependamerge.merge_manager import AsyncMergeManager, MergeStatus
 from dependamerge.models import PullRequestInfo
@@ -90,7 +91,7 @@ class TestTheDispatchSaysWhichKindOfFailure:
 
     @pytest.mark.asyncio
     async def test_a_transport_failure_is_not_a_refusal(self) -> None:
-        """A 502 says nothing about whether the replacement would merge."""
+        """A 502 says nothing about the replacement: raised as a server error."""
         mgr, client = _mgr()
         client.merge_pull_request = AsyncMock(
             side_effect=RuntimeError(
@@ -98,10 +99,8 @@ class TestTheDispatchSaysWhichKindOfFailure:
             )
         )
 
-        merged, refused, _ = await mgr._dispatch_recreated_merge(OWNER, REPO, _pr())
-
-        assert merged is False
-        assert refused is False
+        with pytest.raises(GitHubServerError, match=r"\(502\) while merging"):
+            await mgr._dispatch_recreated_merge(OWNER, REPO, _pr())
 
     @pytest.mark.asyncio
     async def test_a_permission_error_is_not_a_refusal(self) -> None:

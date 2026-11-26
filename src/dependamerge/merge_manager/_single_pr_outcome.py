@@ -22,6 +22,11 @@ from ._types import MergeResult, MergeStatus, RecreateOutcome
 class _SinglePrOutcomeMixin(_SinglePrRecreateMixin):
     """The terminal classification of a Step 6 merge attempt."""
 
+    def _server_error_is_live(self, flow: _MergeFlow) -> bool:
+        """Whether the failed merge ended on GitHub failing to answer."""
+        policy_refusal = flow.pr_key in self._local_rebase_refused
+        return self._merge_server_error(flow.pr_key, policy_refusal) is not None
+
     def _record_auto_merge_pending(self, flow: _MergeFlow) -> None:
         """Record that GitHub will merge the PR asynchronously.
 
@@ -58,9 +63,13 @@ class _SinglePrOutcomeMixin(_SinglePrRecreateMixin):
 
     async def _handle_failed_merge(self, flow: _MergeFlow) -> MergeResult | None:
         """Classify a rejected merge, recovering where recovery exists."""
-        early = await self._external_closure_result(flow)
-        if early is not None:
-            return early
+        if not self._server_error_is_live(flow):
+            # A merge GitHub failed to answer may have landed anyway.
+            # It goes to confirmation, which checks the head and calls it
+            # merged, rather than skipped as merged externally.
+            early = await self._external_closure_result(flow)
+            if early is not None:
+                return early
         early = self._behind_auto_merge_result(flow)
         if early is not None:
             return early
@@ -71,9 +80,14 @@ class _SinglePrOutcomeMixin(_SinglePrRecreateMixin):
         # kind of reason a later reading may withdraw.
         failure_reason, refused = await self._get_failure_summary(flow.pr_info)
 
-        if flow.pr_key in self._local_rebase_refused:
+        if flow.pr_key in self._local_rebase_refused or self._server_error_is_live(
+            flow
+        ):
             # Left untouched for a manual rebase: recreating it would
-            # replace the very PR a human was told to rebase.
+            # replace the very PR a human was told to rebase.  Nor is a
+            # PR GitHub failed to answer: recreating it for a stuck check
+            # would trade its server error, which a re-run settles, for
+            # the replacement's outcome.
             await self._report_merge_failure(
                 flow.pr_info,
                 flow.repo_owner,
@@ -249,6 +263,9 @@ class _SinglePrOutcomeMixin(_SinglePrRecreateMixin):
             and flow.pr_key not in self._local_rebase_refused
             # Nor does one the cooldown held back.
             and flow.pr_key not in self._rebase_suppressed
+            # A merge GitHub failed to answer keeps its server error, so
+            # the confirmation step can re-read and settle it.
+            and not self._server_error_is_live(flow)
         ):
             return None
         result.status = MergeStatus.AUTO_MERGE_PENDING

@@ -11,6 +11,7 @@ import asyncio
 from typing import TYPE_CHECKING, Any
 
 from ..bot_identity import rest_author_login
+from ..github_async import GitHubServerError
 from ..github_async import PermissionError as GitHubPermissionError
 from ..merge_signals import PullRequestStopSignal
 from ..models import PullRequestInfo
@@ -201,8 +202,8 @@ class _RecreatedPullRequestMixin(_MergeManagerBase):
 
         Returns True only when approval is satisfied **and** auto-merge
         is active; anything less cannot be reported as pending.  Typed
-        permission errors propagate, as they do in the shared helper, so
-        the caller's dedicated handler can report them.
+        permission and server errors propagate, as they do in the shared
+        helper, so the caller's dedicated handler can report them.
         """
         if not replacement.node_id:
             return False
@@ -244,9 +245,10 @@ class _RecreatedPullRequestMixin(_MergeManagerBase):
             approved = True
         except GitHubPermissionError:
             raise
-        except PullRequestStopSignal as signal:
-            # A draft, or draft state unknown: never arm auto-merge.  The
-            # outcome concerns the replacement, which the signal names.
+        except (PullRequestStopSignal, GitHubServerError) as signal:
+            # A draft, draft state unknown, or an approval GitHub never
+            # answered: never arm auto-merge.  The outcome concerns the
+            # replacement, which the signal names.
             signal.pull_request = replacement
             raise
         except Exception as exc:

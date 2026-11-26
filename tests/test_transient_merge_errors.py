@@ -216,8 +216,8 @@ class TestFailureSummaryHTTPErrors:
         assert "PR state:" not in summary
 
     @pytest.mark.asyncio
-    async def test_502_reports_bad_gateway(self):
-        """A 502 error should be reported as Bad Gateway."""
+    async def test_502_reports_a_server_error(self):
+        """A 502 error should be reported as a server error, without the URL."""
         mgr = self._make_manager()
         pr = _make_pr_info(mergeable_state="clean", mergeable=True)
 
@@ -226,9 +226,7 @@ class TestFailureSummaryHTTPErrors:
 
         summary, _refused = await mgr._get_failure_summary(pr)
 
-        assert "502" in summary
-        assert "bad gateway" in summary.lower()
-        assert "githubstatus.com" in summary
+        assert summary == "GitHub returned a server error (502) while merging"
 
     @pytest.mark.asyncio
     async def test_workflow_scope_error_still_detected(self):

@@ -24,6 +24,7 @@ import pytest
 
 from dependamerge.github2gerrit_detector import GitHub2GerritDetectionResult
 from dependamerge.github_async import GitHubAsync
+from dependamerge.github_async._reviews import IssueComments
 from dependamerge.merge_manager import MergeStatus
 from dependamerge.models import PullRequestInfo
 
@@ -62,7 +63,18 @@ def _make_manager(**overrides):
 
     defaults: dict[str, Any] = {"preview_mode": False}
     defaults.update(overrides)
-    return make_merge_manager(**defaults)
+    mgr, client = make_merge_manager(**defaults)
+
+    # The comment reader is fed from the same ``client.get`` script the
+    # tests here queue their payloads on, one page per read.
+    async def _comments(owner: str, repo: str, number: int) -> IssueComments:
+        page = await client.get(f"/repos/{owner}/{repo}/issues/{number}/comments")
+        if not isinstance(page, list):
+            return IssueComments([], complete=False)
+        return IssueComments(page, complete=True)
+
+    client.list_issue_comments = AsyncMock(side_effect=_comments)
+    return mgr, client
 
 
 # ---------------------------------------------------------------------------
@@ -1160,16 +1172,16 @@ class TestMissingStatusNeedsASettledPr:
 
 
 # ---------------------------------------------------------------------------
-# 11. Duplicate suppression is scoped to the incident, not the PR's lifetime
+# 11. Duplicate suppression is a cooldown, not the PR's lifetime
 # ---------------------------------------------------------------------------
 class TestSuppressionIsScopedToTheIncident:
-    """A nudge silences a second nudge for the *same* stall, not forever.
+    """A nudge silences a second nudge for the cooldown, not forever.
 
     pre-commit.ci can error again on a later head, after an intervening
     run succeeded. Treating any historical ``pre-commit.ci run`` comment
-    as a duplicate would leave that second stall permanently unnudged --
-    a gap the ``error`` path makes reachable, since an error can recur
-    where a missing status could only persist.
+    as a duplicate would leave that second stall permanently unnudged.
+    The newest trigger comment opens a cooldown instead, whatever head
+    or status it was posted against.
     """
 
     @staticmethod
@@ -1244,12 +1256,12 @@ class TestSuppressionIsScopedToTheIncident:
         client.post_issue_comment.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_a_missing_status_still_suppresses_on_any_comment(self):
-        """With no status there is no timestamp to scope against.
+    async def test_a_missing_status_is_nudged_after_the_cooldown(self):
+        """A status that never reported is nudged again once it cools.
 
-        A status that has never reported cannot be told apart from the
-        one the earlier comment was about, so the previous behaviour is
-        kept for that case.
+        Before the cooldown, a missing status had no timestamp to scope
+        against and any trigger comment suppressed it for the PR's life;
+        a rebase that leaves pre-commit.ci unreported then stalled.
         """
         mgr, client = _make_manager()
         client.get_required_status_checks = AsyncMock(
@@ -1258,13 +1270,15 @@ class TestSuppressionIsScopedToTheIncident:
         client.get.side_effect = [
             {"statuses": []},
             [{"body": "pre-commit.ci run", "created_at": self._iso(7200)}],
+            {"statuses": [{"context": "pre-commit.ci - pr", "state": "success"}]},
         ]
         client.post_issue_comment = AsyncMock()
 
-        result = await mgr._trigger_stale_precommit_ci(_make_pr_info())
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            result = await mgr._trigger_stale_precommit_ci(_make_pr_info())
 
-        assert result is False
-        client.post_issue_comment.assert_not_called()
+        assert result is True
+        client.post_issue_comment.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -1367,56 +1381,6 @@ class TestThePollWaitsForANewReading:
         payload = {"statuses": [{"context": "pre-commit.ci - pr", "state": "success"}]}
 
         assert precommit_outcome(payload) is True
-
-
-# ---------------------------------------------------------------------------
-# 13. The duplicate check reads every page of comments
-# ---------------------------------------------------------------------------
-class TestTheDuplicateCheckReadsEveryPage:
-    """One nudge per incident is the guarantee; a long thread broke it.
-
-    A trigger comment for the current incident sitting on page two read
-    as absent, so a second ``pre-commit.ci run`` was posted.
-    """
-
-    @pytest.mark.asyncio
-    async def test_a_trigger_on_a_later_page_is_found(self):
-        mgr, client = _make_manager()
-        client.get_required_status_checks = AsyncMock(
-            return_value=[{"context": "pre-commit.ci - pr"}]
-        )
-        full_page = [{"body": f"comment {i}"} for i in range(100)]
-        client.get.side_effect = [
-            {"statuses": []},  # step 2: nothing reported
-            full_page,  # comments page 1 -- full, so keep looking
-            [{"body": "pre-commit.ci run"}],  # page 2 holds the nudge
-        ]
-        client.post_issue_comment = AsyncMock()
-
-        result = await mgr._trigger_stale_precommit_ci(_make_pr_info())
-
-        assert result is False
-        client.post_issue_comment.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_a_short_page_ends_the_search(self):
-        """A partial page is the last one; asking for another is waste."""
-        mgr, client = _make_manager()
-        client.get_required_status_checks = AsyncMock(
-            return_value=[{"context": "pre-commit.ci - pr"}]
-        )
-        client.get.side_effect = [
-            {"statuses": []},
-            [{"body": "just chatting"}],  # one comment: the only page
-            {"statuses": [{"context": "pre-commit.ci - pr", "state": "success"}]},
-        ]
-        client.post_issue_comment = AsyncMock()
-
-        with patch("asyncio.sleep", new_callable=AsyncMock):
-            result = await mgr._trigger_stale_precommit_ci(_make_pr_info())
-
-        assert result is True
-        client.post_issue_comment.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

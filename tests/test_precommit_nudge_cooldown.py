@@ -26,10 +26,6 @@ from tests.conftest import make_merge_manager
 NOW = datetime(2026, 5, 1, 12, 0, tzinfo=UTC)
 CONTEXT = "pre-commit.ci - pr"
 
-pytestmark = pytest.mark.xfail(
-    strict=True, reason="the pre-commit.ci nudge has no cooldown yet"
-)
-
 
 @pytest.fixture(autouse=True)
 def _clock() -> Iterator[None]:

@@ -100,11 +100,16 @@ class Step5Outcome:
 
     ``failed`` indicates the caller should mark the PR as ``FAILED``
     and bail out of the merge attempt.  ``error_message`` is the
-    user-visible reason in that case.
+    user-visible reason in that case.  ``rebase_requested`` is True when
+    a rebase this run asked for is still to land on GitHub: the
+    ``@dependabot rebase`` macro was posted or is in flight, or a local
+    rebase force-pushed.  A request the cooldown held back, or a local
+    rebase that failed, leaves it False, since the head will not move.
     """
 
     failed: bool = False
     error_message: str | None = None
+    rebase_requested: bool = False
 
 
 def _set_tracker_state(

@@ -94,7 +94,10 @@ async def perform_step5_rebase(
                 local_reason=local_reason,
             )
             if handled:
-                return Step5Outcome()
+                pr_key = f"{owner}/{repo}#{pr_info.number}"
+                return Step5Outcome(
+                    rebase_requested=pr_key not in ctx.suppressed_rebases
+                )
         if in_github_actions():
             # The local path clones, rebases and force-pushes with the
             # operator's own git identity and signing key.  A runner has
@@ -109,14 +112,14 @@ async def perform_step5_rebase(
             )
             _set_tracker_state(ctx, pr_info, None)
             return Step5Outcome(failed=True, error_message=LOCAL_REBASE_UNAVAILABLE)
-        await _run_local_path(
+        rebased = await _run_local_path(
             ctx=ctx,
             pr_info=pr_info,
             owner=owner,
             repo=repo,
             local_reason=local_reason,
         )
-        return Step5Outcome()
+        return Step5Outcome(rebase_requested=rebased is True)
 
     return await _run_rest_path(
         ctx=ctx,

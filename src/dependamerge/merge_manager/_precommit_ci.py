@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from ..models import PullRequestInfo
+from ._precommit_nudge_log import _PrecommitNudgeLogMixin
 from ._precommit_status import (
     PRECOMMIT_CONTEXT,
     PRECOMMIT_TRIGGER,
@@ -30,7 +31,7 @@ def _utcnow() -> datetime:
     return datetime.now(UTC)
 
 
-class _PrecommitCiMixin(_PrecommitWaitMixin):
+class _PrecommitCiMixin(_PrecommitWaitMixin, _PrecommitNudgeLogMixin):
     """Nudging pre-commit.ci when its check has gone stale."""
 
     async def _trigger_stale_precommit_ci(
@@ -239,6 +240,9 @@ class _PrecommitCiMixin(_PrecommitWaitMixin):
         The newest trigger comment decides, whoever posted it, so the
         comment is posted at most once per
         :data:`PRECOMMIT_CI_NUDGE_COOLDOWN_SECONDS` per pull request.
+        A nudge this manager posted or saw earlier counts before the
+        comments are read, and the newest one this reading finds is
+        recorded for the cooldown and the end-of-run reason.
 
         An undated trigger comment counts as inside the cooldown, which
         keeps an unparsable payload on the side of not commenting twice.
@@ -253,25 +257,32 @@ class _PrecommitCiMixin(_PrecommitWaitMixin):
         # the constant on the package is observed.
         from dependamerge import merge_manager as _mm
 
-        try:
-            reading = await self._github_client.list_issue_comments(
-                repo_owner, repo_name, pr_info.number
+        def recent(at: datetime | None) -> bool:
+            return (
+                at is not None
+                and (_utcnow() - at).total_seconds()
+                < _mm.PRECOMMIT_CI_NUDGE_COOLDOWN_SECONDS
             )
-        except Exception as exc:
-            self.log.debug(
-                "Could not list comments for %s#%s before pre-commit.ci run: %s",
-                pr_info.repository_full_name,
-                pr_info.number,
-                exc,
-            )
-            return False
-        newest, undated = newest_precommit_trigger(reading.comments)
-        recent = (
-            newest is not None
-            and (_utcnow() - newest).total_seconds()
-            < _mm.PRECOMMIT_CI_NUDGE_COOLDOWN_SECONDS
-        )
-        if not (recent or undated):
+
+        cooling = recent(self._logged_precommit_nudge(pr_info))
+        if not cooling:
+            try:
+                reading = await self._github_client.list_issue_comments(
+                    repo_owner, repo_name, pr_info.number
+                )
+            except Exception as exc:
+                self.log.debug(
+                    "Could not list comments for %s#%s before pre-commit.ci run: %s",
+                    pr_info.repository_full_name,
+                    pr_info.number,
+                    exc,
+                )
+                return False
+            newest, undated = newest_precommit_trigger(reading.comments)
+            if newest is not None:
+                self._log_precommit_nudge(pr_info, newest)
+            cooling = recent(newest) or undated
+        if not cooling:
             return False
         self.log.info(
             "pre-commit.ci run already posted on %s#%s inside the cooldown; "
@@ -284,13 +295,19 @@ class _PrecommitCiMixin(_PrecommitWaitMixin):
     async def _post_precommit_trigger(
         self, repo_owner: str, repo_name: str, pr_info: PullRequestInfo
     ) -> bool:
-        """Post ``pre-commit.ci run``, reporting whether it was accepted."""
+        """Post ``pre-commit.ci run``, reporting whether it was accepted.
+
+        An accepted post is recorded with its time, so the cooldown and
+        the end-of-run reason honour it without finding it again among
+        the comments.
+        """
         if not self._github_client:
             return False
         try:
             await self._github_client.post_issue_comment(
                 repo_owner, repo_name, pr_info.number, PRECOMMIT_TRIGGER
             )
+            self._log_precommit_nudge(pr_info, _utcnow())
             self._record_retrigger()
         except Exception as e:
             self.log.warning(

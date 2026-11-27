@@ -23,6 +23,7 @@ import logging
 import math
 import os
 from collections.abc import Mapping
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -354,6 +355,12 @@ class _LifecycleMixin(_MergeManagerBase):
         # when the next request is allowed.  Neither requested nor
         # "could not be posted": callers neither wait nor fall back.
         self._rebase_suppressed: dict[str, str] = {}
+        # The newest ``pre-commit.ci run`` on each PR that this manager
+        # posted or saw.  The cooldown and the end-of-run reason both
+        # honour it even when a later reading of the comments fails or
+        # stops before the nudge.  Not cleared between runs: the nudge
+        # happened, and only its age is consulted.
+        self._precommit_nudged: dict[str, datetime] = {}
 
     def __repr__(self) -> str:
         """Safe repr that never exposes the token value."""

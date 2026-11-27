@@ -165,9 +165,6 @@ class TestUnreadableComments:
 
 
 class TestTheNudgeRecord:
-    @pytest.mark.xfail(
-        strict=True, reason="the cooldown does not consult the record yet"
-    )
     @pytest.mark.asyncio
     @pytest.mark.parametrize("reading", ["fails", "misses-it"])
     async def test_a_second_repair_honours_the_nudge_the_first_posted(

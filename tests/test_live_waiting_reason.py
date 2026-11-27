@@ -30,10 +30,6 @@ NEW_HEAD = "fedcba9876543210fedcba9876543210fedcba98"
 PRECOMMIT = "pre-commit.ci - pr"
 STALE = "required status check: pre-commit.ci - pr failed"
 
-pytestmark = pytest.mark.xfail(
-    strict=True, reason="the end-of-run reason does not read unfinished checks yet"
-)
-
 
 @pytest.fixture(autouse=True)
 def _clock() -> Iterator[None]:

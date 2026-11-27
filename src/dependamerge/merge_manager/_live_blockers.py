@@ -15,8 +15,9 @@ needed, because GitHub reports through namespaces that do not overlap,
 and they carry different weight as evidence:
 
 - **commit status contexts**, where pre-commit.ci, DCO and other
-  integrations report.  A failing one that the branch also *requires* is
-  a proven blocker.
+  integrations report.  A failing one that the branch also *requires*,
+  of any App, is a proven blocker.  One bound to an App is not: that
+  App's check run decides it, which :mod:`_live_waiting` reads.
 - **Actions workflow runs**, which carry the workflow's ``name:``.  That
   is the namespace a rejection quotes, so a failing run GitHub named as
   required is a proven blocker too.
@@ -46,9 +47,15 @@ from __future__ import annotations
 import asyncio
 
 from ..check_runs import failing_check_names
+from ..github_async._required_checks import required_check_apps
 from ..models import PullRequestInfo
 from ..rule_violations import required_workflow_names
 from ._base import _MergeManagerBase
+from ._types import MergeResult
+
+# Prefixes the note that keeps GitHub's rejection once a live reading
+# has replaced it as the reason.
+REFUSAL_NOTE = "the merge was refused as: "
 
 
 class _LiveBlockerMixin(_MergeManagerBase):
@@ -60,6 +67,21 @@ class _LiveBlockerMixin(_MergeManagerBase):
             f"{pr_info.repository_full_name}#{pr_info.number}"
         )
         return f"{reason}; {note}" if note else reason
+
+    @staticmethod
+    def _original_rejection(result: MergeResult) -> str:
+        """GitHub's rejection, even after a live reading replaced the reason.
+
+        The end-of-run pass confirms a failure a second time, when
+        ``error`` may already be the first pass's live reading.  That
+        wording drops the evidence only the rejection carries, such as
+        the workflows it quotes as required, so the note that kept the
+        rejection is read instead.
+        """
+        warning = result.warning or ""
+        if warning.startswith(REFUSAL_NOTE):
+            return warning[len(REFUSAL_NOTE) :]
+        return result.error or ""
 
     async def _live_blocking_conditions(
         self,
@@ -99,7 +121,7 @@ class _LiveBlockerMixin(_MergeManagerBase):
         except ValueError:
             return [], [], False
 
-        required, required_ok = await self._required_context_names(
+        required, required_ok = await self._required_context_apps(
             owner, repo, base_branch, pr_info
         )
         contexts, contexts_ok = await self._failing_context_names(
@@ -127,7 +149,12 @@ class _LiveBlockerMixin(_MergeManagerBase):
         blocking: list[str] = []
         promoted: list[str] = []
         for name in contexts:
-            if name.strip() in required:
+            # A context bound to an App is satisfied by that App's check
+            # run, which a name alone cannot show: a status of the same
+            # name may stand for it or not.  Those are left to the
+            # App-aware reading of required checks (``_live_waiting``).
+            key = name.strip()
+            if key in required and required[key] is None:
                 promoted.append(name)
                 blocking.append(f"required status check: {name}")
 
@@ -153,21 +180,23 @@ class _LiveBlockerMixin(_MergeManagerBase):
         complete = required_ok and contexts_ok and checks_ok and workflows_ok
         return blocking, also_failing, complete
 
-    async def _required_context_names(
+    async def _required_context_apps(
         self, owner: str, repo: str, base_branch: str, pr_info: PullRequestInfo
-    ) -> tuple[set[str], bool]:
-        """Status contexts the PR's base branch requires, as GitHub spells them.
+    ) -> tuple[dict[str, frozenset[int] | None], bool]:
+        """Required contexts, each with the Apps bound to it or ``None``.
 
-        Returns ``(names, answered)``.  A lookup that failed yields an
-        empty set, which is indistinguishable from "nothing is required"
-        --- so the caller is told which it was.
+        Returns ``(contexts, answered)``.  A lookup that failed yields
+        nothing, which is indistinguishable from "nothing is required"
+        --- so the caller is told which it was.  A context two
+        requirements declare is bound to every App either names, and to
+        none when either accepts any App.
 
         Case is preserved: GitHub matches required contexts exactly, so
         folding it here would prove a context required by a name that
         only resembles it.
         """
         if self._github_client is None:
-            return set(), False
+            return {}, False
         try:
             (
                 required,
@@ -184,17 +213,23 @@ class _LiveBlockerMixin(_MergeManagerBase):
                 pr_info.number,
                 exc,
             )
-            return set(), False
+            return {}, False
         if not isinstance(required, list) or not reliable:
             # An unreliable read returns the same empty list a branch
             # with no requirements does, so the lookup's own verdict is
             # the only thing that separates them.
-            return set(), False
-        return {
-            str(entry.get("context", "")).strip()
-            for entry in required
-            if isinstance(entry, dict) and entry.get("context")
-        }, True
+            return {}, False
+        contexts: dict[str, frozenset[int] | None] = {}
+        for entry in required:
+            if not isinstance(entry, dict) or not entry.get("context"):
+                continue
+            name = str(entry["context"]).strip()
+            apps = required_check_apps(entry)
+            if name in contexts:
+                known = contexts[name]
+                apps = None if known is None or apps is None else known | apps
+            contexts[name] = apps
+        return contexts, True
 
     async def _failing_context_names(
         self, owner: str, repo: str, head_sha: str, pr_info: PullRequestInfo

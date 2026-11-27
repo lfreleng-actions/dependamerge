@@ -38,12 +38,13 @@ async def _run_local_path(
     owner: str,
     repo: str,
     local_reason: str,
-) -> None:
+) -> bool:
     """Local-rebase path.  Always succeeds from the caller's POV.
 
     Whether the underlying ``git`` workflow succeeds or fails, we
     never fall back to REST ``update-branch`` (doing so would
-    defeat the whole point of the local path).
+    defeat the whole point of the local path).  Returns whether the
+    rebase was force-pushed, so the caller knows a new head is coming.
 
     Auto-merge enablement and ``_rebased_prs`` marking are linked:
 
@@ -126,6 +127,7 @@ async def _run_local_path(
             "Local rebase failed; deferring to auto-merge: %s",
             pr_info.html_url,
         )
+    return local_rebase_ok
 
 
 async def _run_dependabot_macro_path(

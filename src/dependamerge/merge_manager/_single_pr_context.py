@@ -44,6 +44,17 @@ class _MergeFlow:
     already_rebased: bool = False
     should_wait: bool = False
 
+    # Whether Step 5 actually set a rebase going that has yet to land
+    # (``Step5Outcome.rebase_requested``).  ``needs_rebase`` records only
+    # the decision: a local rebase can fail and the cooldown can hold the
+    # macro back, and neither moves the head.
+    rebase_requested: bool = False
+
+    # The head that rebase moves the PR off, read before Step 5 ran; set
+    # only with ``rebase_requested``.  Until the PR leaves it, a clean or
+    # mergeable reading describes the old head, not the rebased one.
+    rebase_from_head: str | None = None
+
     @property
     def pr_key(self) -> str:
         """The ``owner/repo#number`` key used by the per-PR state sets."""

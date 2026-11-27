@@ -14,25 +14,24 @@ from datetime import UTC, datetime
 from typing import Any
 
 from ..models import PullRequestInfo
+from ._precommit_nudge_log import _PrecommitNudgeLogMixin
 from ._precommit_status import (
     PRECOMMIT_CONTEXT,
+    PRECOMMIT_TRIGGER,
     find_precommit_status,
-    has_precommit_trigger_comment,
+    newest_precommit_trigger,
     parse_timestamp,
     pending_age,
 )
 from ._precommit_wait import _PrecommitWaitMixin
 
-#: Comments fetched per request when looking for an existing nudge.
-_COMMENTS_PER_PAGE = 100
 
-#: How many pages to read.  A cap keeps a pathological thread from
-#: costing the run unbounded requests; a trigger comment beyond a
-#: thousand is not worth the search.
-_MAX_COMMENT_PAGES = 10
+def _utcnow() -> datetime:
+    """The current time; a module function so tests can substitute it."""
+    return datetime.now(UTC)
 
 
-class _PrecommitCiMixin(_PrecommitWaitMixin):
+class _PrecommitCiMixin(_PrecommitWaitMixin, _PrecommitNudgeLogMixin):
     """Nudging pre-commit.ci when its check has gone stale."""
 
     async def _trigger_stale_precommit_ci(
@@ -81,7 +80,7 @@ class _PrecommitCiMixin(_PrecommitWaitMixin):
         #    ``error``, or when it has been ``pending`` past the stuck
         #    threshold; leave a reported ``success`` / ``failure``, and
         #    a pending run still within its normal window.
-        now = datetime.now(UTC)
+        now = _utcnow()
         fetched, precommit_status = await self._precommit_status(
             repo_owner, repo_name, pr_info
         )
@@ -104,17 +103,12 @@ class _PrecommitCiMixin(_PrecommitWaitMixin):
             return False
 
         # 3. The run is stale (missing, errored, or stuck pending) ---
-        # check for an existing trigger comment before posting a
-        # duplicate (avoids spam if dependamerge runs repeatedly while
-        # the status is still not progressing).  Scoped to the current
-        # incident where the status carries a timestamp, so a nudge for
-        # an episode that has since resolved cannot silence this one.
-        if await self._precommit_already_triggered(
-            repo_owner,
-            repo_name,
-            pr_info,
-            since=reported_at,
-        ):
+        # but a nudge inside the cooldown, whoever posted it, means
+        # pre-commit.ci has been asked recently.  Timed by the comment
+        # rather than by the status: pre-commit.ci answers a nudge with
+        # a fresh ``queued`` status, which a status-relative rule reads
+        # as a new stall, so every later run would post again.
+        if await self._precommit_nudge_cooling_down(repo_owner, repo_name, pr_info):
             return False
 
         self._pr_status(
@@ -238,65 +232,82 @@ class _PrecommitCiMixin(_PrecommitWaitMixin):
         )
         return True
 
-    async def _precommit_already_triggered(
-        self,
-        repo_owner: str,
-        repo_name: str,
-        pr_info: PullRequestInfo,
-        since: datetime | None = None,
+    async def _precommit_nudge_cooling_down(
+        self, repo_owner: str, repo_name: str, pr_info: PullRequestInfo
     ) -> bool:
-        """Report whether this incident has already been nudged.
+        """Report whether ``pre-commit.ci run`` was posted inside the cooldown.
 
-        *since* is the moment the status being reacted to was reported.
-        A trigger comment older than that belongs to an earlier episode
-        --- pre-commit.ci can error again on a later head after an
-        intervening success --- and must not suppress a fresh nudge.
-        Without a timestamp to compare against, any comment suppresses,
-        which is the previous behaviour and the safe direction for a
-        status that has never reported at all.
+        The newest trigger comment decides, whoever posted it, so the
+        comment is posted at most once per
+        :data:`PRECOMMIT_CI_NUDGE_COOLDOWN_SECONDS` per pull request.
+        A nudge this manager posted or saw earlier counts before the
+        comments are read, and the newest one this reading finds is
+        recorded for the cooldown and the end-of-run reason.
 
-        Every page of comments is read.  A single page would let a PR
-        with a long discussion hide the nudge already posted for this
-        incident, and then post a second one --- the one guarantee this
-        check exists to make.
+        An undated trigger comment counts as inside the cooldown, which
+        keeps an unparsable payload on the side of not commenting twice.
+        A reading that is incomplete, or that failed, and holds no nudge
+        inside the cooldown does not hold the nudge back: the newest
+        comment may sit in the unread tail, and a duplicate nudge is
+        better than leaving a stalled run unrepaired.
         """
         if not self._github_client:
             return False
-        page = 1
-        while page <= _MAX_COMMENT_PAGES:
+        # Resolved through the package at call time, so a test rebinding
+        # the constant on the package is observed.
+        from dependamerge import merge_manager as _mm
+
+        def recent(at: datetime | None) -> bool:
+            return (
+                at is not None
+                and (_utcnow() - at).total_seconds()
+                < _mm.PRECOMMIT_CI_NUDGE_COOLDOWN_SECONDS
+            )
+
+        cooling = recent(self._logged_precommit_nudge(pr_info))
+        if not cooling:
             try:
-                comments = await self._github_client.get(
-                    f"/repos/{repo_owner}/{repo_name}/issues/{pr_info.number}"
-                    f"/comments?per_page={_COMMENTS_PER_PAGE}&page={page}"
+                reading = await self._github_client.list_issue_comments(
+                    repo_owner, repo_name, pr_info.number
                 )
-            except Exception:
-                # If we fail to list comments, continue and attempt to
-                # post the trigger anyway.
-                return False
-            if not isinstance(comments, list) or not comments:
-                return False
-            if has_precommit_trigger_comment(comments, since):
-                self.log.info(
-                    "Found existing pre-commit.ci trigger comment on "
-                    f"{pr_info.repository_full_name}#{pr_info.number}; "
-                    "skipping duplicate comment."
+            except Exception as exc:
+                self.log.debug(
+                    "Could not list comments for %s#%s before pre-commit.ci run: %s",
+                    pr_info.repository_full_name,
+                    pr_info.number,
+                    exc,
                 )
-                return True
-            if len(comments) < _COMMENTS_PER_PAGE:
                 return False
-            page += 1
-        return False
+            newest, undated = newest_precommit_trigger(reading.comments)
+            if newest is not None:
+                self._log_precommit_nudge(pr_info, newest)
+            cooling = recent(newest) or undated
+        if not cooling:
+            return False
+        self.log.info(
+            "pre-commit.ci run already posted on %s#%s inside the cooldown; "
+            "not posting another.",
+            pr_info.repository_full_name,
+            pr_info.number,
+        )
+        return True
 
     async def _post_precommit_trigger(
         self, repo_owner: str, repo_name: str, pr_info: PullRequestInfo
     ) -> bool:
-        """Post ``pre-commit.ci run``, reporting whether it was accepted."""
+        """Post ``pre-commit.ci run``, reporting whether it was accepted.
+
+        An accepted post is recorded with its time, so the cooldown and
+        the end-of-run reason honour it without finding it again among
+        the comments.
+        """
         if not self._github_client:
             return False
         try:
             await self._github_client.post_issue_comment(
-                repo_owner, repo_name, pr_info.number, "pre-commit.ci run"
+                repo_owner, repo_name, pr_info.number, PRECOMMIT_TRIGGER
             )
+            self._log_precommit_nudge(pr_info, _utcnow())
             self._record_retrigger()
         except Exception as e:
             self.log.warning(

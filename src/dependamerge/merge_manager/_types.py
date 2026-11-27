@@ -82,6 +82,10 @@ class MergeResult:
     # too says nothing lasting about the PR, so a later reading may
     # settle it.
     server_error: str | None = None
+    # The head ``error`` was read at, once a live reading has replaced
+    # the reason or marked it as describing an earlier head.  ``None``
+    # means the reason is the snapshot's own.
+    reason_head: str | None = None
 
 
 class RecreateCause(Enum):

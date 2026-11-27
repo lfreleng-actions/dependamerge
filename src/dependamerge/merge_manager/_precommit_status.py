@@ -86,32 +86,37 @@ def precommit_outcome(status_data: Any, since: datetime | None = None) -> bool |
     return None
 
 
-def has_precommit_trigger_comment(comments: Any, since: datetime | None = None) -> bool:
-    """Report whether a ``pre-commit.ci run`` comment already exists.
+PRECOMMIT_TRIGGER = "pre-commit.ci run"
 
-    When *since* is given, only comments posted after it count.  A nudge
-    suppresses a second nudge for the *same* incident, not for the life
-    of the pull request: pre-commit.ci can error again on a later head,
-    after an intervening run succeeded, and a comment from the previous
-    episode is no reason to leave the new one stalled.
 
-    A comment whose timestamp cannot be read counts, which keeps an
-    unparsable payload on the side of not commenting twice.
+def newest_precommit_trigger(comments: Any) -> tuple[datetime | None, bool]:
+    """When ``pre-commit.ci run`` was last asked for, as far as *comments* say.
+
+    Returns ``(newest, undated)``: the ``created_at`` of the newest
+    comment whose body, stripped, is exactly the trigger, and whether a
+    trigger comment carried no timestamp that parses.  Only an exact
+    body counts, whoever posted it; a comment that merely quotes the
+    phrase is not a nudge.
+
+    An undated trigger is reported rather than dropped, so the caller
+    can keep an unparsable payload on the side of not commenting twice.
     """
+    newest: datetime | None = None
+    undated = False
     if not isinstance(comments, list):
-        return False
+        return None, False
     for c in comments:
         if not isinstance(c, dict):
             continue
         body = c.get("body")
-        if not (isinstance(body, str) and body.strip() == "pre-commit.ci run"):
+        if not (isinstance(body, str) and body.strip() == PRECOMMIT_TRIGGER):
             continue
-        if since is None:
-            return True
         posted = parse_timestamp(c.get("created_at"))
-        if posted is None or posted >= since:
-            return True
-    return False
+        if posted is None:
+            undated = True
+        elif newest is None or posted > newest:
+            newest = posted
+    return newest, undated
 
 
 def parse_timestamp(raw: Any) -> datetime | None:

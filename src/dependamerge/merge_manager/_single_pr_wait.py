@@ -16,7 +16,9 @@ when:
   * mergeable_state == "blocked" for a reason that cannot resolve on
     its own (e.g. "requires approval", missing code-owner reviews) ---
     waiting would just delay the inevitable failure/merge by up to
-    merge_timeout.
+    merge_timeout.  Unless Step 5 just requested an asynchronous
+    rebase: that reason was read from the head the PR is leaving, and
+    the rebase is what can change it.
 
 ``behind`` PRs deliberately do NOT wait here: unless branch protection
 enforces the strict up-to-date policy (in which case Step 5 already
@@ -33,7 +35,10 @@ recomputes mergeability --- the snapshot still reads ``behind``
 because neither path refreshes ``pr_info``.  Without the wait, Step 6
 would fire a manual merge against the stale state and 405.
 ``flow.needs_rebase`` captures "Step 5 actually ran" and the ``not
-already_rebased`` guard excludes the auto-merge-armed case.
+already_rebased`` guard excludes the auto-merge-armed case.  A
+rebase this run requested is waited for whatever the state: Step 5's
+approval can read the new head as ``unknown`` before GitHub computes
+it, which no other rule here would wait on.
 
 We accept any ``mergeable`` value (including ``False``) when the state
 is one of these auto-merge-rescuable states, because GitHub returns
@@ -45,16 +50,17 @@ genuinely-stuck cases (missing approvals, etc.) so we don't burn
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from ..merge_signals import DraftPullRequestError
-from ._base import _MergeManagerBase
 from ._head_pin import check_payload_head
+from ._rebase_landing import _RebaseLandingMixin
 from ._single_pr_context import _MergeFlow
 from ._types import MergeResult, MergeStatus
 
 
-class _SinglePrWaitMixin(_MergeManagerBase):
+class _SinglePrWaitMixin(_RebaseLandingMixin):
     """The auto-merge wait and the decision to enter it."""
 
     def _state_is_waitable(self, flow: _MergeFlow) -> bool:
@@ -89,18 +95,28 @@ class _SinglePrWaitMixin(_MergeManagerBase):
         (computed once by ``_analyze_blocked_state``) before entering
         the wait loop so we don't burn the full merge_timeout on PRs
         blocked for reasons that cannot resolve on their own.
+
+        A rebase this run requested makes any state waitable: Step 5
+        can read the new head before GitHub has computed it (``unknown``
+        or null), or the old head as ``clean``, and neither describes
+        the head that will be merged.
         """
+        awaits_rebase = self._awaits_requested_rebase(flow)
         base_should_wait = (
             not self.preview_mode
             and self._github_client is not None
-            and self._state_is_waitable(flow)
+            and (awaits_rebase or self._state_is_waitable(flow))
             and self.force_level != "all"
             and not flow.already_rebased
             # A rebase the cooldown held back is not coming, so there
             # is nothing for the wait to bridge.
             and not (flow.needs_rebase and flow.pr_key in self._rebase_suppressed)
         )
-        if not base_should_wait or flow.pr_info.mergeable_state != "blocked":
+        if (
+            not base_should_wait
+            or awaits_rebase
+            or flow.pr_info.mergeable_state != "blocked"
+        ):
             return base_should_wait
 
         if not flow.blocked_analysis_ok:
@@ -121,6 +137,28 @@ class _SinglePrWaitMixin(_MergeManagerBase):
                 )
                 return False
         return True
+
+    def _awaits_requested_rebase(self, flow: _MergeFlow) -> bool:
+        """Whether the PR waits for the rebase Step 5 requested.
+
+        The block reason was read before Step 5, so on a PR rebased
+        *because* a required check failed on a stale head it still names
+        that failure, which will not clear on its own.  The rebase this
+        run asked for is what will clear it: dependabot force-pushes, the
+        checks re-run on the new head, and the wait keeps the snapshot's
+        head current, so the merge that follows names the rebased head.
+
+        Only a rebase Step 5 actually set going counts
+        (``flow.rebase_requested``): a local rebase that failed, or a
+        macro the cooldown held back, leaves the failing head in place,
+        and waiting on it would burn the full timeout.  The caller has
+        already excluded one Step 5 waited for itself
+        (``already_rebased``).  A confirmed PR never gets here: the
+        request stops it.  Under ``--max-wait 0`` the earlier block
+        reason decides, as before, since nothing would be waited for
+        anyway.
+        """
+        return flow.rebase_requested and not self._no_wait
 
     async def _wait_for_checks(self, flow: _MergeFlow) -> MergeResult | None:
         """Run Step 5.5, returning a terminal result if the PR closed."""
@@ -147,24 +185,17 @@ class _SinglePrWaitMixin(_MergeManagerBase):
             )
 
     async def _await_auto_merge(self, flow: _MergeFlow) -> MergeResult | None:
-        """Wait for required checks, short-circuiting on a closed PR."""
+        """Wait for required checks, short-circuiting on a closed PR.
+
+        Also terminal: a requested rebase that never moved the head, so
+        Step 6 cannot merge the commit dependabot was asked to replace.
+        """
         pr_info = flow.pr_info
         result = flow.result
         # Wait (bounded by ``merge_timeout``) for required checks to
-        # complete and auto-merge to fire.  The continue-states mirror
-        # the entry condition in ``_should_wait_for_checks`` (blocked /
-        # behind / unstable).
+        # complete and auto-merge to fire.
         self._track_pr_state(pr_info, "waiting")
-        (
-            closed_during_wait,
-            merged_during_wait,
-        ) = await self._wait_for_auto_merge(
-            pr_info,
-            flow.repo_owner,
-            flow.repo_name,
-            continue_states=("blocked", "behind", "unstable"),
-            measures_checks=True,
-        )
+        closed_during_wait, merged_during_wait = await self._wait_through_rebase(flow)
         self._track_pr_state(pr_info, None)
 
         # If the wait revealed the PR is already closed, short-circuit
@@ -172,6 +203,12 @@ class _SinglePrWaitMixin(_MergeManagerBase):
         # success from closed-without-merge using the ``merged`` boolean
         # captured from the refresh payload.
         if not closed_during_wait:
+            if (
+                flow.rebase_from_head is not None
+                and not self._no_wait
+                and flow.pr_info.head_sha == flow.rebase_from_head
+            ):
+                return self._rebase_not_landed(flow)
             return None
         if merged_during_wait:
             result.status = MergeStatus.MERGED
@@ -190,6 +227,39 @@ class _SinglePrWaitMixin(_MergeManagerBase):
                 level="warning",
             )
         return result
+
+    async def _wait_through_rebase(self, flow: _MergeFlow) -> tuple[bool, bool]:
+        """Wait for a requested rebase to land, then for the checks.
+
+        After a rebase this run requested, nothing read on the head Step
+        5 saw counts (:meth:`_await_rebase_landing`): that head can read
+        mergeable before dependabot replaces it.  The two waits share
+        one deadline, so the total stays within ``merge_timeout``.  The
+        continue-states mirror the entry condition in
+        ``_should_wait_for_checks`` (blocked / behind / unstable).
+        """
+        deadline: float | None = None
+        if flow.rebase_from_head is not None:
+            deadline = asyncio.get_running_loop().time() + self._merge_timeout
+            if self._run_deadline is not None:
+                deadline = min(deadline, self._run_deadline)
+            closed, merged = await self._await_rebase_landing(
+                flow.pr_info,
+                flow.repo_owner,
+                flow.repo_name,
+                from_head=flow.rebase_from_head,
+                deadline=deadline,
+            )
+            if closed:
+                return closed, merged
+        return await self._wait_for_auto_merge(
+            flow.pr_info,
+            flow.repo_owner,
+            flow.repo_name,
+            continue_states=("blocked", "behind", "unstable"),
+            deadline=deadline,
+            measures_checks=True,
+        )
 
     async def _recheck_late_precommit(self, flow: _MergeFlow) -> MergeResult | None:
         """Re-trigger a pre-commit.ci run that went stale during the wait.

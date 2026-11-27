@@ -268,7 +268,10 @@ or user account in one command.
   themselves have landed in `✅ Merged` / `❌ Failed`. A `@dependabot
   rebase` held back by `--rebase-cooldown` is not posted and counts under
   neither; the PR's status line gives the age of the last request and
-  when the next is due
+  when the next is due. The run posts `pre-commit.ci run` at most once an
+  hour per PR, timed from the newest such comment whoever posted it, so
+  the fresh `queued` status pre-commit.ci answers with does not draw
+  another; a PR still waiting on that check reports the comment's age
 - **Draft Exclusion**: The run lists draft PRs as skipped and never approves
   or merges them, since a draft cannot merge until its author marks it ready.
   The results document records them as skipped; a draft source PR stops the

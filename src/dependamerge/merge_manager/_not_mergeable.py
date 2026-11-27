@@ -13,11 +13,12 @@ from typing import Any
 from ..check_names import summarise_check_names
 from ..models import PullRequestInfo
 from ._head_pin import payload_head_stop
-from ._live_blockers import _LiveBlockerMixin
+from ._live_blockers import REFUSAL_NOTE
+from ._live_waiting import _LiveWaitingMixin
 from ._types import MergeResult, MergeStatus, _merged_from_payload
 
 
-class _NotMergeableMixin(_LiveBlockerMixin):
+class _NotMergeableMixin(_LiveWaitingMixin):
     """Reacting to a pull request that is not mergeable."""
 
     #: ``mergeable_state`` values that mean GitHub would accept a merge
@@ -230,7 +231,7 @@ class _NotMergeableMixin(_LiveBlockerMixin):
             # this a second time, by which point ``error`` may already be
             # a live reading --- and overwriting the note with that would
             # discard the rejection this is meant to preserve.
-            result.warning = f"the merge was refused as: {result.error}"
+            result.warning = f"{REFUSAL_NOTE}{result.error}"
         result.error = (
             f"not settled during the run; now {state} and expected to merge on a re-run"
         )
@@ -266,6 +267,17 @@ class _NotMergeableMixin(_LiveBlockerMixin):
         PR is already described accurately by its state, so reading its
         checks would spend requests without adding anything.
 
+        A required failure the rules prove is the reason first, a failed
+        required check run included, which only the reading of required
+        checks can prove (:meth:`_live_waiting_reason`).  Failing that, a
+        required check that has not finished on the live head is: after
+        a rebase the old head's failure is no longer what holds the PR.  The status is unchanged
+        either way; only the reason becomes true.
+
+        When nothing can be established and the head has moved since the
+        reason was recorded, the reason is kept but marked with both
+        heads, so it is not read as a description of the current one.
+
         The rejection is kept as a note, as GitHub's word when the live
         reading disagrees, but no longer offered as the cause.  A cooldown
         note stays on the reason, since the summary prints only that.
@@ -278,7 +290,7 @@ class _NotMergeableMixin(_LiveBlockerMixin):
         base_branch = (
             base if isinstance(base, str) and base else (pr_info.base_branch or "main")
         )
-        rejection = result.error or ""
+        rejection = self._original_rejection(result)
 
         blocking, also_failing, complete = await self._live_blocking_conditions(
             pr_info,
@@ -286,18 +298,26 @@ class _NotMergeableMixin(_LiveBlockerMixin):
             base_branch=base_branch,
             rejection=rejection,
         )
-        reason = self._compose_blocker_reason(blocking, also_failing, complete)
+        reason: str | None = None
+        if not blocking:
+            reason = await self._live_waiting_reason(
+                pr_info, head_sha=head_sha, base_branch=base_branch, also=also_failing
+            )
+        if reason is None:
+            reason = self._compose_blocker_reason(blocking, also_failing, complete)
         if reason is None:
             # Nothing could be established.  An empty reading is not an
             # all-clear, so the reason already recorded stands.
+            self._mark_reason_head(pr_info, result, head_sha)
             return result
         reason = self._with_rebase_note(pr_info, reason)
         if result.error and result.warning is None:
             # See :meth:`_settle_stale_failure`: the note records what
             # GitHub said, and the end-of-run pass must not replace it
             # with the live reading this pass is about to supersede.
-            result.warning = f"the merge was refused as: {result.error}"
+            result.warning = f"{REFUSAL_NOTE}{result.error}"
         result.error = reason
+        result.reason_head = head_sha
         return result
 
     @staticmethod

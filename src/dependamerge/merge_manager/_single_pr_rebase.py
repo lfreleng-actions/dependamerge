@@ -31,6 +31,8 @@ tested in isolation.
 
 from __future__ import annotations
 
+import asyncio
+
 from .. import rebase
 from ._base import _MergeManagerBase
 from ._head_pin import stop_after_head_move
@@ -90,6 +92,7 @@ class _SinglePrRebaseMixin(_MergeManagerBase):
             request_dependabot_rebase=self._request_dependabot_rebase,
             suppressed_rebases=self._rebase_suppressed,
         )
+        head_before = await self._rebase_baseline(flow)
         outcome = await rebase.perform_step5_rebase(
             ctx=rebase_ctx,
             pr_info=flow.pr_info,
@@ -100,4 +103,34 @@ class _SinglePrRebaseMixin(_MergeManagerBase):
             flow.result.status = MergeStatus.FAILED
             flow.result.error = outcome.error_message
             return flow.result
+        flow.rebase_requested = outcome.rebase_requested
+        flow.rebase_from_head = head_before if outcome.rebase_requested else None
         return None
+
+    async def _rebase_baseline(self, flow: _MergeFlow) -> str | None:
+        """The live head a rebase requested now would move the PR off.
+
+        The snapshot can trail the PR: a push after the scan leaves it
+        naming an older head, and Step 5's approval then records the live
+        one.  Measured from the snapshot, the landing wait would take that
+        live head for the rebased one and let Step 6 merge it before the
+        rebase lands.  The snapshot's head stands in when the live one
+        cannot be read.
+        """
+        pr_info = flow.pr_info
+        try:
+            data = await self._fetch_pr_state(
+                flow.repo_owner, flow.repo_name, pr_info.number
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self.log.debug(
+                "Could not read the live head of %s before rebasing: %s",
+                flow.pr_key,
+                exc,
+            )
+            data = None
+        head = data.get("head") if isinstance(data, dict) else None
+        sha = head.get("sha") if isinstance(head, dict) else None
+        return sha if isinstance(sha, str) and sha else pr_info.head_sha or None

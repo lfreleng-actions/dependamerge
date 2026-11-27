@@ -94,6 +94,13 @@ STUCK_CHECK_THRESHOLD_SECONDS: float = 60.0
 # is never interrupted; used by ``_trigger_stale_precommit_ci``.
 PRECOMMIT_CI_STUCK_PENDING_SECONDS: float = 300.0
 
+# The shortest gap between two ``pre-commit.ci run`` comments on one pull
+# request, whoever posted the earlier one.  pre-commit.ci answers a nudge
+# with a fresh ``queued`` status, so a run that keys on the status's age
+# would see every answered nudge as a new stall; timing the comment
+# instead keeps a re-queued status from drawing one comment per run.
+PRECOMMIT_CI_NUDGE_COOLDOWN_SECONDS: float = 3600.0
+
 # Icon and Rich style for each GitHub mergeable_state, used when
 # rendering PR status. States not listed fall back to a neutral
 # "investigating" icon with no style.
